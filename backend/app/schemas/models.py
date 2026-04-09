@@ -1,0 +1,141 @@
+"""app.schemas.models
+
+Schemas for model registry.
+
+Notes:
+- Never expose provider secrets in API responses.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+import json
+from typing import Literal
+from typing import Any
+
+from pydantic import BaseModel, Field, field_validator
+
+
+_MAX_JSON_DICT_BYTES = 65_536  # 64 KB
+
+
+def _validate_json_dict_size(
+    value: dict[str, Any] | None, field_label: str
+) -> dict[str, Any] | None:
+    """Reject dicts whose JSON serialization exceeds *_MAX_JSON_DICT_BYTES*."""
+    if value is None:
+        return value
+    serialized = json.dumps(value, ensure_ascii=False)
+    if len(serialized.encode("utf-8")) > _MAX_JSON_DICT_BYTES:
+        raise ValueError(f"{field_label} JSON must not exceed 64 KB")
+    return value
+
+
+class ModelAdmin(BaseModel):
+    id: str
+    display_name: str
+    provider_type: str
+    model_name: str
+    base_url: str
+    enabled: bool
+    visibility: Literal["public", "private"]
+    tags: dict[str, Any] | None = None
+    temperature: float | None = None
+    frequency_penalty: float | None = None
+    presence_penalty: float | None = None
+    extra_body: dict[str, Any] | None = None
+    default_params: dict[str, Any] | None = None
+    prompt_template_id: str | None = None
+    has_api_key: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class ModelCreate(BaseModel):
+    display_name: str = Field(..., max_length=128)
+    provider_type: str = Field(..., max_length=64)
+    model_name: str = Field(..., max_length=128)
+    base_url: str = Field(
+        ...,
+        max_length=2048,
+        description="Admin-only. Points to the local API gateway by design (no SSRF mitigation needed).",
+    )
+
+    enabled: bool = True
+    visibility: Literal["public", "private"] = "public"
+    tags: dict[str, Any] | None = None
+
+    # Common OpenAI-compatible sampling params.
+    # temperature range [0, 2] matches the DB CHECK constraint ck_models_temperature.
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+
+    # Extra JSON merged/sent upstream to the gateway.
+    extra_body: dict[str, Any] | None = None
+
+    default_params: dict[str, Any] | None = None
+
+    prompt_template_id: str | None = None
+    api_key: str | None = None
+
+    @field_validator("tags")
+    @classmethod
+    def _validate_tags_size(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        return _validate_json_dict_size(v, "tags")
+
+    @field_validator("extra_body")
+    @classmethod
+    def _validate_extra_body_size(
+        cls, v: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        return _validate_json_dict_size(v, "extra_body")
+
+    @field_validator("default_params")
+    @classmethod
+    def _validate_default_params_size(
+        cls, v: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        return _validate_json_dict_size(v, "default_params")
+
+
+class ModelUpdate(BaseModel):
+    display_name: str | None = Field(default=None, max_length=128)
+    provider_type: str | None = Field(default=None, max_length=64)
+    model_name: str | None = Field(default=None, max_length=128)
+    base_url: str | None = Field(default=None, max_length=2048)
+
+    enabled: bool | None = None
+    visibility: Literal["public", "private"] | None = None
+    tags: dict[str, Any] | None = None
+
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+
+    extra_body: dict[str, Any] | None = None
+    default_params: dict[str, Any] | None = None
+
+    prompt_template_id: str | None = None
+    api_key: str | None = None
+
+    @field_validator("tags")
+    @classmethod
+    def _validate_update_tags_size(
+        cls, v: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        return _validate_json_dict_size(v, "tags")
+
+    @field_validator("extra_body")
+    @classmethod
+    def _validate_update_extra_body_size(
+        cls, v: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        return _validate_json_dict_size(v, "extra_body")
+
+    @field_validator("default_params")
+    @classmethod
+    def _validate_update_default_params_size(
+        cls, v: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        return _validate_json_dict_size(v, "default_params")

@@ -1,0 +1,2 @@
+CREATE DATABASE authentik;
+CREATE DATABASE arena_e2e;

@@ -1,0 +1,49 @@
+{
+  "opencodeFileHeader": "frontend/package.json",
+  "opencodeNotes": [
+    "Node project manifest for the Arena frontend.",
+    "Notes:",
+    "- This scaffold uses Next.js + TypeScript.",
+    "- Auth uses NextAuth with an Authentik OIDC connector."
+  ],
+  "name": "opensakura-arena-frontend",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test": "vitest run",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@radix-ui/react-slot": "^1.2.4",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "framer-motion": "^12.34.3",
+    "next": "^14.2.0",
+    "next-auth": "^4.24.0",
+    "next-themes": "^0.4.6",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "tailwind-merge": "^3.5.0",
+    "tailwindcss-animate": "^1.0.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^20.11.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "autoprefixer": "^10.4.24",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "^14.2.35",
+    "jsdom": "^28.1.0",
+    "matchmedia-polyfill": "^0.3.2",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.19",
+    "typescript": "^5.4.0",
+    "vitest": "^2.1.8"
+  }
+}

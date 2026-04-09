@@ -1,0 +1,366 @@
+from __future__ import annotations
+
+from fastapi import Request
+
+
+def _request(
+    *,
+    ip: str,
+    user_agent: str,
+    cookie: str | None = None,
+    x_forwarded_for: str | None = None,
+) -> Request:
+    headers: list[tuple[bytes, bytes]] = [(b"user-agent", user_agent.encode("utf-8"))]
+    if cookie is not None:
+        headers.append((b"cookie", cookie.encode("ascii")))
+    if x_forwarded_for is not None:
+        headers.append((b"x-forwarded-for", x_forwarded_for.encode("ascii")))
+
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/",
+        "raw_path": b"/",
+        "query_string": b"",
+        "headers": headers,
+        "client": (ip, 12345),
+        "server": ("testserver", 80),
+    }
+    return Request(scope)
+
+
+class _FakeRedis:
+    def __init__(self) -> None:
+        self.store: dict[str, int] = {}
+
+    def incr(self, key: str) -> int:
+        self.store[key] = self.store.get(key, 0) + 1
+        return self.store[key]
+
+    def expire(self, key: str, seconds: int) -> bool:
+        _ = (key, seconds)
+        return True
+
+    def mget(self, keys: list[str]) -> list[int | None]:
+        return [self.store.get(key) for key in keys]
+
+
+def test_build_anon_rate_limit_key_ignores_cookie_variations() -> None:
+    from app.utils.rate_limit import build_anon_rate_limit_key
+
+    req_a = _request(
+        ip="127.0.0.1",
+        user_agent="agent-1",
+        cookie="arena_anon_id=first-cookie",
+    )
+    req_b = _request(
+        ip="127.0.0.1",
+        user_agent="agent-1",
+        cookie="arena_anon_id=second-cookie",
+    )
+
+    key_a = build_anon_rate_limit_key(scope="anon_vote_submit", request=req_a)
+    key_b = build_anon_rate_limit_key(scope="anon_vote_submit", request=req_b)
+
+    assert key_a == key_b
+
+
+def test_build_anon_rate_limit_key_changes_with_different_ip() -> None:
+    """Different IPs produce different rate-limit keys."""
+
+    from app.utils.rate_limit import build_anon_rate_limit_key
+
+    key_base = build_anon_rate_limit_key(
+        scope="anon_battle_create",
+        request=_request(ip="127.0.0.1", user_agent="agent-1"),
+    )
+    key_other_ip = build_anon_rate_limit_key(
+        scope="anon_battle_create",
+        request=_request(ip="127.0.0.2", user_agent="agent-1"),
+    )
+
+    assert key_base != key_other_ip
+
+
+def test_build_anon_rate_limit_key_ignores_user_agent_rotation() -> None:
+    """User-Agent rotation must NOT produce a different key.
+
+    Including User-Agent in the fingerprint would let an attacker multiply
+    their effective rate limit by sending a different User-Agent on each
+    request.  The key should be derived from IP only.
+    """
+
+    from app.utils.rate_limit import build_anon_rate_limit_key
+
+    key_ua1 = build_anon_rate_limit_key(
+        scope="anon_battle_create",
+        request=_request(ip="127.0.0.1", user_agent="agent-1"),
+    )
+    key_ua2 = build_anon_rate_limit_key(
+        scope="anon_battle_create",
+        request=_request(ip="127.0.0.1", user_agent="agent-2"),
+    )
+
+    assert key_ua1 == key_ua2
+
+
+def test_rolling_window_rate_limiter_limits_after_threshold() -> None:
+    from app.utils.rate_limit import RollingWindowRateLimiter
+
+    now = 1_700_000_000.0
+
+    def now_fn() -> float:
+        return now
+
+    limiter = RollingWindowRateLimiter(
+        limit=2,
+        window_seconds=60,
+        bucket_seconds=10,
+        now_fn=now_fn,
+        redis_client=_FakeRedis(),
+    )
+
+    key = "k"
+    assert limiter.is_limited(key) is False
+    assert limiter.is_limited(key) is False
+    assert limiter.is_limited(key) is True
+
+
+def test_rolling_window_rate_limiter_expires_old_buckets() -> None:
+    from app.utils.rate_limit import RollingWindowRateLimiter
+
+    now = 1_700_000_000.0
+
+    def now_fn() -> float:
+        return now
+
+    limiter = RollingWindowRateLimiter(
+        limit=1,
+        window_seconds=20,
+        bucket_seconds=10,
+        now_fn=now_fn,
+        redis_client=_FakeRedis(),
+    )
+
+    key = "k"
+    assert limiter.is_limited(key) is False
+    assert limiter.is_limited(key) is True
+
+    # Move far enough ahead that old buckets are dropped.
+    now += 60
+    assert limiter.is_limited(key) is False
+
+
+def test_rolling_window_rate_limiter_honors_window_boundary() -> None:
+    from app.utils.rate_limit import RollingWindowRateLimiter
+
+    now = 0.0
+
+    def now_fn() -> float:
+        return now
+
+    limiter = RollingWindowRateLimiter(
+        limit=1,
+        window_seconds=60,
+        bucket_seconds=10,
+        now_fn=now_fn,
+        redis_client=_FakeRedis(),
+    )
+
+    key = "k"
+    assert limiter.is_limited(key) is False
+    assert limiter.is_limited(key) is True
+
+    # At t=61s, the first request at t=0 should be outside the 60s window.
+    now = 61.0
+    assert limiter.is_limited(key) is False
+
+
+def test_rolling_window_rate_limiter_uses_redis_buckets() -> None:
+    from app.utils.rate_limit import RollingWindowRateLimiter
+
+    now = 1_700_000_000.0
+
+    def now_fn() -> float:
+        return now
+
+    limiter = RollingWindowRateLimiter(
+        limit=2,
+        window_seconds=60,
+        bucket_seconds=10,
+        now_fn=now_fn,
+        redis_client=_FakeRedis(),
+        redis_prefix="test",
+    )
+
+    key = "k"
+    assert limiter.is_limited(key) is False
+    assert limiter.is_limited(key) is False
+    assert limiter.is_limited(key) is True
+
+
+def test_rolling_window_rate_limiter_is_disabled_without_redis() -> None:
+    from app.utils.rate_limit import RollingWindowRateLimiter
+
+    limiter = RollingWindowRateLimiter(
+        limit=1,
+        window_seconds=60,
+        bucket_seconds=10,
+        redis_client=None,
+    )
+
+    key = "k"
+    assert limiter.is_limited(key) is False
+    assert limiter.is_limited(key) is False
+
+
+def test_rolling_window_rate_limiter_fails_closed_on_redis_errors() -> None:
+    """When Redis is unavailable, requests should be BLOCKED (fail-closed)
+    to prevent abuse during outages."""
+
+    from app.utils.rate_limit import RollingWindowRateLimiter
+
+    class BrokenRedis:
+        def incr(self, key: str) -> int:
+            _ = key
+            raise RuntimeError("redis unavailable")
+
+        def mget(self, keys: list[str]) -> list[int | None]:
+            raise RuntimeError("redis unavailable")
+
+    limiter = RollingWindowRateLimiter(
+        limit=1,
+        window_seconds=60,
+        bucket_seconds=10,
+        redis_client=BrokenRedis(),
+    )
+
+    key = "k"
+    # Fail-closed: both calls should be limited (blocked).
+    assert limiter.is_limited(key) is True
+    assert limiter.is_limited(key) is True
+
+
+def test_rolling_window_rate_limiter_evalsha_optimization() -> None:
+    """Verify that EVALSHA is used after the first successful EVAL."""
+
+    from app.utils.rate_limit import RollingWindowRateLimiter
+
+    eval_calls: list[str] = []
+
+    class TrackingRedis(_FakeRedis):
+        def eval(self, script: str, num_keys: int, *args: object) -> int:
+            eval_calls.append("eval")
+            return 0
+
+        def evalsha(self, sha: str, num_keys: int, *args: object) -> int:
+            eval_calls.append("evalsha")
+            return 0
+
+    limiter = RollingWindowRateLimiter(
+        limit=10,
+        window_seconds=60,
+        bucket_seconds=10,
+        redis_client=TrackingRedis(),
+    )
+
+    key = "k"
+    limiter.is_limited(key)  # first call → EVAL
+    limiter.is_limited(key)  # second call → EVALSHA
+    limiter.is_limited(key)  # third call → EVALSHA
+
+    assert eval_calls == ["eval", "evalsha", "evalsha"]
+
+
+def test_rolling_window_rate_limiter_evalsha_noscript_fallback() -> None:
+    """When EVALSHA returns NOSCRIPT (script evicted from server cache),
+    it should fall back to EVAL and re-cache the SHA."""
+
+    from app.utils.rate_limit import RollingWindowRateLimiter
+
+    eval_calls: list[str] = []
+
+    class NoscriptRedis(_FakeRedis):
+        def __init__(self) -> None:
+            super().__init__()
+            self._evalsha_fail_next = False
+
+        def eval(self, script: str, num_keys: int, *args: object) -> int:
+            eval_calls.append("eval")
+            return 0
+
+        def evalsha(self, sha: str, num_keys: int, *args: object) -> int:
+            if self._evalsha_fail_next:
+                self._evalsha_fail_next = False
+                raise Exception("NOSCRIPT No matching script")
+            eval_calls.append("evalsha")
+            return 0
+
+    redis = NoscriptRedis()
+    limiter = RollingWindowRateLimiter(
+        limit=10,
+        window_seconds=60,
+        bucket_seconds=10,
+        redis_client=redis,
+    )
+
+    key = "k"
+    limiter.is_limited(key)  # EVAL (first call)
+    limiter.is_limited(key)  # EVALSHA (cached)
+
+    # Simulate server-side script eviction.
+    redis._evalsha_fail_next = True
+    limiter.is_limited(key)  # EVALSHA fails → EVAL
+
+    assert eval_calls == ["eval", "evalsha", "eval"]
+
+
+def test_build_anon_rate_limit_key_ignores_x_forwarded_for_by_default() -> None:
+    """When trust_x_forwarded_for is False (default), X-Forwarded-For is
+    ignored and the direct client IP is used instead."""
+
+    from app.utils.rate_limit import build_anon_rate_limit_key
+
+    req = _request(
+        ip="10.0.0.1",
+        user_agent="agent",
+        x_forwarded_for="1.2.3.4",
+    )
+
+    # Default: trust_x_forwarded_for=False
+    key_default = build_anon_rate_limit_key(
+        scope="test", request=req, trust_x_forwarded_for=False
+    )
+
+    # Key should be based on the direct client IP (10.0.0.1), not
+    # the spoofable X-Forwarded-For header (1.2.3.4).
+    key_direct = build_anon_rate_limit_key(
+        scope="test",
+        request=_request(ip="10.0.0.1", user_agent="agent"),
+    )
+    assert key_default == key_direct
+
+
+def test_build_anon_rate_limit_key_uses_x_forwarded_for_when_trusted() -> None:
+    """When trust_x_forwarded_for is True, X-Forwarded-For is used."""
+
+    from app.utils.rate_limit import build_anon_rate_limit_key
+
+    req = _request(
+        ip="10.0.0.1",
+        user_agent="agent",
+        x_forwarded_for="1.2.3.4, 10.0.0.1",
+    )
+
+    key_trusted = build_anon_rate_limit_key(
+        scope="test", request=req, trust_x_forwarded_for=True
+    )
+
+    # Key should be based on the leftmost X-Forwarded-For IP (1.2.3.4)
+    key_xff_ip = build_anon_rate_limit_key(
+        scope="test",
+        request=_request(ip="1.2.3.4", user_agent="agent"),
+    )
+    assert key_trusted == key_xff_ip

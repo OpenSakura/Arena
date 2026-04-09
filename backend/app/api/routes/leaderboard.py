@@ -1,0 +1,466 @@
+"""app.api.routes.leaderboard
+
+Leaderboard and rating endpoints.
+
+Notes
+~~~~~
+- MVP rating can be Elo with tie support.
+- Provide filters (task set, time window, zh variant, prompt version) later.
+
+Rate limiting
+~~~~~~~~~~~~~
+Confidence-enabled leaderboard requests (``?include_confidence=true``) are
+CPU-expensive because they run bootstrap resampling.  To prevent abuse:
+
+1. **Short-lived cache** — Computed results are cached in-memory for
+   ``leaderboard_confidence_cache_ttl_seconds`` (default 15 s).  Repeated
+   identical requests within the TTL window are served from cache without
+   recomputation.  The cache is bounded to ``_MAX_CONFIDENCE_CACHE_ENTRIES``
+   to prevent unbounded memory growth.
+
+2. **Redis-backed rate limiter** — Uncached recomputations are throttled
+   globally via ``RollingWindowRateLimiter`` (Redis-backed).  This enforces
+   the limit consistently across all API workers, unlike a process-local
+   counter.  The limiter uses a per-method key
+   (``"leaderboard_confidence:elo"`` / ``"leaderboard_confidence:bt"``)
+   so the two methods have independent budgets.
+"""
+
+from __future__ import annotations
+
+from functools import lru_cache
+import threading
+import time
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.core.config import Settings, get_settings
+from app.db.session import get_db
+from app.models.model_registry import Model
+from app.models.rating import ModelRating
+from app.schemas.leaderboard import LeaderboardResponse, LeaderboardRow
+from app.services.leaderboard_bt import (
+    PairwiseVote,
+    compute_bt_confidence_intervals,
+    compute_bt_ratings,
+)
+from app.services.leaderboard_refresh import (
+    compute_elo_confidence_intervals,
+    compute_elo_ratings,
+    limit_votes_per_judge_per_day,
+    load_vote_samples,
+)
+from app.utils.rate_limit import RollingWindowRateLimiter
+from app.utils.redis import get_rate_limit_redis_client
+
+router = APIRouter(tags=["leaderboard"])
+
+# ---------------------------------------------------------------------------
+# Confidence leaderboard cache
+# ---------------------------------------------------------------------------
+# Maximum number of distinct cache entries.  Each unique combination of
+# method + settings produces a separate key.  In practice there are only
+# 2 methods × 1 configuration = 2 entries, but we cap at a safe upper bound
+# to prevent unbounded growth if settings are mutated dynamically.
+_MAX_CONFIDENCE_CACHE_ENTRIES = 16
+
+_confidence_cache_guard = threading.Lock()
+_confidence_cache: dict[str, tuple[float, LeaderboardResponse]] = {}
+
+
+def _confidence_cache_ttl_seconds(settings: Settings) -> int:
+    """Return the TTL for cached confidence leaderboard responses.
+
+    Controlled by ``LEADERBOARD_CONFIDENCE_CACHE_TTL_SECONDS``.  A value
+    of ``0`` disables caching entirely (every request triggers a full
+    recomputation).
+    """
+
+    ttl = int(
+        getattr(
+            settings,
+            "leaderboard_confidence_cache_ttl_seconds",
+            15,
+        )
+    )
+    return max(ttl, 0)
+
+
+def _confidence_cache_key(*, method: str, settings: Settings) -> str:
+    """Build a cache key that incorporates all parameters affecting the result.
+
+    When any setting changes (e.g. ``elo_k``, ``bootstrap_rounds``), the
+    cache key changes and the old cached result is naturally evicted (or
+    becomes a dead entry that is cleaned up on the next eviction pass).
+    """
+
+    if method == "elo":
+        return (
+            "elo"
+            f":{settings.leaderboard_refresh_daily_vote_cap}"
+            f":{settings.leaderboard_refresh_elo_k}"
+            f":{settings.leaderboard_elo_bootstrap_rounds}"
+            f":{settings.leaderboard_elo_bootstrap_seed}"
+            f":{settings.leaderboard_elo_confidence_level}"
+        )
+
+    return (
+        "bt"
+        f":{settings.leaderboard_refresh_daily_vote_cap}"
+        f":{settings.leaderboard_bt_max_iterations}"
+        f":{settings.leaderboard_bt_tolerance}"
+        f":{settings.leaderboard_bt_prior}"
+        f":{settings.leaderboard_bt_bootstrap_rounds}"
+        f":{settings.leaderboard_bt_bootstrap_seed}"
+        f":{settings.leaderboard_bt_confidence_level}"
+    )
+
+
+def _load_cached_confidence_leaderboard(
+    *, cache_key: str
+) -> LeaderboardResponse | None:
+    """Return a cached response if it exists and has not expired.
+
+    Expired entries are eagerly evicted on read so they do not accumulate.
+    Returns a deep copy so the caller cannot mutate the cached object.
+    """
+
+    now = time.monotonic()
+    with _confidence_cache_guard:
+        entry = _confidence_cache.get(cache_key)
+        if entry is None:
+            return None
+
+        expires_at, response = entry
+        if now >= expires_at:
+            _confidence_cache.pop(cache_key, None)
+            return None
+
+        return response.model_copy(deep=True)
+
+
+def _store_cached_confidence_leaderboard(
+    *,
+    cache_key: str,
+    response: LeaderboardResponse,
+    settings: Settings,
+) -> None:
+    """Store a confidence leaderboard response in the cache.
+
+    If the cache is full, expired entries are purged first.  If it is
+    still full after purging, the oldest entry is evicted (LRU-ish).
+    """
+
+    ttl_seconds = _confidence_cache_ttl_seconds(settings)
+    if ttl_seconds <= 0:
+        return
+
+    now = time.monotonic()
+    expires_at = now + float(ttl_seconds)
+
+    with _confidence_cache_guard:
+        # Purge expired entries before inserting.
+        expired_keys = [k for k, (exp, _) in _confidence_cache.items() if now >= exp]
+        for k in expired_keys:
+            _confidence_cache.pop(k, None)
+
+        # If still at capacity, evict the entry closest to expiry.
+        if len(_confidence_cache) >= _MAX_CONFIDENCE_CACHE_ENTRIES:
+            oldest_key = min(_confidence_cache, key=lambda k: _confidence_cache[k][0])
+            _confidence_cache.pop(oldest_key, None)
+
+        _confidence_cache[cache_key] = (expires_at, response.model_copy(deep=True))
+
+
+# ---------------------------------------------------------------------------
+# Confidence leaderboard rate limiter (Redis-backed)
+# ---------------------------------------------------------------------------
+
+
+@lru_cache(maxsize=1)
+def _get_confidence_rate_limiter() -> RollingWindowRateLimiter:
+    """Return a singleton Redis-backed rate limiter for confidence requests.
+
+    Uses the same Redis instance and key prefix as the battle/vote rate
+    limiters, ensuring consistent multi-worker enforcement.
+
+    Controlled by:
+    - ``LEADERBOARD_CONFIDENCE_RATE_LIMIT`` (default 6)
+    - ``LEADERBOARD_CONFIDENCE_RATE_LIMIT_WINDOW_SECONDS`` (default 60)
+    """
+
+    settings = get_settings()
+    return RollingWindowRateLimiter(
+        limit=settings.leaderboard_confidence_rate_limit,
+        window_seconds=settings.leaderboard_confidence_rate_limit_window_seconds,
+        bucket_seconds=max(
+            settings.leaderboard_confidence_rate_limit_window_seconds // 6, 1
+        ),
+        redis_client=get_rate_limit_redis_client(),
+        redis_prefix=settings.rate_limit_redis_key_prefix,
+    )
+
+
+def _enforce_confidence_request_rate_limit(*, method: str, settings: Settings) -> None:
+    """Raise HTTP 429 if the global confidence recomputation rate is exceeded.
+
+    This is a **global** (not per-user) rate limit because the expensive
+    resource being protected is server CPU, not a per-user quota.  The
+    Redis-backed limiter ensures the limit is shared across all API workers.
+
+    The rate limit key is per-method to prevent one method from starving
+    the other.
+    """
+
+    if settings.leaderboard_confidence_rate_limit <= 0:
+        return
+
+    limiter = _get_confidence_rate_limiter()
+    # Use a global key for CPU protection — intentionally not per-user.
+    key = f"leaderboard_confidence_global:{method}"
+    if limiter.is_limited(key):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many confidence leaderboard requests",
+            headers={
+                "Retry-After": str(
+                    settings.leaderboard_confidence_rate_limit_window_seconds
+                )
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
+# Public endpoint
+# ---------------------------------------------------------------------------
+
+
+@router.get("/leaderboard")
+def get_leaderboard(
+    method: str = Query(default="elo", pattern="^(elo|bt)$"),
+    include_confidence: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> LeaderboardResponse:
+    """Return the model leaderboard.
+
+    Parameters
+    ----------
+    method:
+        Rating method — ``"elo"`` (default) or ``"bt"`` (Bradley-Terry).
+    include_confidence:
+        When ``True``, compute bootstrap confidence intervals.  This is
+        CPU-expensive and is therefore cached and rate-limited.
+    """
+
+    cache_key: str | None = None
+    if include_confidence:
+        cache_key = _confidence_cache_key(method=method, settings=settings)
+        cached = _load_cached_confidence_leaderboard(cache_key=cache_key)
+        if cached is not None:
+            return cached
+
+        _enforce_confidence_request_rate_limit(method=method, settings=settings)
+
+    if method == "bt":
+        response = _get_leaderboard_bt(
+            db=db,
+            include_confidence=include_confidence,
+            settings=settings,
+        )
+    else:
+        response = _get_leaderboard_elo(
+            db=db,
+            include_confidence=include_confidence,
+            settings=settings,
+        )
+
+    if include_confidence and cache_key is not None:
+        _store_cached_confidence_leaderboard(
+            cache_key=cache_key,
+            response=response,
+            settings=settings,
+        )
+
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Elo leaderboard
+# ---------------------------------------------------------------------------
+
+
+def _get_leaderboard_elo(
+    *,
+    db: Session,
+    include_confidence: bool,
+    settings: Settings,
+) -> LeaderboardResponse:
+    # Use an outer join so public models with no votes still appear.
+    model_rows = db.execute(
+        select(Model.id, Model.display_name)
+        .where(Model.visibility == "public", Model.enabled.is_(True))
+        .order_by(Model.created_at.asc())
+    ).all()
+
+    if not model_rows:
+        return LeaderboardResponse(models=[], method="elo", ci=False)
+
+    public_model_ids = [row[0] for row in model_rows]
+    public_model_names = {row[0]: row[1] for row in model_rows}
+
+    # Fast path: no confidence requested, use persisted ratings.
+    if not include_confidence:
+        ratings = db.execute(
+            select(
+                Model.id,
+                Model.display_name,
+                func.coalesce(ModelRating.rating, 1000.0),
+                func.coalesce(ModelRating.games_played, 0),
+            )
+            .outerjoin(ModelRating, ModelRating.model_id == Model.id)
+            .where(Model.visibility == "public", Model.enabled.is_(True))
+            .order_by(func.coalesce(ModelRating.rating, 1000.0).desc())
+        ).all()
+
+        rows = [
+            LeaderboardRow(
+                model_id=str(model_id),
+                display_name=display_name,
+                rating=float(rating),
+                games_played=int(games_played),
+            )
+            for model_id, display_name, rating, games_played in ratings
+        ]
+        return LeaderboardResponse(models=rows, method="elo", ci=False)
+
+    vote_samples = load_vote_samples(db)
+    if settings.leaderboard_refresh_daily_vote_cap > 0:
+        vote_samples = limit_votes_per_judge_per_day(
+            vote_samples,
+            daily_vote_cap=settings.leaderboard_refresh_daily_vote_cap,
+        )
+
+    baseline = compute_elo_ratings(vote_samples, k=settings.leaderboard_refresh_elo_k)
+
+    intervals = compute_elo_confidence_intervals(
+        vote_samples,
+        model_ids=public_model_ids,
+        bootstrap_rounds=settings.leaderboard_elo_bootstrap_rounds,
+        seed=settings.leaderboard_elo_bootstrap_seed,
+        k=settings.leaderboard_refresh_elo_k,
+        confidence_level=settings.leaderboard_elo_confidence_level,
+    )
+
+    rows: list[LeaderboardRow] = []
+    for model_id in public_model_ids:
+        rating_value, games_played = baseline.get(model_id, (1000.0, 0))
+        interval = intervals.get(model_id)
+        rows.append(
+            LeaderboardRow(
+                model_id=str(model_id),
+                display_name=public_model_names[model_id],
+                rating=rating_value,
+                rating_lower=interval[0] if interval else None,
+                rating_upper=interval[1] if interval else None,
+                games_played=games_played,
+            )
+        )
+
+    rows.sort(key=lambda row: row.rating, reverse=True)
+    return LeaderboardResponse(
+        models=rows,
+        method="elo",
+        ci=True,
+        bootstrap_rounds=settings.leaderboard_elo_bootstrap_rounds,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bradley-Terry leaderboard
+# ---------------------------------------------------------------------------
+
+
+def _get_leaderboard_bt(
+    *,
+    db: Session,
+    include_confidence: bool,
+    settings: Settings,
+) -> LeaderboardResponse:
+    model_rows = db.execute(
+        select(Model.id, Model.display_name)
+        .where(Model.visibility == "public", Model.enabled.is_(True))
+        .order_by(Model.created_at.asc())
+    ).all()
+
+    if not model_rows:
+        return LeaderboardResponse(models=[], method="bt", ci=False)
+
+    public_model_ids = [row[0] for row in model_rows]
+    public_models = [(row[0], row[1]) for row in model_rows]
+
+    # BT is always computed on demand from vote samples. ``model_ratings``
+    # persists Elo snapshots only and must not be treated as a BT fast path.
+    vote_samples = load_vote_samples(db)
+    if settings.leaderboard_refresh_daily_vote_cap > 0:
+        vote_samples = limit_votes_per_judge_per_day(
+            vote_samples,
+            daily_vote_cap=settings.leaderboard_refresh_daily_vote_cap,
+        )
+
+    votes = [
+        PairwiseVote(
+            model_a_id=s.model_a_id,
+            model_b_id=s.model_b_id,
+            winner=s.winner,
+        )
+        for s in vote_samples
+    ]
+
+    ratings = compute_bt_ratings(
+        model_ids=public_model_ids,
+        votes=votes,
+        max_iterations=settings.leaderboard_bt_max_iterations,
+        tolerance=settings.leaderboard_bt_tolerance,
+        prior=settings.leaderboard_bt_prior,
+    )
+
+    confidence: dict[uuid.UUID, tuple[float, float]] = {}
+    if include_confidence:
+        intervals = compute_bt_confidence_intervals(
+            model_ids=public_model_ids,
+            votes=votes,
+            bootstrap_rounds=settings.leaderboard_bt_bootstrap_rounds,
+            seed=settings.leaderboard_bt_bootstrap_seed,
+            max_iterations=settings.leaderboard_bt_max_iterations,
+            tolerance=settings.leaderboard_bt_tolerance,
+            prior=settings.leaderboard_bt_prior,
+            confidence_level=settings.leaderboard_bt_confidence_level,
+        )
+        confidence = dict(intervals)
+
+    rows: list[LeaderboardRow] = []
+    for model_id, display_name in public_models:
+        interval = confidence.get(model_id)
+        row = LeaderboardRow(
+            model_id=str(model_id),
+            display_name=display_name,
+            rating=ratings.get(model_id, (1000.0, 0))[0],
+            rating_lower=interval[0] if interval else None,
+            rating_upper=interval[1] if interval else None,
+            games_played=ratings.get(model_id, (1000.0, 0))[1],
+        )
+        rows.append(row)
+    rows.sort(key=lambda row: row.rating, reverse=True)
+
+    return LeaderboardResponse(
+        models=rows,
+        method="bt",
+        ci=include_confidence,
+        bootstrap_rounds=(
+            settings.leaderboard_bt_bootstrap_rounds if include_confidence else None
+        ),
+    )

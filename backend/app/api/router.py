@@ -1,0 +1,40 @@
+"""app.api.router
+
+Top-level API router.
+
+Notes:
+- Mount all versioned endpoints here.
+- Keep path organization stable; prefer additive changes to avoid breaking
+  existing clients.
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter
+
+from app.api.routes import (
+    admin_exports,
+    admin_leaderboard,
+    admin_models,
+    admin_prompts,
+    admin_tasks,
+    battles,
+    health,
+    leaderboard,
+    me,
+    votes,
+)
+
+api_router = APIRouter()
+
+api_router.include_router(health.router)
+api_router.include_router(me.router)
+api_router.include_router(battles.router)
+api_router.include_router(votes.router)
+api_router.include_router(leaderboard.router)
+
+api_router.include_router(admin_models.router)
+api_router.include_router(admin_prompts.router)
+api_router.include_router(admin_tasks.router)
+api_router.include_router(admin_exports.router)
+api_router.include_router(admin_leaderboard.router)

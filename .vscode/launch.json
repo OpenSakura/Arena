@@ -1,0 +1,89 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Deps: Infra (Postgres + Redis)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "just infra-up || docker compose -f infra/compose.yaml up -d",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Deps: Authentik Stack (e2e)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "just authentik-up || docker compose -f backend/tests/e2e/docker-compose.yaml up -d",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Backend: FastAPI (debugpy)",
+      "type": "debugpy",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/backend",
+      "python": "${workspaceFolder}/backend/.venv/bin/python",
+      "module": "uvicorn",
+      "args": [
+        "app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000"
+      ],
+      "envFile": "${workspaceFolder}/backend/.env",
+      "justMyCode": false,
+      "jinja": true
+    },
+    {
+      "name": "Frontend: Next.js (server)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "just frontend-dev || npm run dev",
+      "cwd": "${workspaceFolder}/frontend"
+    },
+    {
+      "name": "Frontend: Browser",
+      "type": "pwa-chrome",
+      "request": "launch",
+      "url": "http://localhost:3000",
+      "webRoot": "${workspaceFolder}/frontend"
+    },
+    {
+      "name": "Frontend: Full Stack (Next.js + browser)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "just frontend-dev || npm run dev",
+      "cwd": "${workspaceFolder}/frontend",
+      "serverReadyAction": {
+        "action": "debugWithChrome",
+        "killOnServerStop": true,
+        "pattern": "- Local:.+(https?://.+)",
+        "uriFormat": "%s"
+      }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Arena: Backend + Frontend + Browser",
+      "configurations": [
+        "Backend: FastAPI (debugpy)",
+        "Frontend: Full Stack (Next.js + browser)"
+      ]
+    },
+    {
+      "name": "Arena: Bring up Infra + Backend + Frontend",
+      "configurations": [
+        "Deps: Infra (Postgres + Redis)",
+        "Backend: FastAPI (debugpy)",
+        "Frontend: Full Stack (Next.js + browser)"
+      ]
+    },
+    {
+      "name": "Arena: Bring up Authentik deps + services",
+      "configurations": [
+        "Deps: Authentik Stack (e2e)",
+        "Backend: FastAPI (debugpy)",
+        "Frontend: Full Stack (Next.js + browser)"
+      ]
+    }
+  ]
+}

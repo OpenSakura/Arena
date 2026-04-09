@@ -1,0 +1,477 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+    --background: 0 0% 99%;
+    --foreground: 0 0% 7%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 7%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 7%;
+    --primary: 338 72% 44%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 338 12% 95%;
+    --secondary-foreground: 338 30% 25%;
+    --muted: 338 8% 95%;
+    --muted-foreground: 0 0% 40%;
+    --accent: 338 18% 94%;
+    --accent-foreground: 338 60% 35%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 338 8% 88%;
+    --input: 338 8% 88%;
+    --ring: 338 72% 44%;
+    --chart-1: 338 70% 55%;
+    --chart-2: 173 58% 39%;
+    --chart-3: 197 37% 24%;
+    --chart-4: 43 74% 66%;
+    --chart-5: 27 87% 67%;
+    --radius: 0.5rem;
+
+    /* Custom sakura palette (light mode) */
+    --sakura: 338 70% 50%;
+    --sakura-soft: 338 50% 60%;
+    --sakura-deep: 338 60% 40%;
+    --sakura-glow: 338 80% 55%;
+  }
+
+  .dark {
+    color-scheme: dark;
+    --background: 240 6% 4%;
+    --foreground: 0 0% 98%;
+    --card: 240 5% 6%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 5% 6%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 338 70% 72%;
+    --primary-foreground: 240 6% 4%;
+    --secondary: 240 4% 14%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 4% 14%;
+    --muted-foreground: 240 4% 64%;
+    --accent: 338 30% 14%;
+    --accent-foreground: 338 70% 82%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 4% 14%;
+    --input: 240 4% 14%;
+    --ring: 338 70% 72%;
+    --chart-1: 338 70% 65%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 200 75% 55%;
+
+    /* Custom sakura palette */
+    --sakura: 338 70% 72%;
+    --sakura-soft: 338 50% 80%;
+    --sakura-deep: 338 60% 50%;
+    --sakura-glow: 338 80% 72%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    background-image:
+      radial-gradient(ellipse 80% 60% at 20% -10%, hsl(var(--primary) / 0.06), transparent),
+      radial-gradient(ellipse 70% 50% at 80% 110%, hsl(var(--sakura-deep) / 0.04), transparent),
+      radial-gradient(ellipse 50% 40% at 50% 50%, hsl(var(--primary) / 0.025), transparent);
+    background-attachment: fixed;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  /* Custom Scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-border rounded-full transition-colors;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground/50;
+  }
+
+  /* Selection color */
+  ::selection {
+    background: hsl(var(--primary) / 0.25);
+  }
+}
+
+/* ---------- Reusable premium component classes ---------- */
+@layer components {
+  /* Glassmorphism panel */
+  .glass-panel {
+    @apply rounded-2xl border border-foreground/[0.06] bg-background/50 backdrop-blur-xl shadow-lg;
+  }
+
+  /* Section heading with gradient text */
+  .heading-gradient {
+    @apply font-bold bg-gradient-to-r from-zinc-900 via-zinc-600 to-zinc-400
+           dark:from-white dark:via-zinc-200 dark:to-zinc-500
+           bg-clip-text text-transparent;
+  }
+
+  /* Sakura-tinted heading */
+  .heading-sakura {
+    @apply font-bold bg-gradient-to-r from-sakura-soft via-sakura to-sakura-deep bg-clip-text text-transparent;
+  }
+
+  /* Premium input / select */
+  .input-premium {
+    @apply w-full rounded-xl border border-border bg-foreground/5 dark:bg-black/30 px-3 py-2.5 text-foreground
+           outline-none transition-all focus:border-primary/50 focus:ring-1 focus:ring-primary/20
+           placeholder:text-muted-foreground/50;
+  }
+
+  /* Premium textarea (monospace) */
+  .textarea-premium {
+    @apply input-premium font-mono text-sm;
+  }
+
+  /* Table header cell */
+  .th-premium {
+    @apply px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground;
+  }
+
+  /* Table data cell */
+  .td-premium {
+    @apply px-4 py-3 align-top text-sm;
+  }
+
+  /* Action button (small, ghost style) */
+  .btn-action {
+    @apply rounded-lg border border-border bg-foreground/5 px-3 py-1.5 text-xs font-medium text-foreground
+           transition-all hover:bg-foreground/10 hover:border-foreground/15 cursor-pointer;
+  }
+
+  /* Danger button */
+  .btn-danger {
+    @apply btn-action bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500/20 border-red-500/20;
+  }
+
+  /* Primary action button (sakura) */
+  .btn-primary-action {
+    @apply rounded-xl border border-primary/20 bg-primary/10 px-4 py-2 text-sm font-semibold text-primary
+           transition-all hover:bg-primary/20 hover:border-primary/30 cursor-pointer;
+  }
+
+  /* Label text */
+  .label-premium {
+    @apply text-xs font-medium uppercase tracking-wider text-muted-foreground;
+  }
+
+  /* Divider with fade */
+  .divider-fade {
+    @apply h-px w-full bg-gradient-to-r from-transparent via-border to-transparent;
+  }
+
+  /* Status badge */
+  .badge {
+    @apply inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors;
+  }
+
+  .badge-sakura {
+    @apply badge border-primary/20 bg-primary/10 text-primary;
+  }
+
+  .badge-success {
+    @apply badge border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400;
+  }
+
+  .badge-warning {
+    @apply badge border-amber-500/20 bg-amber-500/10 text-amber-600 dark:text-amber-400;
+  }
+
+  .badge-muted {
+    @apply badge border-border bg-foreground/5 text-muted-foreground;
+  }
+
+  /* Section panel header (admin/form sections) */
+  .section-header {
+    @apply flex items-center gap-2.5 text-base font-bold text-foreground;
+  }
+
+  .section-header-icon {
+    @apply h-5 w-5 text-primary/60;
+  }
+
+  /* Improved table row hover */
+  .tr-premium {
+    @apply border-t border-border/50 transition-colors hover:bg-foreground/[0.03];
+  }
+
+  /* Card with top highlight accent */
+  .glass-panel-accent {
+    @apply glass-panel relative overflow-hidden;
+  }
+
+  .glass-panel-accent::before {
+    content: "";
+    @apply absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/25 to-transparent;
+  }
+
+  /* Status dot */
+  .status-dot {
+    @apply inline-block h-2 w-2 rounded-full;
+  }
+
+  .status-dot-active {
+    @apply status-dot bg-primary animate-pulse;
+  }
+
+  .status-dot-success {
+    @apply status-dot bg-emerald-500;
+  }
+
+  .status-dot-error {
+    @apply status-dot bg-red-500;
+  }
+
+  /* Empty state container */
+  .empty-state {
+    @apply glass-panel flex flex-col items-center justify-center p-16 text-center;
+  }
+}
+
+/* ---------- Animations & Utilities ---------- */
+@layer utilities {
+  /* Noise texture overlay */
+  .noise-overlay::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    pointer-events: none;
+    opacity: 0.015;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='256' height='256' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+    background-repeat: repeat;
+    background-size: 128px 128px;
+  }
+
+  /* Dot grid background */
+  .bg-dot-grid {
+    background-image: radial-gradient(circle, hsl(var(--foreground) / 0.04) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+
+  /* Shimmer loading effect */
+  .shimmer {
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      hsl(var(--foreground) / 0.04) 40%,
+      hsl(var(--foreground) / 0.08) 50%,
+      hsl(var(--foreground) / 0.04) 60%,
+      transparent 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 2s ease-in-out infinite;
+  }
+
+  @keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  /* Floating sakura petal animation */
+  @keyframes float {
+    0%, 100% { transform: translateY(0) rotate(0deg); }
+    25% { transform: translateY(-6px) rotate(3deg); }
+    75% { transform: translateY(4px) rotate(-2deg); }
+  }
+
+  .animate-float {
+    animation: float 6s ease-in-out infinite;
+  }
+
+  /* Fade-in-up for scroll reveals */
+  @keyframes fade-in-up {
+    from { opacity: 0; transform: translateY(16px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .animate-fade-in-up {
+    animation: fade-in-up 0.6s ease-out both;
+  }
+
+  /* Subtle border glow pulse */
+  @keyframes border-glow {
+    0%, 100% { border-color: hsl(var(--primary) / 0.15); }
+    50% { border-color: hsl(var(--primary) / 0.35); }
+  }
+
+  .animate-border-glow {
+    animation: border-glow 3s ease-in-out infinite;
+  }
+
+  /* Gradient text shimmer */
+  @keyframes text-shimmer {
+    0% { background-position: -200% center; }
+    100% { background-position: 200% center; }
+  }
+
+  .text-shimmer {
+    background-size: 200% auto;
+    animation: text-shimmer 4s linear infinite;
+  }
+
+  /* Celebration pulse burst (for vote reveal) */
+  @keyframes celebration-pulse {
+    0% { box-shadow: 0 0 0 0 hsl(var(--primary) / 0.3); }
+    50% { box-shadow: 0 0 30px 10px hsl(var(--primary) / 0.08); }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
+
+  .celebrate {
+    animation: celebration-pulse 1.2s ease-out;
+  }
+
+  /* Sparkle dots for celebration effect */
+  @keyframes sparkle-float {
+    0% { opacity: 0; transform: translate(0, 0) scale(0); }
+    20% { opacity: 1; transform: scale(1); }
+    100% { opacity: 0; transform: translate(var(--tx, 30px), var(--ty, -40px)) scale(0.3); }
+  }
+
+  .sparkle-dot {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: hsl(var(--primary));
+    animation: sparkle-float 0.8s ease-out both;
+    pointer-events: none;
+  }
+
+  /* Typing cursor blink for streaming */
+  @keyframes cursor-blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+
+  .typing-cursor::after {
+    content: "▍";
+    display: inline;
+    color: hsl(var(--primary) / 0.7);
+    animation: cursor-blink 1s steps(1) infinite;
+    font-weight: 400;
+  }
+
+  /* Gradient border (via background clip trick) */
+  .gradient-border {
+    position: relative;
+    background: hsl(var(--background));
+    z-index: 0;
+  }
+
+  .gradient-border::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    padding: 1px;
+    border-radius: inherit;
+    background: linear-gradient(
+      135deg,
+      hsl(var(--primary) / 0.3),
+      transparent 40%,
+      transparent 60%,
+      hsl(var(--primary) / 0.15)
+    );
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+    z-index: -1;
+  }
+
+  /* Card hover lift effect */
+  .hover-lift {
+    transition: transform 0.25s ease, box-shadow 0.25s ease;
+  }
+
+  .hover-lift:hover {
+    transform: translateY(-2px);
+    box-shadow:
+      0 8px 25px -5px hsl(var(--foreground) / 0.12),
+      0 0 15px -3px hsl(var(--primary) / 0.06);
+  }
+
+  /* Smooth number counter animation */
+  @keyframes count-up {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .animate-count-up {
+    animation: count-up 0.5s ease-out both;
+  }
+
+  /* Step connector line */
+  .step-line {
+    position: relative;
+  }
+
+  .step-line::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    right: -50%;
+    width: 100%;
+    height: 1px;
+    background: linear-gradient(90deg, hsl(var(--primary) / 0.3), hsl(var(--primary) / 0.05));
+    pointer-events: none;
+  }
+
+  /* Improved focus visible ring */
+  .focus-ring {
+    @apply outline-none;
+  }
+
+  .focus-ring:focus-visible {
+    @apply ring-2 ring-primary/30 ring-offset-2 ring-offset-background;
+  }
+
+  /* Podium gradient backgrounds */
+  .podium-gold {
+    background: linear-gradient(135deg, rgba(251, 191, 36, 0.08), rgba(251, 191, 36, 0.02));
+    border-color: rgba(251, 191, 36, 0.15);
+  }
+
+  .podium-silver {
+    background: linear-gradient(135deg, rgba(161, 161, 170, 0.08), rgba(161, 161, 170, 0.02));
+    border-color: rgba(161, 161, 170, 0.15);
+  }
+
+  .podium-bronze {
+    background: linear-gradient(135deg, rgba(251, 146, 60, 0.08), rgba(251, 146, 60, 0.02));
+    border-color: rgba(251, 146, 60, 0.15);
+  }
+
+  /* Language badge */
+  .lang-badge {
+    @apply inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest;
+  }
+
+  .lang-badge-jp {
+    @apply lang-badge bg-sakura/10 text-sakura border border-sakura/20;
+  }
+
+  .lang-badge-zh {
+    @apply lang-badge bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20;
+  }
+}

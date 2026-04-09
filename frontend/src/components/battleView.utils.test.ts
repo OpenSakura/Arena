@@ -1,0 +1,78 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { apiGet, apiPost } from "../lib/api";
+import { asRecord, loadOrCreateBattle, mergeBattleDelta } from "./battleView.utils";
+
+vi.mock("../lib/api", () => ({
+  apiGet: vi.fn(),
+  apiPost: vi.fn(),
+}));
+
+const mockedApiGet = vi.mocked(apiGet);
+const mockedApiPost = vi.mocked(apiPost);
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+describe("loadOrCreateBattle", () => {
+  it("creates a new battle when battleId is new", async () => {
+    mockedApiPost.mockResolvedValueOnce({ id: "battle-1" });
+
+    await expect(loadOrCreateBattle<{ id: string }>("new")).resolves.toEqual({ id: "battle-1" });
+    expect(mockedApiPost).toHaveBeenCalledWith("/battles", {}, { headers: undefined });
+    expect(mockedApiGet).not.toHaveBeenCalled();
+  });
+
+  it("attaches bearer auth when creating with an access token", async () => {
+    mockedApiPost.mockResolvedValueOnce({ id: "battle-2" });
+
+    await loadOrCreateBattle("new", "token-123");
+
+    expect(mockedApiPost).toHaveBeenCalledWith("/battles", {}, {
+      headers: { Authorization: "Bearer token-123" },
+    });
+  });
+
+  it("loads an existing battle using an encoded id", async () => {
+    mockedApiGet.mockResolvedValueOnce({ id: "existing" });
+
+    await expect(loadOrCreateBattle<{ id: string }>("battle/alpha beta")).resolves.toEqual({
+      id: "existing",
+    });
+
+    expect(mockedApiGet).toHaveBeenCalledWith("/battles/battle%2Falpha%20beta", {
+      headers: undefined,
+    });
+    expect(mockedApiPost).not.toHaveBeenCalled();
+  });
+});
+
+describe("asRecord", () => {
+  it("returns null for non-object values", () => {
+    expect(asRecord(null)).toBeNull();
+    expect(asRecord(undefined)).toBeNull();
+    expect(asRecord("x")).toBeNull();
+    expect(asRecord(12)).toBeNull();
+  });
+
+  it("returns objects as-is", () => {
+    const payload = { side: "A", text_delta: "abc" };
+    expect(asRecord(payload)).toBe(payload);
+  });
+});
+
+describe("mergeBattleDelta", () => {
+  it("appends normal stream chunks", () => {
+    expect(mergeBattleDelta("hello", " world", false, null)).toBe("hello world");
+  });
+
+  it("replaces content on replay restart chunks", () => {
+    expect(mergeBattleDelta("stale", "fresh", true, 0)).toBe("fresh");
+    expect(mergeBattleDelta("stale", "fresh", true, null)).toBe("fresh");
+  });
+
+  it("keeps appending replay chunks after index zero", () => {
+    expect(mergeBattleDelta("part-1", "-part-2", true, 1)).toBe("part-1-part-2");
+  });
+});

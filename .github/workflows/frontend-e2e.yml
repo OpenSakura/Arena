@@ -1,0 +1,99 @@
+name: Frontend E2E
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/frontend-e2e.yml"
+      - "frontend/**"
+      - "backend/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/frontend-e2e.yml"
+      - "frontend/**"
+      - "backend/**"
+  workflow_dispatch:
+
+jobs:
+  playwright-e2e:
+    name: ${{ matrix.job_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - job_name: core-e2e
+            playwright_args: ""
+            pw_enable_live_stack: "0"
+            turnstile_site_key: "1x00000000000000000000AA"
+          - job_name: live-contract
+            playwright_args: "e2e/live-contract.spec.ts"
+            pw_enable_live_stack: "1"
+            turnstile_site_key: "1x00000000000000000000AA"
+          - job_name: turnstile-missing-key
+            playwright_args: "e2e/turnstile-misconfigured.spec.ts"
+            pw_enable_live_stack: "0"
+            turnstile_site_key: ""
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@e4db8464a088ece1b920f60402e813ea4de65b8f # v4
+        with:
+          enable-cache: true
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Install backend dependencies
+        run: uv sync --frozen
+        working-directory: backend
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+        working-directory: frontend
+
+      - name: Run Playwright tests
+        env:
+          PLAYWRIGHT_ARGS: ${{ matrix.playwright_args }}
+          PW_ENABLE_LIVE_STACK: ${{ matrix.pw_enable_live_stack }}
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ matrix.turnstile_site_key }}
+        run: |
+          if [ -n "$PLAYWRIGHT_ARGS" ]; then
+            npm run test:e2e -- "$PLAYWRIGHT_ARGS"
+          else
+            npm run test:e2e
+          fi
+        working-directory: frontend
+
+      - name: Cleanup live stack containers
+        if: always() && matrix.pw_enable_live_stack == '1'
+        run: docker compose -f backend/tests/e2e/docker-compose.yaml -p arena-frontend-e2e down -v --remove-orphans
+
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-${{ matrix.job_name }}
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+          if-no-files-found: ignore
+          retention-days: 7

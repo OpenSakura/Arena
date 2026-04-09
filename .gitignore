@@ -1,0 +1,33 @@
+# .gitignore
+#
+# Git ignore rules for this monorepo.
+#
+# Notes:
+# - Keep secrets out of git (.env, local keys, etc.).
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+
+# Node / Next
+node_modules/
+.next/
+out/
+dist/
+playwright-report/
+test-results/
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# Local e2e test secrets
+backend/tests/e2e/test.env
+
+# OS
+.DS_Store
