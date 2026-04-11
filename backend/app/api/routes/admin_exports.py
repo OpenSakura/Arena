@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from app.core.security import require_admin
 from app.db.session import get_db
 from app.models.battle import Battle, Run
-from app.models.rating import ModelRating, RatingEvent
+from app.models.rating import ModelRating
 from app.models.task import Task
 from app.models.vote import Vote
 
@@ -33,13 +33,11 @@ router = APIRouter(
 
 @router.get("/tasks.jsonl")
 def export_tasks(db: Session = Depends(get_db)) -> StreamingResponse:
-    # Use yield_per for server-side cursor to avoid loading all records into
-    # memory.  Keep the session alive for the duration of the streaming response.
-    tasks = (
-        db.execute(select(Task).order_by(Task.created_at.asc()))
-        .scalars()
-        .yield_per(500)
-    )
+    # Materialize rows while the DB session is still alive.  The dependency
+    # teardown (get_db) closes the session after the route handler returns,
+    # but *before* FastAPI iterates the streaming body.  Eagerly loading via
+    # .all() ensures rows are safely detached before session cleanup.
+    tasks = db.execute(select(Task).order_by(Task.created_at.asc())).scalars().all()
 
     def records() -> Iterable[dict[str, object]]:
         for task in tasks:
@@ -62,9 +60,7 @@ def export_tasks(db: Session = Depends(get_db)) -> StreamingResponse:
 
 @router.get("/runs.jsonl")
 def export_runs(db: Session = Depends(get_db)) -> StreamingResponse:
-    runs = (
-        db.execute(select(Run).order_by(Run.created_at.asc())).scalars().yield_per(500)
-    )
+    runs = db.execute(select(Run).order_by(Run.created_at.asc())).scalars().all()
 
     def records() -> Iterable[dict[str, object]]:
         for run in runs:
@@ -78,6 +74,7 @@ def export_runs(db: Session = Depends(get_db)) -> StreamingResponse:
                 "request_json": run.request_json,
                 "prompt_rendered": run.prompt_rendered,
                 "output_text": run.output_text,
+                "output_text_raw": getattr(run, "output_text_raw", None),
                 "stats": run.stats,
                 "error_text": run.error_text,
                 "created_at": run.created_at,
@@ -89,9 +86,7 @@ def export_runs(db: Session = Depends(get_db)) -> StreamingResponse:
 @router.get("/battles.jsonl")
 def export_battles(db: Session = Depends(get_db)) -> StreamingResponse:
     battles = (
-        db.execute(select(Battle).order_by(Battle.created_at.asc()))
-        .scalars()
-        .yield_per(500)
+        db.execute(select(Battle).order_by(Battle.created_at.asc())).scalars().all()
     )
 
     def records() -> Iterable[dict[str, object]]:
@@ -112,11 +107,7 @@ def export_battles(db: Session = Depends(get_db)) -> StreamingResponse:
 
 @router.get("/votes.jsonl")
 def export_votes(db: Session = Depends(get_db)) -> StreamingResponse:
-    votes = (
-        db.execute(select(Vote).order_by(Vote.created_at.asc()))
-        .scalars()
-        .yield_per(500)
-    )
+    votes = db.execute(select(Vote).order_by(Vote.created_at.asc())).scalars().all()
 
     def records() -> Iterable[dict[str, object]]:
         for vote in votes:
@@ -142,17 +133,16 @@ def export_votes(db: Session = Depends(get_db)) -> StreamingResponse:
 
 @router.get("/ratings.jsonl")
 def export_ratings(db: Session = Depends(get_db)) -> StreamingResponse:
-    # Use yield_per for server-side cursor to avoid loading all records into
-    # memory.
+    """Export persisted Elo snapshots from ``model_ratings``.
+
+    Bradley-Terry ratings are computed on demand by ``/leaderboard?method=bt``
+    and are intentionally not persisted or exported here.
+    """
+
     ratings = (
         db.execute(select(ModelRating).order_by(ModelRating.updated_at.asc()))
         .scalars()
-        .yield_per(500)
-    )
-    events = (
-        db.execute(select(RatingEvent).order_by(RatingEvent.created_at.asc()))
-        .scalars()
-        .yield_per(500)
+        .all()
     )
 
     def records() -> Iterable[dict[str, object]]:
@@ -160,23 +150,11 @@ def export_ratings(db: Session = Depends(get_db)) -> StreamingResponse:
             yield {
                 "schema_version": SCHEMA_VERSION,
                 "record_type": "model_rating",
+                "rating_method": "elo",
                 "model_id": str(rating.model_id),
                 "rating": rating.rating,
                 "games_played": rating.games_played,
                 "updated_at": rating.updated_at,
-            }
-
-        for event in events:
-            yield {
-                "schema_version": SCHEMA_VERSION,
-                "record_type": "rating_event",
-                "id": str(event.id),
-                "vote_id": str(event.vote_id),
-                "model_a_id": str(event.model_a_id),
-                "model_b_id": str(event.model_b_id),
-                "delta_a": event.delta_a,
-                "delta_b": event.delta_b,
-                "created_at": event.created_at,
             }
 
     return _jsonl_response(records(), filename="ratings.jsonl")

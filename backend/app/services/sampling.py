@@ -113,10 +113,16 @@ def select_battle_pair(
                 rival_weights_raw.append(weight)
 
     if not rival_candidates:
-        # Last resort: all remaining models are effectively unavailable, pick uniformly.
-        rival_candidates = [
-            candidate for candidate in candidates if candidate.id != chosen.id
-        ]
+        # Last resort: relax all preference constraints but still honour explicit
+        # weight=0 (disabled) models — only include candidates whose base weight
+        # is positive so that administratively disabled models never re-enter.
+        for candidate in candidates:
+            if candidate.id == chosen.id:
+                continue
+            base_weight = policy.weights.get(candidate.model_name)
+            if base_weight is not None and float(base_weight) <= 0:
+                continue
+            rival_candidates.append(candidate)
         rival_weights = [1.0] * len(rival_candidates)
     else:
         rival_weights = _normalize_weights(rival_weights_raw)

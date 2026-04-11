@@ -21,7 +21,7 @@ from app.db.session import get_db
 from app.models.model_registry import Model
 from app.models.prompt_template import PromptTemplate
 from app.schemas.models import ModelAdmin, ModelCreate, ModelUpdate
-from app.services.llm_client import LLMClient
+from app.services.battle_orchestrator import get_battle_orchestrator
 from app.utils.id import parse_uuid, parse_optional_uuid
 
 router = APIRouter(
@@ -200,7 +200,7 @@ async def test_model(model_id: str, db: Session = Depends(get_db)) -> dict[str, 
             if encrypted is None:
                 raise ValueError("encrypted_api_key is None despite has_api_key check")
             api_key = decrypt_secret(encrypted)
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             return {
                 "ok": False,
                 "note": "Failed to decrypt API key",
@@ -226,7 +226,7 @@ async def test_model(model_id: str, db: Session = Depends(get_db)) -> dict[str, 
     params["max_tokens"] = 12
     params["temperature"] = 0
 
-    client = LLMClient()
+    client = get_battle_orchestrator()._llm_client
     try:
         import time
 
@@ -278,8 +278,6 @@ async def test_model(model_id: str, db: Session = Depends(get_db)) -> dict[str, 
             "model_id": str(model.id),
             "has_api_key": has_api_key,
         }
-    finally:
-        await client.aclose()
 
 
 def _encrypt_api_key(api_key: str) -> str:

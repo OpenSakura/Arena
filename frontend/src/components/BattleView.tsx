@@ -2,54 +2,16 @@
  * frontend/src/components/BattleView.tsx
  *
  * Battle UI component with Arena Styling.
+ * State management is delegated to useBattle hook.
  */
 
 "use client";
 
-import { useRouter, useSearchParams } from "next/navigation";
-import { useSession } from "next-auth/react";
-import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 
-import { apiGet, apiPost, getBackendBaseUrl } from "@/lib/api";
-import { streamSSE } from "@/lib/sse";
 import { TurnstileWidget } from "@/components/TurnstileWidget";
-import { isBattleBootstrapReady } from "@/components/battleAuth";
-import { asRecord, loadOrCreateBattle, mergeBattleDelta } from "@/components/battleView.utils";
 import { Button } from "@/components/ui/button";
-
-type Side = "A" | "B";
-type ReplayPolicy = "consume" | "ignore";
-
-type RunPublic = {
-  id: string;
-  side: Side;
-  output_text: string | null;
-  stats: Record<string, unknown> | null;
-  error_text: string | null;
-};
-
-type BattlePublic = {
-  id: string;
-  task_id: string;
-  source_text: string;
-  source_lang: string;
-  target_lang: string;
-  mode: string;
-  status: string;
-  run_a: RunPublic | null;
-  run_b: RunPublic | null;
-};
-
-type VoteSubmitResponse = {
-  vote_id: string;
-  battle_id: string;
-  winner: "A" | "B" | "tie";
-  reveal: {
-    A: { model_id: string; display_name: string };
-    B: { model_id: string; display_name: string };
-  };
-};
+import { useBattle, type RevealData } from "@/components/useBattle";
 
 const RUBRIC_TAGS = [
   "accuracy",
@@ -68,292 +30,93 @@ const RUBRIC_ICONS: Record<string, string> = {
 };
 
 export function BattleView({ battleId }: { battleId: string }) {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const restartKey = searchParams.get("r") ?? "";
+  const {
+    state,
+    dispatch,
+    isAuthed,
+    turnstileSiteKey,
+    needsTurnstileForBattle,
+    turnstileMisconfigured,
+    canVote,
+    canReveal,
+    canRetry,
+    voteSubmitted,
+    statusLabel,
+    handleVoteSubmit,
+    handleReveal,
+    handleRetry,
+    handleBattleTurnstileToken,
+    handleStartAnotherBattle,
+  } = useBattle(battleId);
 
-  const { data: session, status: authStatus } = useSession();
-  const accessToken = session?.accessToken;
-  const isAuthed = authStatus === "authenticated" && Boolean(accessToken);
-  const accessTokenRef = useRef(accessToken);
-  useEffect(() => { accessTokenRef.current = accessToken; }, [accessToken]);
-  const turnstileSiteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? "";
+  const {
+    resolvedBattleId,
+    jpSource,
+    jpSourceLang,
+    targetLang,
+    outA,
+    outB,
+    status,
+    errorText,
+    winner,
+    rubricTags,
+    comment,
+    submittingVote,
+    voteId,
+    reveal,
+    revealLoading,
+  } = state;
 
-  const [anonVoteTurnstileRequired, setAnonVoteTurnstileRequired] = useState<boolean>(false);
 
-  const [resolvedBattleId, setResolvedBattleId] = useState<string | null>(null);
-  const [jpSource, setJpSource] = useState<string>("");
-  const [jpSourceLang, setJpSourceLang] = useState<string>("JA");
-  const [targetLang, setTargetLang] = useState<string>("ZH");
-  const [outA, setOutA] = useState<string>("");
-  const [outB, setOutB] = useState<string>("");
-  const [status, setStatus] = useState<string>("loading");
-  const statusRef = useRef<string>("loading");
-  const [errorText, setErrorText] = useState<string | null>(null);
-
-  const [winner, setWinner] = useState<"A" | "B" | "tie" | null>(null);
-  const [rubricTags, setRubricTags] = useState<string[]>([]);
-  const [comment, setComment] = useState<string>("");
-  const [turnstileToken, setTurnstileToken] = useState<string>("");
-  const [submittingVote, setSubmittingVote] = useState<boolean>(false);
-  const [reveal, setReveal] = useState<VoteSubmitResponse["reveal"] | null>(null);
-  const replayPolicyRef = useRef<Record<Side, ReplayPolicy>>({ A: "consume", B: "consume" });
-  const voteSubmitLockRef = useRef<boolean>(false);
-
-  const needsTurnstile = authStatus !== "loading" && !isAuthed && anonVoteTurnstileRequired;
-  const turnstileMisconfigured = needsTurnstile && !turnstileSiteKey;
-
-  useEffect(() => {
-    statusRef.current = status;
-  }, [status]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadPublicConfig() {
-      try {
-        const payload = (await apiGet("/public-config")) as Record<string, unknown>;
-        if (cancelled) return;
-        setAnonVoteTurnstileRequired(payload?.anon_vote_turnstile_required === true);
-      } catch {
-        if (cancelled) return;
-        setAnonVoteTurnstileRequired(Boolean(turnstileSiteKey));
-      }
-    }
-
-    void loadPublicConfig();
-    return () => {
-      cancelled = true;
-    };
-  }, [turnstileSiteKey]);
-
-  const streamUrl = useMemo(() => {
-    if (!resolvedBattleId) return null;
-    return `${getBackendBaseUrl()}/battles/${encodeURIComponent(resolvedBattleId)}/stream`;
-  }, [resolvedBattleId]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function bootstrapBattle() {
-      if (!isBattleBootstrapReady(authStatus)) return;
-
-      setStatus("loading");
-      setErrorText(null);
-      setResolvedBattleId(null);
-      setJpSource("");
-      setJpSourceLang("JA");
-      setTargetLang("ZH");
-      setOutA("");
-      setOutB("");
-      replayPolicyRef.current = { A: "consume", B: "consume" };
-
-      setWinner(null);
-      setRubricTags([]);
-      setComment("");
-      setTurnstileToken("");
-      setSubmittingVote(false);
-      setReveal(null);
-      voteSubmitLockRef.current = false;
-
-      try {
-        const battle = await loadOrCreateBattle<BattlePublic>(battleId, accessTokenRef.current);
-        if (cancelled) return;
-
-        setJpSource(battle.source_text);
-        setJpSourceLang((battle.source_lang ?? "ja").toUpperCase());
-        setTargetLang((battle.target_lang ?? "zh").toUpperCase());
-        setOutA(battle.run_a?.output_text ?? "");
-        setOutB(battle.run_b?.output_text ?? "");
-        const isFinished = battle.status === "completed" || battle.status === "failed";
-        replayPolicyRef.current = {
-          A: isFinished && Boolean(battle.run_a?.output_text) ? "ignore" : "consume",
-          B: isFinished && Boolean(battle.run_b?.output_text) ? "ignore" : "consume",
-        };
-        setStatus(battle.status === "completed" ? "done" : battle.status);
-        setResolvedBattleId(battle.id);
-
-        // If the battle was just created (battleId was "new" or differs
-        // from the resolved id), update the URL so a page refresh doesn't
-        // create another battle.
-        if (battle.id !== battleId) {
-          router.replace(`/battle/${encodeURIComponent(battle.id)}`, { scroll: false });
-        }
-      } catch (err) {
-        if (cancelled) return;
-        setStatus("error");
-        setErrorText(err instanceof Error ? err.message : "Failed to load battle");
-      }
-    }
-
-    void bootstrapBattle();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [battleId, authStatus, restartKey, router]);
-
-  useEffect(() => {
-    if (!streamUrl || !resolvedBattleId) return;
-    const url = streamUrl;
-    const abortController = new AbortController();
-
-    let cancelled = false;
-
-    async function runStream() {
-      const startedFromTerminalState =
-        statusRef.current === "done" || statusRef.current === "failed";
-      let sawTerminalEvent = false;
-
-      try {
-        setStatus((prev) => (prev === "done" || prev === "failed" ? prev : "streaming"));
-        for await (const evt of streamSSE(url, {
-          headers: accessTokenRef.current ? { Authorization: `Bearer ${accessTokenRef.current}` } : undefined,
-          signal: abortController.signal,
-        })) {
-          if (cancelled) return;
-
-          if (evt.event === "sse.retry") {
-            // SSE layer is about to reconnect — reset text to prevent
-            // duplication from partially-consumed previous stream.
-            replayPolicyRef.current = { A: "consume", B: "consume" };
-            setOutA("");
-            setOutB("");
-            setStatus((prev) => (prev === "done" || prev === "failed" ? prev : "reconnecting"));
-            continue;
-          }
-
-          if (evt.event === "run.delta") {
-            const payload = asRecord(evt.data);
-            const side = payload?.side;
-            const delta = payload?.text_delta;
-            const replay = payload?.replay === true;
-            const chunkIndexRaw = payload?.chunk_index;
-            const chunkIndex = typeof chunkIndexRaw === "number" ? chunkIndexRaw : null;
-
-            if (
-              replay &&
-              (side === "A" || side === "B") &&
-              replayPolicyRef.current[side] === "ignore"
-            ) {
-              continue;
-            }
-
-            if (side === "A" && typeof delta === "string") {
-              setOutA((prev) => mergeBattleDelta(prev, delta, replay, chunkIndex));
-            }
-            if (side === "B" && typeof delta === "string") {
-              setOutB((prev) => mergeBattleDelta(prev, delta, replay, chunkIndex));
-            }
-          }
-
-          if (evt.event === "run.error") {
-            setStatus("error");
-            const errorPayload = asRecord(evt.data);
-            const errorDetail = typeof errorPayload?.error === "string" ? errorPayload.error : null;
-            setErrorText((prev) => prev ?? (errorDetail ? `Run error: ${errorDetail}` : "A translation run encountered an error"));
-          }
-          if (evt.event === "battle.error") {
-            sawTerminalEvent = true;
-            const payload = asRecord(evt.data);
-            const detail = typeof payload?.detail === "string" ? payload.detail : null;
-            setStatus("error");
-            setErrorText(detail ? `Battle error: ${detail}` : "Battle stream failed");
-            break;
-          }
-          if (evt.event === "battle.completed") {
-            sawTerminalEvent = true;
-            setStatus("done");
-            break;
-          }
-          if (evt.event === "battle.failed") {
-            sawTerminalEvent = true;
-            setStatus("failed");
-            break;
-          }
-        }
-
-        if (!cancelled && !sawTerminalEvent && !startedFromTerminalState) {
-          setStatus((prev) => (prev === "done" || prev === "failed" ? prev : "error"));
-          setErrorText((prev) => prev ?? "Battle stream ended before completion");
-        }
-      } catch (err) {
-        if (cancelled) return;
-        setStatus("error");
-        setErrorText(err instanceof Error ? err.message : "Battle stream failed");
-      }
-    }
-
-    void runStream();
-
-    return () => {
-      cancelled = true;
-      abortController.abort();
-    };
-    // Note: accessToken is intentionally excluded from the dependency array.
-    // The stream uses accessTokenRef to pick up token refreshes without
-    // tearing down and reconnecting the SSE stream mid-flight.
-  }, [streamUrl, resolvedBattleId]);
-
-  async function handleVoteSubmit() {
-    if (voteSubmitLockRef.current || !resolvedBattleId || !winner || reveal) return;
-
-    voteSubmitLockRef.current = true;
-    setSubmittingVote(true);
-    setErrorText(null);
-    try {
-      const payload = {
-        winner,
-        rubric: { tags: rubricTags },
-        comment: comment || null,
-        turnstile_token: turnstileToken || null,
-      };
-      const result = (await apiPost(
-        `/battles/${encodeURIComponent(resolvedBattleId)}/vote`,
-        payload,
-        {
-          headers: accessTokenRef.current ? { Authorization: `Bearer ${accessTokenRef.current}` } : undefined,
-        },
-      )) as VoteSubmitResponse;
-      setReveal(result.reveal);
-    } catch (err) {
-      setErrorText(err instanceof Error ? err.message : "Failed to submit vote");
-      // Clear turnstile token so the widget can generate a fresh one on retry.
-      setTurnstileToken("");
-    } finally {
-      voteSubmitLockRef.current = false;
-      setSubmittingVote(false);
-    }
-  }
-
-  function handleStartAnotherBattle() {
-    const nonce = Date.now().toString(36);
-    router.push(`/battle/new?r=${nonce}`);
-  }
 
   function toggleRubricTag(tag: string) {
-    setRubricTags((prev) =>
-      prev.includes(tag) ? prev.filter((item) => item !== tag) : [...prev, tag],
-    );
+    dispatch({ type: "TOGGLE_RUBRIC_TAG", tag });
   }
 
-  const canVote =
-    resolvedBattleId !== null &&
-    authStatus !== "loading" &&
-    winner !== null &&
-    reveal === null &&
-    !submittingVote &&
-    status === "done" &&
-    (!needsTurnstile || Boolean(turnstileToken)) &&
-    !turnstileMisconfigured;
-
-  const statusLabel =
-    status === "done" ? "Complete" :
-    status === "streaming" ? "Translating..." :
-    status === "reconnecting" ? "Reconnecting..." :
-    status === "error" || status === "failed" ? "Error" :
-    status === "loading" ? "Loading..." :
-    status.charAt(0).toUpperCase() + status.slice(1);
+  // ── Turnstile gate: show widget before battle creation ──
+  if (status === "waiting_for_turnstile") {
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 15 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+        className="grid gap-6"
+      >
+        <div className="glass-panel-accent p-8 flex flex-col items-center gap-6">
+          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/[0.08] border border-primary/15">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary/80" aria-hidden>
+              <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </svg>
+          </div>
+          <div className="text-center">
+            <h3 className="text-xl font-bold heading-gradient mb-2">Verification Required</h3>
+            <p className="text-sm text-muted-foreground mb-6">
+              Please complete the verification below to start a new battle.
+            </p>
+          </div>
+          {needsTurnstileForBattle && turnstileSiteKey ? (
+            <div className="flex justify-center">
+              <TurnstileWidget
+                siteKey={turnstileSiteKey}
+                onToken={(token) => void handleBattleTurnstileToken(token)}
+                onExpire={() => dispatch({ type: "SET_TURNSTILE_TOKEN", token: "" })}
+                onError={(message) => {
+                  dispatch({ type: "SET_TURNSTILE_TOKEN", token: "" });
+                  dispatch({ type: "SET_ERROR", error: message });
+                }}
+              />
+            </div>
+          ) : turnstileMisconfigured ? (
+            <div className="text-center text-sm text-destructive">
+              Backend requires Turnstile for anonymous battles, but <code>NEXT_PUBLIC_TURNSTILE_SITE_KEY</code> is missing.
+            </div>
+          ) : null}
+          {errorText ? <p className="mt-2 text-center text-sm text-destructive">{errorText}</p> : null}
+        </div>
+      </motion.div>
+    );
+  }
 
   return (
     <motion.div
@@ -400,113 +163,139 @@ export function BattleView({ battleId }: { battleId: string }) {
       </div>
 
       {/* Voting section */}
-      <motion.div
-        initial={{ opacity: 0, y: 15 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5, delay: 0.3 }}
-        className="glass-panel-accent p-8 flex flex-col items-center gap-6"
-      >
-        <div className="w-full max-w-2xl text-center">
-          <h3 className="mb-2 text-xl font-bold heading-gradient">Cast Your Vote</h3>
-          <p className="mb-5 text-sm text-muted-foreground">Which translation is better?</p>
-          <div className="flex flex-wrap justify-center gap-3">
-            <VoteOption label="Model A is better" side="A" active={winner === "A"} onClick={() => setWinner("A")} />
-            <VoteOption label="Tie" active={winner === "tie"} onClick={() => setWinner("tie")} />
-            <VoteOption label="Model B is better" side="B" active={winner === "B"} onClick={() => setWinner("B")} />
-          </div>
-        </div>
-
-        <div className="w-full max-w-2xl">
-          <div className="divider-fade" />
-        </div>
-
-        <div className="w-full max-w-2xl">
-          <div className="mb-3 text-sm font-medium text-muted-foreground">Why did you choose this? (optional tags)</div>
-          <div className="flex flex-wrap gap-2">
-            {RUBRIC_TAGS.map((tag) => (
-              <button
-                key={tag}
-                type="button"
-                onClick={() => toggleRubricTag(tag)}
-                aria-pressed={rubricTags.includes(tag)}
-                className={`
-                  rounded-full border transition-all duration-200 ease-out outline-none
-                  px-3.5 py-1.5 text-xs capitalize font-medium
-                  ${rubricTags.includes(tag)
-                    ? "border-primary/40 bg-primary/15 text-primary font-semibold shadow-sm shadow-primary/10"
-                    : "border-border bg-transparent text-muted-foreground hover:border-foreground/20 hover:bg-foreground/5 hover:text-foreground"
-                  }
-                `}
-              >
-                {RUBRIC_ICONS[tag] ?? tag}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="w-full max-w-2xl">
-          <label className="mb-2 block text-sm font-medium text-muted-foreground" htmlFor="vote-comment">
-            Optional feedback
-          </label>
-          <textarea
-            id="vote-comment"
-            value={comment}
-            onChange={(evt) => setComment(evt.target.value)}
-            rows={3}
-            placeholder="What influenced your decision?"
-            className="textarea-premium"
-          />
-        </div>
-
-        <div className="w-full max-w-2xl">
-          {!isAuthed ? (
-            <div className="mb-4">
-              {needsTurnstile && turnstileSiteKey ? (
-                <div className="flex justify-center">
-                  <TurnstileWidget
-                    siteKey={turnstileSiteKey}
-                    onToken={(token) => setTurnstileToken(token)}
-                    onExpire={() => setTurnstileToken("")}
-                    onError={(message) => {
-                      setTurnstileToken("");
-                      setErrorText(message);
-                    }}
-                  />
+      {(status === "done" || status === "failed" || status === "error") && (
+        <motion.div
+          initial={{ opacity: 0, y: 15 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.3 }}
+          className="glass-panel-accent p-8 flex flex-col items-center gap-6"
+        >
+          {status === "done" && (
+            <>
+              <div className="w-full max-w-2xl text-center">
+                <h3 className="mb-2 text-xl font-bold heading-gradient">Cast Your Vote</h3>
+                <p className="mb-5 text-sm text-muted-foreground">
+                  {voteSubmitted && !reveal
+                    ? "Vote recorded. You can change your vote or reveal the models."
+                    : "Which translation is better?"}
+                </p>
+                <div className="flex flex-wrap justify-center gap-3">
+                  <VoteOption label="Model A is better" side="A" active={winner === "A"} disabled={reveal !== null} onClick={() => dispatch({ type: "SET_WINNER", winner: "A" })} />
+                  <VoteOption label="Tie" active={winner === "tie"} disabled={reveal !== null} onClick={() => dispatch({ type: "SET_WINNER", winner: "tie" })} />
+                  <VoteOption label="Model B is better" side="B" active={winner === "B"} disabled={reveal !== null} onClick={() => dispatch({ type: "SET_WINNER", winner: "B" })} />
                 </div>
-              ) : needsTurnstile ? (
-                <div className="text-center text-sm text-destructive">
-                  Backend requires Turnstile for anonymous voting, but <code>NEXT_PUBLIC_TURNSTILE_SITE_KEY</code> is missing.
+              </div>
+
+              <div className="w-full max-w-2xl">
+                <div className="divider-fade" />
+              </div>
+
+              <div className="w-full max-w-2xl">
+                <div className="mb-3 text-sm font-medium text-muted-foreground">Why did you choose this? (optional tags)</div>
+                <div className="flex flex-wrap gap-2">
+                  {RUBRIC_TAGS.map((tag) => (
+                    <button
+                      key={tag}
+                      type="button"
+                      onClick={() => toggleRubricTag(tag)}
+                      disabled={reveal !== null}
+                      aria-pressed={rubricTags.includes(tag)}
+                      className={`
+                        rounded-full border transition-all duration-200 ease-out outline-none
+                        px-3.5 py-1.5 text-xs capitalize font-medium
+                        ${reveal !== null ? "opacity-50 cursor-not-allowed" : ""}
+                        ${rubricTags.includes(tag)
+                          ? "border-primary/40 bg-primary/15 text-primary font-semibold shadow-sm shadow-primary/10"
+                          : "border-border bg-transparent text-muted-foreground hover:border-foreground/20 hover:bg-foreground/5 hover:text-foreground"
+                        }
+                      `}
+                    >
+                      {RUBRIC_ICONS[tag] ?? tag}
+                    </button>
+                  ))}
                 </div>
-              ) : null}
+              </div>
+
+              <div className="w-full max-w-2xl">
+                <label className="mb-2 block text-sm font-medium text-muted-foreground" htmlFor="vote-comment">
+                  Optional feedback
+                </label>
+                <textarea
+                  id="vote-comment"
+                  value={comment}
+                  onChange={(evt) => dispatch({ type: "SET_COMMENT", comment: evt.target.value })}
+                  rows={3}
+                  disabled={reveal !== null}
+                  placeholder="What influenced your decision?"
+                  className={`textarea-premium ${reveal !== null ? "opacity-50 cursor-not-allowed" : ""}`}
+                />
+              </div>
+            </>
+          )}
+
+          <div className="w-full max-w-2xl">
+            <div className="flex flex-col items-center justify-center gap-4">
+              {/* Submit / Update Vote button */}
+              {!reveal && status === "done" && (
+                <>
+                  <Button
+                    type="button"
+                    onClick={() => void handleVoteSubmit()}
+                    disabled={!canVote}
+                    size="lg"
+                    className="h-12 w-full max-w-md rounded-full text-lg shadow-lg shadow-primary/20 hover:shadow-primary/30 hover:scale-[1.01] transition-all duration-200"
+                  >
+                    {submittingVote
+                      ? "Submitting..."
+                      : voteSubmitted
+                        ? "Update Vote"
+                        : "Submit Vote"}
+                  </Button>
+                </>
+              )}
+
+              {/* Reveal Models button — appears after vote submit, before reveal */}
+              {voteSubmitted && !reveal && status === "done" && (
+                <Button
+                  type="button"
+                  onClick={() => void handleReveal()}
+                  disabled={!canReveal}
+                  variant="outline"
+                  size="lg"
+                  className="h-12 w-full max-w-md rounded-full text-lg border-emerald-500/30 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 hover:border-emerald-500/40 transition-all duration-200"
+                >
+                  {revealLoading ? "Revealing..." : "Reveal Models"}
+                </Button>
+              )}
+
+              {(reveal || status === "failed" || status === "error") && (
+                <div className="flex flex-wrap justify-center gap-3">
+                  {canRetry && (
+                    <Button
+                      type="button"
+                      onClick={() => void handleRetry()}
+                      variant="outline"
+                      className="rounded-full text-muted-foreground hover:text-foreground hover:border-foreground/20"
+                    >
+                      Retry Battle
+                    </Button>
+                  )}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={handleStartAnotherBattle}
+                    className="rounded-full text-muted-foreground hover:text-foreground"
+                  >
+                    Start another battle
+                  </Button>
+                </div>
+              )}
             </div>
-          ) : null}
 
-          <div className="flex flex-col items-center justify-center gap-4">
-            <Button
-              type="button"
-              onClick={() => void handleVoteSubmit()}
-              disabled={!canVote}
-              size="lg"
-              className="h-12 w-full max-w-md rounded-full text-lg shadow-lg shadow-primary/20 hover:shadow-primary/30 hover:scale-[1.01] transition-all duration-200"
-            >
-              {submittingVote ? "Submitting..." : "Submit Vote"}
-            </Button>
-
-            {(reveal || status === "failed" || status === "error") && (
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={handleStartAnotherBattle}
-                className="rounded-full text-muted-foreground hover:text-foreground"
-              >
-                Start another battle
-              </Button>
-            )}
+            {errorText ? <p className="mt-4 text-center text-sm text-destructive">{errorText}</p> : null}
           </div>
-
-          {errorText ? <p className="mt-4 text-center text-sm text-destructive">{errorText}</p> : null}
-        </div>
-      </motion.div>
+        </motion.div>
+      )}
 
       {/* Reveal section */}
       <AnimatePresence>
@@ -616,21 +405,25 @@ function VoteOption({
   label,
   side,
   active,
+  disabled = false,
   onClick,
 }: {
   label: string;
   side?: "A" | "B";
   active: boolean;
+  disabled?: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       aria-pressed={active}
       className={`
         rounded-full border transition-all duration-200 ease-out outline-none
         px-5 py-2.5 text-sm font-medium
+        ${disabled ? "opacity-50 cursor-not-allowed" : ""}
         ${active
           ? "border-primary/40 bg-primary/15 text-primary font-semibold shadow-md shadow-primary/10 scale-[1.02]"
           : "border-border bg-transparent text-foreground hover:border-foreground/20 hover:bg-foreground/5"

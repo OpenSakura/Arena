@@ -9,6 +9,7 @@ from app.services.leaderboard_refresh import (
     compute_elo_confidence_intervals,
     compute_elo_ratings,
     limit_votes_per_judge_per_day,
+    load_vote_samples,
 )
 from app.utils.requester_identity import RequesterIdentity
 
@@ -453,6 +454,7 @@ class TestLimitVotesPerJudgeUsesSharedJudgeKey:
 
 # --- Revealed-only vote filtering via load_vote_samples --------------------
 
+
 def test_load_vote_samples_excludes_unrevealed_votes() -> None:
     """Prove that the SQL statement built by load_vote_samples carries a
     ``Vote.revealed IS TRUE`` predicate so unrevealed votes never enter the
@@ -515,7 +517,96 @@ def test_load_vote_samples_revealed_filter_excludes_rows_at_db_boundary() -> Non
     assert execute_calls["count"] == 1, "Expected exactly one DB query"
 
 
+def test_load_vote_samples_day_cap_uses_db_side_utc_boundaries() -> None:
+    model_a = uuid.uuid4()
+    model_b = uuid.uuid4()
+    day1_vote_1 = uuid.uuid4()
+    day1_vote_2 = uuid.uuid4()
+    day2_vote_1 = uuid.uuid4()
+
+    day1 = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
+    day2 = datetime(2026, 3, 2, 9, 30, tzinfo=timezone.utc)
+
+    class _FakeResult:
+        def __init__(
+            self, *, rows: list[tuple[object, ...]] | None = None, one: object = None
+        ):
+            self._rows = rows or []
+            self._one = one
+
+        def all(self) -> list[tuple[object, ...]]:
+            return list(self._rows)
+
+        def one(self) -> object:
+            return self._one
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.sql: list[str] = []
+            self._results = [
+                _FakeResult(one=(day1, day2)),
+                _FakeResult(
+                    rows=[
+                        (
+                            day1_vote_1,
+                            day1,
+                            "A",
+                            None,
+                            "anon-1",
+                            None,
+                            None,
+                            model_a,
+                            model_b,
+                        ),
+                        (
+                            day1_vote_2,
+                            day1 + timedelta(minutes=5),
+                            "B",
+                            None,
+                            "anon-1",
+                            None,
+                            None,
+                            model_a,
+                            model_b,
+                        ),
+                    ]
+                ),
+                _FakeResult(
+                    rows=[
+                        (
+                            day2_vote_1,
+                            day2,
+                            "A",
+                            None,
+                            "anon-1",
+                            None,
+                            None,
+                            model_a,
+                            model_b,
+                        )
+                    ]
+                ),
+            ]
+
+        def execute(self, stmt: object) -> _FakeResult:
+            self.sql.append(str(stmt).lower())
+            return self._results.pop(0)
+
+    session = _FakeSession()
+    samples = load_vote_samples(session, daily_vote_cap=1)  # type: ignore[arg-type]
+
+    assert [sample.vote_id for sample in samples] == [day1_vote_1, day2_vote_1]
+    assert len(session.sql) == 3
+    assert "min(votes.created_at)" in session.sql[0]
+    for sql in session.sql[1:]:
+        assert "votes.created_at >=" in sql
+        assert "votes.created_at <" in sql
+        assert "::date" not in sql
+        assert "date(" not in sql
+
+
 # --- Shuffle-and-average Elo ------------------------------------------------
+
 
 def test_compute_elo_ratings_shuffle_single_round_matches_original_path() -> None:
     """shuffle_rounds=1 must produce identical results to the default (no
@@ -694,7 +785,46 @@ def test_compute_elo_ratings_shuffle_reduces_order_variance() -> None:
     )
 
 
+def test_compute_elo_confidence_intervals_shuffle_is_deterministic_for_seed() -> None:
+    model_a = uuid.uuid4()
+    model_b = uuid.uuid4()
+    start = datetime(2026, 2, 18, 9, 0, tzinfo=timezone.utc)
+
+    votes = [
+        _vote(
+            at=start + timedelta(minutes=i),
+            winner="A" if i % 3 else "B",
+            model_a_id=model_a,
+            model_b_id=model_b,
+            judge_key=f"anon:{i}",
+        )
+        for i in range(18)
+    ]
+
+    first = compute_elo_confidence_intervals(
+        votes,
+        model_ids=[model_a, model_b],
+        bootstrap_rounds=30,
+        seed=7,
+        k=32.0,
+        shuffle_rounds=4,
+        shuffle_seed=13,
+    )
+    second = compute_elo_confidence_intervals(
+        votes,
+        model_ids=[model_a, model_b],
+        bootstrap_rounds=30,
+        seed=7,
+        k=32.0,
+        shuffle_rounds=4,
+        shuffle_seed=13,
+    )
+
+    assert first == second
+
+
 # --- UTC day-cap boundary ---------------------------------------------------
+
 
 def test_limit_votes_per_judge_per_day_utc_boundary() -> None:
     """Votes that straddle a UTC midnight boundary must be counted per-day
@@ -726,9 +856,7 @@ def test_limit_votes_per_judge_per_day_utc_boundary() -> None:
         for i in range(3)
     ]
 
-    kept = limit_votes_per_judge_per_day(
-        day1_votes + day2_votes, daily_vote_cap=2
-    )
+    kept = limit_votes_per_judge_per_day(day1_votes + day2_votes, daily_vote_cap=2)
     # 2 from day 1 + 2 from day 2 = 4 total.
     assert len(kept) == 4
     # All kept votes from day1 must be on 2026-03-01.
@@ -767,11 +895,13 @@ def test_revealed_votes_only_are_loaded_for_rating_pipeline() -> None:
     # The SQL must contain the revealed filter so unrevealed votes are excluded
     # at the database layer, never entering the Python rating pipeline.
     assert "revealed" in sql, (
-        "load_vote_samples must filter to revealed=True votes.\n"
-        f"Actual SQL:\n{sql}"
+        f"load_vote_samples must filter to revealed=True votes.\nActual SQL:\n{sql}"
     )
     # Confirm the filter is not just selecting revealed column — it must be
     # a WHERE predicate (IS TRUE / = true / IS NOT FALSE).
-    assert "is true" in sql or "= true" in sql or "is not false" in sql or "revealed" in sql, (
-        "Expected a truthiness check on 'revealed' column"
-    )
+    assert (
+        "is true" in sql
+        or "= true" in sql
+        or "is not false" in sql
+        or "revealed" in sql
+    ), "Expected a truthiness check on 'revealed' column"

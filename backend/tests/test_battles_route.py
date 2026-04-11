@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from types import SimpleNamespace
+from typing import cast
 import uuid
 
 from fastapi import HTTPException, Request
@@ -8,12 +10,16 @@ import pytest
 from pydantic import ValidationError
 
 from app.api.routes import battles
+from app.core.config import Settings
+from app.core.security import Principal
+from app.models.battle import Battle
 from app.models.task import Task
 from app.schemas.battles import BattleCreate
+from app.services.sampling import CandidateModel, SamplingPolicy
 
 
 class _Result:
-    def __init__(self, rows: list[object]) -> None:
+    def __init__(self, rows: Sequence[object]) -> None:
         self._rows = list(rows)
 
     def scalars(self) -> "_Result":
@@ -22,11 +28,18 @@ class _Result:
     def all(self) -> list[object]:
         return list(self._rows)
 
+    def scalar_one_or_none(self) -> object | None:
+        return self._rows[0] if self._rows else None
+
+    def scalar_one(self) -> object:
+        assert len(self._rows) == 1
+        return self._rows[0]
+
 
 class _QueueDB:
     def __init__(
         self,
-        result_sets: list[list[object]],
+        result_sets: Sequence[Sequence[object]],
         *,
         get_map: dict[tuple[type[object], uuid.UUID], object] | None = None,
     ) -> None:
@@ -77,7 +90,10 @@ def _settings(**overrides: object) -> SimpleNamespace:
         "battle_sampling_boost_models": [],
         "anon_battle_create_rate_limit_window_seconds": 60,
         "anon_battle_stream_rate_limit_window_seconds": 60,
+        "anon_ip_hash_salt": "ip-salt",
         "trust_x_forwarded_for": False,
+        "turnstile_secret_key": None,
+        "turnstile_verify_url": "https://turnstile.example/siteverify",
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -87,8 +103,7 @@ def test_battle_create_rejects_mode_longer_than_db_limit() -> None:
     with pytest.raises(ValidationError) as exc_info:
         BattleCreate(mode="x" * 65)
 
-    # mode is a Literal type; any invalid value triggers a literal_error.
-    assert "literal_error" in str(exc_info.value) or "Input should be" in str(
+    assert "Unsupported mode" in str(exc_info.value) or "value_error" in str(
         exc_info.value
     )
 
@@ -107,13 +122,9 @@ def test_select_task_returns_explicit_task_id_when_present() -> None:
 
 
 def test_select_task_rejects_invalid_task_id() -> None:
-    db = _QueueDB([])
-
-    with pytest.raises(HTTPException) as exc_info:
-        battles._select_task(db=db, payload=BattleCreate(task_id="bad-id"))  # type: ignore[arg-type]
-
-    assert exc_info.value.status_code == 422
-    assert exc_info.value.detail == "Invalid task_id"
+    """Invalid task_id is rejected at the schema level (UuidStr validation)."""
+    with pytest.raises(ValidationError):
+        BattleCreate(task_id="bad-id")
 
 
 def test_select_task_returns_404_for_missing_explicit_task() -> None:
@@ -140,59 +151,26 @@ def test_select_task_raises_when_no_candidates_available() -> None:
     assert exc_info.value.detail == "No tasks available for battle"
 
 
-def test_select_task_uses_inverse_battle_count_weights(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    task_a = _task()
-    task_b = _task()
-    db = _QueueDB(
-        [
-            [task_a, task_b],
-            [(task_a.id, 3)],
-        ]
-    )
-
-    captured: dict[str, object] = {}
-
-    def fake_choices(
-        population: list[SimpleNamespace],
-        *,
-        weights: list[float],
-        k: int,
-    ) -> list[SimpleNamespace]:
-        captured["population"] = population
-        captured["weights"] = weights
-        captured["k"] = k
-        return [population[1]]
-
-    class _MockRng:
-        def choices(self, population, *, weights, k):
-            return fake_choices(population, weights=weights, k=k)
-
-    monkeypatch.setattr(battles.random, "Random", lambda _seed: _MockRng())
+def test_select_task_returns_result_from_weighted_query() -> None:
+    """The current implementation uses a single SQL query with
+    func.random() / (1 + battle_count) for weighted task selection.
+    Test that the result is returned when available."""
+    task = _task()
+    db = _QueueDB([[task]])
 
     selected = battles._select_task(db=db, payload=BattleCreate())  # type: ignore[arg-type]
 
-    assert selected is task_b
-    assert captured["population"] == [task_a, task_b]
-    assert captured["k"] == 1
-    assert captured["weights"] == pytest.approx([0.25, 1.0])
+    assert selected is task
+    # One query should have been issued.
+    assert len(db.statements) == 1
 
 
-def test_select_task_applies_task_set_filter(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_select_task_applies_task_set_filter() -> None:
+    """When task_set_id is provided, _select_task should issue a query
+    (the filter is applied at the SQL level)."""
     task = _task()
     task_set_id = uuid.uuid4()
-    db = _QueueDB([[task], []])
-
-    class _MockRng:
-        def choices(self, population, *, weights, k):
-            return [population[0]]
-
-    monkeypatch.setattr(
-        battles.random,
-        "Random",
-        lambda _seed: _MockRng(),
-    )
+    db = _QueueDB([[task]])
 
     selected = battles._select_task(  # type: ignore[arg-type]
         db=db,
@@ -237,11 +215,11 @@ def test_select_model_pair_builds_candidates_and_policy(
 
     assert pair == (model_b, model_a)
 
-    candidates = captured["candidates"]
+    candidates = cast(list[CandidateModel], captured["candidates"])
     assert [candidate.model_name for candidate in candidates] == ["model-a", "model-b"]
     assert [candidate.games_played for candidate in candidates] == [5, 1]
 
-    policy = captured["policy"]
+    policy = cast(SamplingPolicy, captured["policy"])
     assert policy.weights == settings.battle_sampling_weights
     assert policy.targets == settings.battle_targets
     assert policy.strict_targets == settings.battle_strict_targets
@@ -288,7 +266,11 @@ def test_battle_task_snapshot_reads_valid_metadata() -> None:
         }
     )
 
-    assert battles._battle_task_snapshot(battle) == ("JP text", "ja", "zh")
+    assert battles._battle_task_snapshot(cast(Battle, battle)) == (
+        "JP text",
+        "ja",
+        "zh",
+    )
 
 
 @pytest.mark.parametrize(
@@ -311,7 +293,7 @@ def test_battle_task_snapshot_returns_none_for_invalid_payloads(
     metadata: object,
 ) -> None:
     battle = SimpleNamespace(metadata_json=metadata)
-    assert battles._battle_task_snapshot(battle) is None
+    assert battles._battle_task_snapshot(cast(Battle, battle)) is None
 
 
 def test_enforce_anon_battle_rate_limit_allows_request_below_threshold(
@@ -338,7 +320,7 @@ def test_enforce_anon_battle_rate_limit_allows_request_below_threshold(
 
     battles._enforce_anon_battle_rate_limit(
         request=_request(),
-        settings=_settings(),
+        settings=cast(Settings, _settings()),
     )
 
     assert captured["scope"] == "anon_battle_create"
@@ -360,9 +342,445 @@ def test_enforce_anon_battle_rate_limit_raises_429_when_limited(
     with pytest.raises(HTTPException) as exc_info:
         battles._enforce_anon_battle_rate_limit(
             request=_request(),
-            settings=settings,
+            settings=cast(Settings, settings),
         )
 
     assert exc_info.value.status_code == 429
     assert exc_info.value.detail == "Too many anonymous battle creation requests"
     assert exc_info.value.headers == {"Retry-After": "45"}
+
+
+class _FakeScalar:
+    """Mimics the result of ``db.execute(select(func.count(...))).scalar_one()``."""
+
+    def __init__(self, value: int) -> None:
+        self._value = value
+
+    def scalar_one(self) -> int:
+        return self._value
+
+
+class _CountDB:
+    """DB stub that returns a fixed count for execute()."""
+
+    def __init__(self, count: int) -> None:
+        self._count = count
+
+    def execute(self, _stmt: object) -> "_FakeScalar":
+        return _FakeScalar(self._count)
+
+
+def _principal(
+    *, authenticated: bool = False, user_id: str | None = None
+) -> SimpleNamespace:
+    return SimpleNamespace(is_authenticated=authenticated, user_id=user_id)
+
+
+def test_enforce_daily_vote_cap_allows_when_disabled() -> None:
+    """Cap <= 0 means disabled — should not raise."""
+    battles._enforce_daily_vote_cap(
+        db=_CountDB(999),  # type: ignore[arg-type]
+        principal=cast(Principal, _principal()),
+        request=_request(),
+        settings=cast(Settings, _settings(leaderboard_refresh_daily_vote_cap=0)),
+    )
+
+
+def test_enforce_daily_vote_cap_allows_when_under_limit() -> None:
+    battles._enforce_daily_vote_cap(
+        db=_CountDB(2),  # type: ignore[arg-type]
+        principal=cast(
+            Principal, _principal(authenticated=True, user_id=str(uuid.uuid4()))
+        ),
+        request=_request(),
+        settings=cast(
+            Settings,
+            _settings(
+                leaderboard_refresh_daily_vote_cap=5,
+                anon_user_agent_hash_salt="ua-salt",
+            ),
+        ),
+    )
+
+
+def test_enforce_daily_vote_cap_raises_429_at_limit() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        battles._enforce_daily_vote_cap(
+            db=_CountDB(5),  # type: ignore[arg-type]
+            principal=cast(
+                Principal, _principal(authenticated=True, user_id=str(uuid.uuid4()))
+            ),
+            request=_request(),
+            settings=cast(
+                Settings,
+                _settings(
+                    leaderboard_refresh_daily_vote_cap=5,
+                    anon_user_agent_hash_salt="ua-salt",
+                ),
+            ),
+        )
+
+    assert exc_info.value.status_code == 429
+    assert "Daily vote limit reached" in exc_info.value.detail
+    assert "(5 votes per day)" in exc_info.value.detail
+
+
+def test_enforce_daily_vote_cap_anonymous_allows_when_unidentifiable() -> None:
+    """When we can't identify the anonymous user, allow through (rate limiter
+    catches truly anonymous traffic anyway)."""
+    # Create a request with no cookies, no user-agent, and no client IP.
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/",
+        "raw_path": b"/",
+        "query_string": b"",
+        "headers": [],
+        "client": None,
+        "server": ("testserver", 80),
+    }
+    req = Request(scope)
+
+    # Should not raise even though the cap is 1, because the user is
+    # unidentifiable — no anon_id cookie, no IP, no user-agent.
+    battles._enforce_daily_vote_cap(
+        db=_CountDB(999),  # type: ignore[arg-type]
+        principal=cast(Principal, _principal()),
+        request=req,
+        settings=cast(
+            Settings,
+            _settings(
+                leaderboard_refresh_daily_vote_cap=1,
+                anon_user_agent_hash_salt="ua-salt",
+            ),
+        ),
+    )
+
+
+# ── _build_sampling_policy tests ──
+
+
+def test_build_sampling_policy_uses_settings_values() -> None:
+    settings = _settings(
+        battle_sampling_weights={"env-model": 1.0},
+        battle_targets={"env-model": ["rival"]},
+        battle_strict_targets={"env-model": ["env-*"]},
+        battle_outage_models=["env-outage"],
+        battle_sampling_boost_models=["env-boost"],
+    )
+
+    policy = battles._build_sampling_policy(settings)  # type: ignore[arg-type]
+
+    assert policy.weights == {"env-model": 1.0}
+    assert policy.targets == {"env-model": ["rival"]}
+    assert policy.strict_targets == {"env-model": ["env-*"]}
+    assert policy.outage_models == {"env-outage"}
+    assert policy.boost_models == {"env-boost"}
+
+
+def test_get_battle_keeps_run_stats_hidden() -> None:
+    battle_id = uuid.uuid4()
+    task = _task()
+    battle = SimpleNamespace(
+        id=battle_id,
+        task_id=task.id,
+        mode="jp2zh_ab",
+        status="completed",
+        metadata_json=None,
+    )
+    runs = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="A",
+            output_text="Alpha",
+            stats={"request_id": "req-a"},
+            error_text=None,
+        ),
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="B",
+            output_text="Beta",
+            stats={"request_id": "req-b"},
+            error_text=None,
+        ),
+    ]
+    db = _QueueDB(
+        [[*runs], []],
+        get_map={
+            (battles.Battle, battle_id): battle,
+            (Task, task.id): task,
+        },
+    )
+
+    response = battles.get_battle(str(battle_id), db=db)  # type: ignore[arg-type]
+
+    assert response.run_a is not None
+    assert response.run_b is not None
+    assert response.run_a.stats is None
+    assert response.run_b.stats is None
+
+
+# ── retry_battle tests ──
+
+
+class _RetryDB:
+    """Minimal DB mock for retry_battle with get/execute/add/commit/refresh."""
+
+    def __init__(
+        self,
+        *,
+        battle: SimpleNamespace,
+        runs: list[SimpleNamespace],
+        vote_ids: list[object] | None = None,
+        task: SimpleNamespace | None = None,
+    ) -> None:
+        self._battle = battle
+        self._runs = runs
+        self._vote_ids = vote_ids or []
+        self._task = task
+        self._execute_count = 0
+        self.added: list[object] = []
+        self.committed = False
+        self.refreshed: list[object] = []
+        self._battle_lookup_count = 0
+
+    def get(self, model: type[object], key: uuid.UUID) -> object | None:
+        if model is Task and self._task is not None and key == self._task.id:
+            return self._task
+        if model is battles.Battle and key == self._battle.id:
+            return self._battle
+        return None
+
+    def execute(self, _stmt: object) -> _Result:
+        if "FROM battles" in str(_stmt):
+            self._battle_lookup_count += 1
+            if self._battle_lookup_count > 1 and self._battle.status != "failed":
+                return _Result(
+                    [
+                        SimpleNamespace(
+                            id=self._battle.id,
+                            task_id=self._battle.task_id,
+                            mode=self._battle.mode,
+                            status=self._battle.status,
+                            metadata_json=self._battle.metadata_json,
+                        )
+                    ]
+                )
+            return _Result([self._battle])
+
+        self._execute_count += 1
+        if self._execute_count == 1:
+            return _Result(self._vote_ids)
+        if self._execute_count == 2:
+            return _Result(self._runs)
+        return _Result(self._runs)
+
+    def add(self, obj: object) -> None:
+        self.added.append(obj)
+
+    def commit(self) -> None:
+        self.committed = True
+
+    def refresh(self, obj: object) -> None:
+        self.refreshed.append(obj)
+
+
+class _RetryLockDB(_RetryDB):
+    def __init__(
+        self,
+        *,
+        battle: SimpleNamespace,
+        runs: list[SimpleNamespace],
+        vote_ids: list[object] | None = None,
+        task: SimpleNamespace | None = None,
+    ) -> None:
+        super().__init__(battle=battle, runs=runs, vote_ids=vote_ids, task=task)
+        self.retry_stmt: object | None = None
+
+    def execute(self, stmt: object) -> _Result:
+        if self.retry_stmt is None:
+            self.retry_stmt = stmt
+        return super().execute(stmt)
+
+
+def _failed_battle(*, task_id: uuid.UUID | None = None) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        task_id=task_id or uuid.uuid4(),
+        mode="jp2zh_ab",
+        status="failed",
+        metadata_json={
+            "task_snapshot": {
+                "source_text": "JP text",
+                "source_lang": "ja",
+                "target_lang": "zh",
+            }
+        },
+    )
+
+
+def _stale_run(*, battle_id: uuid.UUID, side: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        battle_id=battle_id,
+        side=side,
+        output_text="stale output",
+        output_text_raw="stale raw output",
+        error_text="stale error",
+        stats={"latency_ms": 123, "request_id": "old-req"},
+        request_json={"model": "old-model", "messages": []},
+        prompt_rendered={"system_prompt": "old prompt"},
+    )
+
+
+def test_retry_battle_clears_all_run_artifacts() -> None:
+    battle = _failed_battle()
+    run_a = _stale_run(battle_id=battle.id, side="A")
+    run_b = _stale_run(battle_id=battle.id, side="B")
+
+    db = _RetryDB(battle=battle, runs=[run_a, run_b])
+    battles.retry_battle(str(battle.id), db=db)  # type: ignore[arg-type]
+
+    for run in [run_a, run_b]:
+        assert run.output_text is None
+        assert run.output_text_raw is None
+        assert run.error_text is None
+        assert run.stats is None
+        assert run.request_json is None
+        assert run.prompt_rendered is None
+
+    assert battle.status == "pending"
+    assert db.committed
+
+
+def test_retry_battle_rejects_non_failed_status() -> None:
+    for status in ("pending", "running", "completed"):
+        battle = SimpleNamespace(
+            id=uuid.uuid4(),
+            task_id=uuid.uuid4(),
+            mode="jp2zh_ab",
+            status=status,
+            metadata_json=None,
+        )
+        db = _RetryDB(battle=battle, runs=[])
+
+        with pytest.raises(HTTPException) as exc_info:
+            battles.retry_battle(str(battle.id), db=db)  # type: ignore[arg-type]
+
+        assert exc_info.value.status_code == 409
+        assert "Only failed battles" in exc_info.value.detail
+
+
+def test_retry_battle_rejects_when_vote_exists() -> None:
+    battle = _failed_battle()
+    vote_id = uuid.uuid4()
+    db = _RetryDB(battle=battle, runs=[], vote_ids=[vote_id])
+
+    with pytest.raises(HTTPException) as exc_info:
+        battles.retry_battle(str(battle.id), db=db)  # type: ignore[arg-type]
+
+    assert exc_info.value.status_code == 409
+    assert "already has a vote" in exc_info.value.detail
+
+
+def test_retry_battle_returns_404_for_missing_battle() -> None:
+    class _MissingRetryDB:
+        def execute(self, _stmt: object) -> _Result:
+            return _Result([])
+
+    db = _MissingRetryDB()
+
+    with pytest.raises(HTTPException) as exc_info:
+        battles.retry_battle(str(uuid.uuid4()), db=db)  # type: ignore[arg-type]
+
+    assert exc_info.value.status_code == 404
+
+
+def test_retry_battle_returns_pending_battle_public() -> None:
+    battle = _failed_battle()
+    run_a = _stale_run(battle_id=battle.id, side="A")
+    run_b = _stale_run(battle_id=battle.id, side="B")
+
+    db = _RetryDB(battle=battle, runs=[run_a, run_b])
+    result = battles.retry_battle(str(battle.id), db=db)  # type: ignore[arg-type]
+
+    assert result.status == "pending"
+    assert result.source_text == "JP text"
+    assert result.run_a is not None
+    assert result.run_a.output_text is None
+    assert result.run_a.stats is None
+    assert result.run_b is not None
+    assert result.run_b.output_text is None
+
+
+def test_retry_lock_uses_row_lock_select() -> None:
+    battle = _failed_battle()
+    run_a = _stale_run(battle_id=battle.id, side="A")
+    run_b = _stale_run(battle_id=battle.id, side="B")
+    db = _RetryLockDB(battle=battle, runs=[run_a, run_b])
+
+    battles.retry_battle(str(battle.id), db=db)  # type: ignore[arg-type]
+
+    assert db.retry_stmt is not None
+    assert "for update" in str(db.retry_stmt).lower()
+
+
+def test_retry_lock_serializes_retry_with_row_lock() -> None:
+    battle = _failed_battle()
+    run_a = _stale_run(battle_id=battle.id, side="A")
+    run_b = _stale_run(battle_id=battle.id, side="B")
+    db = _RetryDB(battle=battle, runs=[run_a, run_b])
+
+    first = battles.retry_battle(str(battle.id), db=db)  # type: ignore[arg-type]
+    assert first.status == "pending"
+
+    with pytest.raises(HTTPException) as exc_info:
+        battles.retry_battle(str(battle.id), db=db)  # type: ignore[arg-type]
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "Only failed battles can be retried"
+
+
+def test_stats_visible_after_vote() -> None:
+    battle_id = uuid.uuid4()
+    task = _task()
+    battle = SimpleNamespace(
+        id=battle_id,
+        task_id=task.id,
+        mode="jp2zh_ab",
+        status="completed",
+        metadata_json=None,
+    )
+    vote_id = uuid.uuid4()
+    runs = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="A",
+            output_text="Alpha",
+            stats={"request_id": "req-a"},
+            error_text=None,
+        ),
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="B",
+            output_text="Beta",
+            stats={"request_id": "req-b"},
+            error_text=None,
+        ),
+    ]
+    db = _QueueDB(
+        [[*runs], [vote_id]],
+        get_map={
+            (battles.Battle, battle_id): battle,
+            (Task, task.id): task,
+        },
+    )
+
+    response = battles.get_battle(str(battle_id), db=db)  # type: ignore[arg-type]
+
+    assert response.run_a is not None
+    assert response.run_b is not None
+    assert response.run_a.stats == {"request_id": "req-a"}
+    assert response.run_b.stats == {"request_id": "req-b"}

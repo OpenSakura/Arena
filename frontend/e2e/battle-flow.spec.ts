@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Route } from "@playwright/test";
 
 type Side = "A" | "B";
 
@@ -58,19 +58,64 @@ function sseBody(events: Array<{ event: string; data: unknown }>): string {
     .join("");
 }
 
+const CORS_HEADERS: Record<string, string> = {
+  "access-control-allow-origin": "http://localhost:13000",
+  "access-control-allow-credentials": "true",
+  "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+  "access-control-allow-headers": "authorization, content-type, accept",
+};
+
+async function handleCorsIfPreflight(route: Route): Promise<boolean> {
+  if (route.request().method() === "OPTIONS") {
+    await route.fulfill({ status: 204, headers: CORS_HEADERS });
+    return true;
+  }
+  return false;
+}
+
+async function mockBattleDetails(
+  page: import("@playwright/test").Page,
+  battlesById: Map<string, BattlePublic>,
+): Promise<void> {
+  await page.route(/\/api\/v1\/battles\/[^/]+$/, async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
+    if (route.request().method() !== "GET") {
+      await route.abort();
+      return;
+    }
+
+    const match = /\/battles\/([^/?]+)$/.exec(route.request().url());
+    const battleId = match?.[1] ?? "";
+    const battle = battlesById.get(battleId);
+
+    await route.fulfill({
+      status: battle ? 200 : 404,
+      contentType: "application/json",
+      headers: CORS_HEADERS,
+      body: JSON.stringify(
+        battle ?? { detail: `Mock battle not found: ${battleId}` },
+      ),
+    });
+  });
+}
+
 test("streams outputs, reveals models after vote, and restarts cleanly", async ({ page }) => {
   let createCount = 0;
   const votePayloads: unknown[] = [];
+  const battlesById = new Map<string, BattlePublic>();
 
   await page.route("**/api/v1/public-config", async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ anon_vote_turnstile_required: false }),
+      headers: CORS_HEADERS,
+      body: JSON.stringify({ anon_battle_turnstile_required: false }),
     });
   });
 
   await page.route("**/api/v1/battles", async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
     if (route.request().method() !== "POST") {
       await route.abort();
       return;
@@ -81,15 +126,20 @@ test("streams outputs, reveals models after vote, and restarts cleanly", async (
       createCount === 1
         ? makeBattle("battle-1", "First JP source")
         : makeBattle("battle-2", "Second JP source");
+    battlesById.set(battle.id, battle);
 
     await route.fulfill({
       status: 200,
       contentType: "application/json",
+      headers: CORS_HEADERS,
       body: JSON.stringify(battle),
     });
   });
 
+  await mockBattleDetails(page, battlesById);
+
   await page.route(/\/api\/v1\/battles\/[^/]+\/stream$/, async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
     const match = /\/battles\/([^/]+)\/stream$/.exec(route.request().url());
     const battleId = match?.[1] ?? "";
 
@@ -111,12 +161,14 @@ test("streams outputs, reveals models after vote, and restarts cleanly", async (
       headers: {
         "content-type": "text/event-stream; charset=utf-8",
         "cache-control": "no-cache",
+        ...CORS_HEADERS,
       },
       body: stream,
     });
   });
 
   await page.route(/\/api\/v1\/battles\/[^/]+\/vote$/, async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
     votePayloads.push(route.request().postDataJSON());
     const match = /\/battles\/([^/]+)\/vote$/.exec(route.request().url());
     const battleId = match?.[1] ?? "battle-unknown";
@@ -124,13 +176,32 @@ test("streams outputs, reveals models after vote, and restarts cleanly", async (
     await route.fulfill({
       status: 200,
       contentType: "application/json",
+      headers: CORS_HEADERS,
+      body: JSON.stringify({
+        vote_id: `vote-${battleId}`,
+        battle_id: battleId,
+        winner: "A",
+        reveal: null,
+      }),
+    });
+  });
+
+  await page.route(/\/api\/v1\/battles\/[^/]+\/vote\/reveal$/, async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
+    const match = /\/battles\/([^/]+)\/vote\/reveal$/.exec(route.request().url());
+    const battleId = match?.[1] ?? "battle-unknown";
+
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: CORS_HEADERS,
       body: JSON.stringify({
         vote_id: `vote-${battleId}`,
         battle_id: battleId,
         winner: "A",
         reveal: {
-          A: { model_id: "model-a", display_name: "Model A" },
-          B: { model_id: "model-b", display_name: "Model B" },
+          A: { model_id: "model-a", display_name: "Revealed Model A" },
+          B: { model_id: "model-b", display_name: "Revealed Model B" },
         },
       }),
     });
@@ -138,7 +209,7 @@ test("streams outputs, reveals models after vote, and restarts cleanly", async (
 
   await page.goto("/battle/new");
 
-  await expect(page.getByText(/^done$/i)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText(/^complete$/i)).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText("First JP source")).toBeVisible();
   await expect(page.getByText("Alpha output (1)")).toBeVisible();
   await expect(page.getByText("Beta output (1)")).toBeVisible();
@@ -147,29 +218,27 @@ test("streams outputs, reveals models after vote, and restarts cleanly", async (
   await expect(page.getByRole("button", { name: "Submit Vote" })).toBeEnabled();
   await page.getByRole("button", { name: "Submit Vote" }).click();
 
-  await expect(page.getByText("Model A", { exact: true }).first()).toBeVisible();
-  await expect(page.getByText("Model A", { exact: true })).toHaveCount(2);
-  await expect(page.getByText("Model B", { exact: true })).toHaveCount(2);
+  await expect(page.getByText("Revealed Model A", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("Revealed Model B", { exact: true }).first()).toBeVisible();
 
   expect(votePayloads).toHaveLength(1);
   const firstVote = votePayloads[0] as Record<string, unknown>;
   expect(firstVote).toMatchObject({
     winner: "A",
     comment: null,
-    turnstile_token: null,
   });
 
   await page.getByRole("button", { name: "Start another battle" }).click();
 
-  await expect(page).toHaveURL(/\/battle\/new\?r=/);
-  await expect(page.getByText(/^done$/i)).toBeVisible({ timeout: 60_000 });
+  await expect(page).toHaveURL(/\/battle\/battle-2$/);
+  await expect(page.getByText(/^complete$/i)).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText("Second JP source")).toBeVisible();
   await expect(page.getByText("Alpha output (2)")).toBeVisible();
   await expect(page.getByText("Beta output (2)")).toBeVisible();
 
   // A restart should clear winner/reveal state from the previous battle.
   await expect(page.getByRole("button", { name: "Submit Vote" })).toBeDisabled();
-  await expect(page.getByText("Model A", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("Revealed Model A", { exact: true })).toHaveCount(0);
 
   expect(createCount).toBe(2);
 });
@@ -179,19 +248,23 @@ test("loads an existing completed battle id without creating a new one", async (
   const votePayloads: unknown[] = [];
 
   await page.route("**/api/v1/public-config", async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ anon_vote_turnstile_required: false }),
+      headers: CORS_HEADERS,
+      body: JSON.stringify({ anon_battle_turnstile_required: false }),
     });
   });
 
   await page.route("**/api/v1/battles", async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
     if (route.request().method() === "POST") {
       createCount += 1;
       await route.fulfill({
         status: 500,
         contentType: "application/json",
+        headers: CORS_HEADERS,
         body: JSON.stringify({ detail: "Unexpected create call" }),
       });
       return;
@@ -201,9 +274,11 @@ test("loads an existing completed battle id without creating a new one", async (
   });
 
   await page.route(/\/api\/v1\/battles\/battle-existing$/, async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
+      headers: CORS_HEADERS,
       body: JSON.stringify({
         id: "battle-existing",
         task_id: "task-existing",
@@ -231,11 +306,13 @@ test("loads an existing completed battle id without creating a new one", async (
   });
 
   await page.route(/\/api\/v1\/battles\/[^/]+\/stream$/, async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
     await route.fulfill({
       status: 200,
       headers: {
         "content-type": "text/event-stream; charset=utf-8",
         "cache-control": "no-cache",
+        ...CORS_HEADERS,
       },
       body: sseBody([
         {
@@ -262,11 +339,29 @@ test("loads an existing completed battle id without creating a new one", async (
   });
 
   await page.route(/\/api\/v1\/battles\/[^/]+\/vote$/, async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
     votePayloads.push(route.request().postDataJSON());
 
     await route.fulfill({
       status: 200,
       contentType: "application/json",
+      headers: CORS_HEADERS,
+      body: JSON.stringify({
+        vote_id: "vote-existing",
+        battle_id: "battle-existing",
+        winner: "B",
+        reveal: null,
+      }),
+    });
+  });
+
+  await page.route(/\/api\/v1\/battles\/[^/]+\/vote\/reveal$/, async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
+
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: CORS_HEADERS,
       body: JSON.stringify({
         vote_id: "vote-existing",
         battle_id: "battle-existing",
@@ -281,7 +376,7 @@ test("loads an existing completed battle id without creating a new one", async (
 
   await page.goto("/battle/battle-existing");
 
-  await expect(page.getByText(/^done$/i)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText(/^complete$/i)).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText("Existing battle source")).toBeVisible();
   await expect(page.getByText("Persisted output A")).toBeVisible();
   await expect(page.getByText("Persisted output B")).toBeVisible();

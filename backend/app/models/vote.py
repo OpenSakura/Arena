@@ -14,6 +14,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -76,6 +77,11 @@ class Vote(Base):
 
     ip_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     user_agent_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    # When True, the voter has seen the model reveal and the vote is locked.
+    revealed: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", default=False, nullable=False
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

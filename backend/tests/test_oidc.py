@@ -15,6 +15,8 @@ from app.services.oidc import (
 
 
 class _StubVerifier(OIDCVerifier):
+    _stub_header: dict[str, Any] = {}
+
     def __init__(
         self, *, header: dict[str, Any], audience: str | None = "arena"
     ) -> None:
@@ -24,17 +26,22 @@ class _StubVerifier(OIDCVerifier):
             cache_ttl_seconds=60,
             http_timeout_seconds=1.0,
         )
-        self._header = header
+        # Store on the class so the @staticmethod override can read it.
+        # Safe because tests are single-threaded and each test creates a
+        # fresh _StubVerifier instance.
+        type(self)._stub_header = dict(header)
         self.seen_kid: str | None = None
 
-    def _get_unverified_header(self, _token: str) -> dict[str, Any]:
-        return dict(self._header)
+    @staticmethod
+    def _get_unverified_header(token: str) -> dict[str, Any]:
+        return dict(_StubVerifier._stub_header)
 
     async def _get_signing_jwk(self, kid: str | None) -> dict[str, Any]:
         self.seen_kid = kid
         return {"kty": "RSA"}
 
-    def _jwk_to_public_key(self, _jwk: dict[str, Any], _alg: str) -> Any:
+    @staticmethod
+    def _jwk_to_public_key(jwk: dict[str, Any], alg: str) -> Any:
         return "public-key"
 
 
@@ -270,3 +277,110 @@ def test_get_signing_jwk_raises_when_key_never_appears(
 
     with pytest.raises(OIDCVerificationError, match="No matching signing key found"):
         asyncio.run(verifier._get_signing_jwk("target"))
+
+
+def test_http_client_lock_prevents_duplicate_creation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    verifier = OIDCVerifier(
+        issuer="https://issuer.example",
+        audience=None,
+        cache_ttl_seconds=60,
+        http_timeout_seconds=1.0,
+    )
+
+    creation_count = 0
+
+    class _FakeAsyncClient:
+        def __init__(self, *, timeout: float, follow_redirects: bool) -> None:
+            nonlocal creation_count
+            _ = (timeout, follow_redirects)
+            creation_count += 1
+            self.is_closed = False
+
+        async def aclose(self) -> None:
+            self.is_closed = True
+
+    monkeypatch.setattr(oidc.httpx, "AsyncClient", _FakeAsyncClient)
+
+    async def _run():
+        barrier = asyncio.Barrier(5)
+
+        async def _get_client_with_count():
+            await barrier.wait()
+            client = await verifier._get_http_client()
+            return client
+
+        tasks = [asyncio.create_task(_get_client_with_count()) for _ in range(5)]
+        clients = await asyncio.gather(*tasks)
+
+        for c in clients[1:]:
+            assert c is clients[0]
+        assert creation_count == 1
+
+        await clients[0].aclose()
+
+    asyncio.run(_run())
+
+
+def test_get_jwks_first_fetch_does_not_deadlock_while_creating_http_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    verifier = OIDCVerifier(
+        issuer="https://issuer.example",
+        audience=None,
+        cache_ttl_seconds=60,
+        http_timeout_seconds=1.0,
+    )
+
+    creation_count = 0
+    fetch_urls: list[str] = []
+
+    class _FakeResponse:
+        def __init__(self, payload: dict[str, Any]) -> None:
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return self._payload
+
+    class _FakeAsyncClient:
+        def __init__(self, *, timeout: float, follow_redirects: bool) -> None:
+            nonlocal creation_count
+            _ = (timeout, follow_redirects)
+            creation_count += 1
+            self.is_closed = False
+
+        async def get(self, url: str) -> _FakeResponse:
+            fetch_urls.append(url)
+            if url.endswith("/.well-known/openid-configuration"):
+                return _FakeResponse(
+                    {
+                        "issuer": "https://issuer.example",
+                        "jwks_uri": "https://issuer.example/jwks",
+                    }
+                )
+            if url.endswith("/jwks"):
+                return _FakeResponse({"keys": [{"kid": "key-1", "kty": "RSA"}]})
+            raise AssertionError(f"Unexpected URL fetched: {url}")
+
+        async def aclose(self) -> None:
+            self.is_closed = True
+
+    monkeypatch.setattr(oidc.httpx, "AsyncClient", _FakeAsyncClient)
+
+    async def _run() -> None:
+        jwks = await asyncio.wait_for(verifier._get_jwks(), timeout=0.5)
+
+        assert jwks == {"keys": [{"kid": "key-1", "kty": "RSA"}]}
+        assert creation_count == 1
+        assert fetch_urls == [
+            "https://issuer.example/.well-known/openid-configuration",
+            "https://issuer.example/jwks",
+        ]
+
+        await verifier.aclose()
+
+    asyncio.run(_run())

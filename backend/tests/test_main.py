@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -8,6 +9,7 @@ from app.api.routes import health
 import app.core.config as config_module
 from app.core import logging as app_logging
 import app.main as main
+from app.utils import redis as redis_utils
 
 
 def _settings(
@@ -24,6 +26,10 @@ def _settings(
         turnstile_secret_key=turnstile_secret_key,
         cors_allow_origins=["http://localhost:3000"],
         api_v1_prefix="/api/v1",
+        # Defaults for settings referenced by middleware/health checks.
+        trust_x_forwarded_for=False,
+        rate_limit_redis_url="",
+        rate_limit_redis_timeout_seconds=0.5,
     )
 
 
@@ -47,16 +53,29 @@ def _create_test_app(
     )
     monkeypatch.setattr(config_module, "get_settings", lambda: settings_obj)
     monkeypatch.setattr(health, "get_settings", lambda: settings_obj)
+    # Health checks call into redis utils; patch its get_settings reference too.
+    monkeypatch.setattr(redis_utils, "get_settings", lambda: settings_obj)
+    redis_utils.get_rate_limit_redis_client.cache_clear()
+
+    # Ensure the health check doesn't try to connect to a stale engine created
+    # by another test module.
+    import app.db.session as session_module
+
+    session_module._engine = None
+    session_module._SessionLocal = None
     monkeypatch.setattr(main, "configure_logging", lambda _settings: None)
     return main.create_app()
 
 
 class _CapturingLogger:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+        self.calls: list[tuple[str, str, tuple[object, ...], dict[str, object]]] = []
 
     def info(self, msg: str, *args: object, **kwargs: object) -> None:
-        self.calls.append((msg, args, dict(kwargs)))
+        self.calls.append(("info", msg, args, dict(kwargs)))
+
+    def warning(self, msg: str, *args: object, **kwargs: object) -> None:
+        self.calls.append(("warning", msg, args, dict(kwargs)))
 
 
 def test_request_id_reuses_header_value_and_trims_whitespace(monkeypatch) -> None:
@@ -96,7 +115,7 @@ def test_public_config_exposes_turnstile_requirement(monkeypatch) -> None:
         response = client.get("/api/v1/public-config")
 
     assert response.status_code == 200
-    assert response.json() == {"anon_vote_turnstile_required": True}
+    assert response.json() == {"anon_battle_turnstile_required": True}
 
 
 def test_access_log_is_not_emitted_when_disabled(monkeypatch) -> None:
@@ -125,7 +144,7 @@ def test_access_log_emits_structured_fields_when_enabled(monkeypatch) -> None:
     assert response.status_code == 200
     assert len(logger.calls) == 1
 
-    message, args, kwargs = logger.calls[0]
+    _level, message, args, kwargs = logger.calls[0]
     assert message == "%s %s -> %s (%sms)"
     assert args[0] == "GET"
     assert args[1] == "/api/v1/healthz"
@@ -139,3 +158,161 @@ def test_access_log_emits_structured_fields_when_enabled(monkeypatch) -> None:
     assert isinstance(extra["duration_ms"], int)
     assert extra["duration_ms"] >= 0
     assert extra["client_ip"]
+
+
+def test_closes_redis_on_shutdown(monkeypatch) -> None:
+    close_calls: list[bool] = []
+    monkeypatch.setattr(
+        main, "close_all_redis_clients", lambda: close_calls.append(True)
+    )
+    app = _create_test_app(monkeypatch)
+
+    with TestClient(app):
+        pass
+
+    assert close_calls == [True]
+
+
+def test_warns_without_rate_limit_redis_in_prod(monkeypatch) -> None:
+    logger = _CapturingLogger()
+    monkeypatch.setattr(main, "logger", logger)
+
+    settings_obj = _settings()
+    settings_obj.app_env = "production"
+    settings_obj.rate_limit_redis_url = ""
+
+    main._emit_startup_warnings(settings_obj)
+
+    warning_messages = [msg for level, msg, _, _ in logger.calls if level == "warning"]
+    assert any("RATE_LIMIT_REDIS_URL" in m for m in warning_messages)
+
+
+def test_worker_mode_warning_emitted_in_prod(monkeypatch) -> None:
+    logger = _CapturingLogger()
+    monkeypatch.setattr(main, "logger", logger)
+
+    settings_obj = _settings()
+    settings_obj.app_env = "production"
+    settings_obj.rate_limit_redis_url = "redis://localhost:6379/0"
+
+    main._emit_startup_warnings(settings_obj)
+
+    warning_messages = [msg for level, msg, _, _ in logger.calls if level == "warning"]
+    assert any("single API worker" in m for m in warning_messages)
+
+
+def test_no_startup_warnings_in_dev(monkeypatch) -> None:
+    logger = _CapturingLogger()
+    monkeypatch.setattr(main, "logger", logger)
+
+    settings_obj = _settings()
+    settings_obj.app_env = "dev"
+
+    main._emit_startup_warnings(settings_obj)
+
+    warning_messages = [msg for level, msg, _, _ in logger.calls if level == "warning"]
+    assert warning_messages == []
+
+
+def test_cors_expose_headers_includes_request_id(monkeypatch) -> None:
+    app = _create_test_app(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/v1/healthz",
+            headers={"Origin": "http://localhost:3000"},
+        )
+
+    assert response.status_code == 200
+    expose = response.headers.get("access-control-expose-headers", "")
+    assert "x-request-id" in expose.lower()
+
+
+# ── Liveness / readiness split (T9) ──
+
+
+def test_livez_always_returns_200(monkeypatch) -> None:
+    app = _create_test_app(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/livez")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+def test_readyz_returns_200_when_deps_are_healthy(monkeypatch) -> None:
+    app = _create_test_app(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/readyz")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+
+
+def test_readyz_returns_503_when_redis_is_unreachable(monkeypatch) -> None:
+    app = _create_test_app(monkeypatch)
+
+    class _BadRedis:
+        def ping(self):
+            raise ConnectionError("redis down")
+
+    monkeypatch.setattr(
+        redis_utils,
+        "get_rate_limit_redis_client",
+        lambda: _BadRedis(),
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/readyz")
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["ok"] is False
+    assert body["checks"]["redis"] is False
+
+
+def test_livez_unaffected_by_redis_failure(monkeypatch) -> None:
+    app = _create_test_app(monkeypatch)
+
+    class _BadRedis:
+        def ping(self):
+            raise ConnectionError("redis down")
+
+    monkeypatch.setattr(
+        redis_utils,
+        "get_rate_limit_redis_client",
+        lambda: _BadRedis(),
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/livez")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+def test_healthz_is_backward_compatible_alias_for_readyz(monkeypatch) -> None:
+    app = _create_test_app(monkeypatch)
+
+    with TestClient(app) as client:
+        readyz = client.get("/api/v1/readyz")
+        healthz = client.get("/api/v1/healthz")
+
+    assert readyz.status_code == healthz.status_code
+    assert readyz.json() == healthz.json()
+
+
+def test_closes_redis_on_shutdown_exactly_once(monkeypatch) -> None:
+    close_calls: list[bool] = []
+    monkeypatch.setattr(
+        main, "close_all_redis_clients", lambda: close_calls.append(True)
+    )
+    app = _create_test_app(monkeypatch)
+
+    with TestClient(app):
+        pass
+
+    assert close_calls == [True]

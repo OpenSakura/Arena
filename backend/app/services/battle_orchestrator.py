@@ -3,24 +3,29 @@
 Battle orchestration (select pair, call models, persist, stream).
 
 Notes:
-- In the MVP (no worker queue), the request thread initiates both model calls.
+- Live battle execution is coordinated in-process by the cached
+  ``BattleOrchestrator`` singleton.
+- Only a single API worker/process is supported for live execution. Extra SSE
+  consumers in that process are read-only observers of the owner's in-memory
+  state, while finished battles still replay from persisted DB state.
 - Use asyncio concurrency; persist incremental state sparingly.
-- Enforce idempotency: a battle/run should not be generated twice.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections import deque
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
+from copy import deepcopy
 from functools import lru_cache
 import logging
 import time
 import uuid
 
 import httpx
-from sqlalchemy import func, select, update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -45,11 +50,56 @@ TRANSLATION_ONLY_POLICY = (
     "Output policy: return only the translated text. "
     "Do not include analysis, explanations, headings, XML/JSON wrappers, or code fences."
 )
+""".. deprecated::
+    Kept as a constant for reference / migration. No longer auto-appended to
+    system prompts — include the output-policy instruction directly in your
+    prompt template via the admin UI instead.
+"""
 
 logger = logging.getLogger(__name__)
 
 EmitFn = Callable[[str, object], Awaitable[None]]
 MAX_REPLAY_DELTA_CHARS = 32_000
+MAX_LIVE_HISTORY_BYTES = 512_000
+StreamQueue = asyncio.Queue[bytes | None]
+
+
+@dataclass(slots=True, frozen=True)
+class BattleSnapshot:
+    id: uuid.UUID
+    task_id: uuid.UUID
+    status: str
+    metadata_json: dict[str, object] | None
+
+
+@dataclass(slots=True, frozen=True)
+class RunSnapshot:
+    id: uuid.UUID
+    battle_id: uuid.UUID
+    side: str
+    model_id: uuid.UUID
+    output_text: str | None = None
+    error_text: str | None = None
+
+
+@dataclass(slots=True)
+class _RunStreamItem:
+    kind: str
+    text_delta: str | None = None
+    error_text: str | None = None
+
+
+@dataclass(slots=True)
+class _RunStreamState:
+    prepared: PreparedRun
+    queue: asyncio.Queue[_RunStreamItem]
+    text_parts: list[str]
+    raw_parts: list[str]
+    usage: dict[str, object] | None
+    request_id: str | None
+    finish_reason: str | None
+    error_text: str | None
+    latency_ms: int | None
 
 
 def _task_payload_from_battle_metadata(metadata: object) -> tuple[str, str, str] | None:
@@ -95,21 +145,27 @@ class PreparedRun:
 
 
 @dataclass(slots=True)
-class BattleLockEntry:
-    lock: asyncio.Lock
-    users: int = 0
+class _LiveBattleEntry:
+    subscribers: set[StreamQueue]
+    history: deque[bytes]
+    history_bytes: int = 0
+    owner_task: asyncio.Task[None] | None = None
 
 
 class BattleOrchestrator:
-    """Coordinates battle lifecycle and streaming execution."""
+    """Coordinates battle lifecycle and single-process live streaming."""
 
     def __init__(self, llm_client: LLMClient | None = None) -> None:
         self._llm_client = llm_client or LLMClient()
         self._SessionLocal = get_sessionmaker()
-        # Instance-level mutable state (not class-level) so each instance
-        # (and especially tests) gets its own lock registry.
-        self._lock_by_battle_id: dict[uuid.UUID, BattleLockEntry] = {}
-        self._lock_registry_guard = asyncio.Lock()
+        self._battle_running_wait_timeout_seconds = max(
+            int(get_settings().battle_running_wait_timeout_seconds),
+            1,
+        )
+        # Live execution state is process-local. This intentionally supports a
+        # single API worker/process for active battles.
+        self._live_battles: dict[uuid.UUID, _LiveBattleEntry] = {}
+        self._live_battles_guard = asyncio.Lock()
 
     async def stream_battle(
         self,
@@ -117,58 +173,76 @@ class BattleOrchestrator:
         *,
         request_id: str | None = None,
     ) -> AsyncIterator[bytes]:
-        queue: asyncio.Queue[bytes | None] = asyncio.Queue()
-        stream_detached = False
-        stream_completed = False
+        queue: StreamQueue = asyncio.Queue()
+        observer_task: asyncio.Task[None] | None = None
 
         async def emit(event: str, data: object) -> None:
-            if stream_detached:
-                return
             await queue.put(sse_event(event=event, data=data))
 
-        async def runner() -> None:
-            try:
-                await self._stream_battle_impl(
-                    battle_id=battle_id,
-                    emit=emit,
-                    request_id=request_id,
-                )
-            except Exception:  # noqa: BLE001
-                logger.exception("Battle stream failed for battle_id=%s", battle_id)
-                if not stream_detached:
-                    await emit(
-                        "battle.error",
-                        {"battle_id": str(battle_id), "detail": "stream_failed"},
-                    )
-            finally:
-                if not stream_detached:
-                    await queue.put(None)
+        battle, runs = await asyncio.to_thread(
+            lambda: self._load_battle_and_runs(battle_id)
+        )
+        if battle is None:
+            await emit(
+                "battle.error", {"battle_id": str(battle_id), "detail": "not_found"}
+            )
+            await queue.put(None)
+        elif not runs:
+            await asyncio.to_thread(
+                lambda: self._mark_battle_status(battle_id=battle_id, status="failed")
+            )
+            await emit(
+                "battle.error",
+                {"battle_id": str(battle_id), "detail": "missing_runs"},
+            )
+            await queue.put(None)
+        elif battle.status == "completed":
+            await self._replay_finished_runs(
+                battle_id=battle_id,
+                runs=runs,
+                emit=emit,
+                final_event="battle.completed",
+            )
+            await queue.put(None)
+        elif battle.status == "failed":
+            await self._replay_finished_runs(
+                battle_id=battle_id,
+                runs=runs,
+                emit=emit,
+                final_event="battle.failed",
+            )
+            await queue.put(None)
+        else:
+            observer_task = await self._attach_live_battle_stream(
+                battle_id=battle_id,
+                battle_status=battle.status,
+                subscriber=queue,
+                request_id=request_id,
+            )
 
-        task = asyncio.create_task(runner())
         try:
             while True:
                 item = await queue.get()
                 if item is None:
-                    stream_completed = True
                     break
                 yield item
         finally:
-            stream_detached = True
-            if stream_completed:
-                with suppress(asyncio.CancelledError):
-                    await task
-                return
+            task_done = observer_task.done() if observer_task is not None else False
 
-            if task.done():
-                self._log_background_runner_failure(task=task, battle_id=battle_id)
-                return
-
-            task.add_done_callback(
-                lambda done_task: self._log_background_runner_failure(
-                    task=done_task,
-                    battle_id=battle_id,
-                )
+            await self._detach_live_battle_stream(
+                battle_id=battle_id,
+                subscriber=queue,
             )
+
+            if observer_task is not None:
+                if task_done:
+                    self._log_background_runner_failure(
+                        task=observer_task, battle_id=battle_id
+                    )
+                else:
+                    observer_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await observer_task
 
     @staticmethod
     def _log_background_runner_failure(
@@ -186,25 +260,160 @@ class BattleOrchestrator:
                 battle_id,
             )
 
-    async def _stream_battle_impl(
+    async def _attach_live_battle_stream(
+        self,
+        *,
+        battle_id: uuid.UUID,
+        battle_status: str,
+        subscriber: StreamQueue,
+        request_id: str | None,
+    ) -> asyncio.Task[None] | None:
+        owner_task: asyncio.Task[None] | None = None
+        async with self._live_battles_guard:
+            entry = self._live_battles.get(battle_id)
+            if entry is not None:
+                for payload in entry.history:
+                    subscriber.put_nowait(payload)
+                entry.subscribers.add(subscriber)
+                return None
+
+            if battle_status == "pending":
+                entry = _LiveBattleEntry(
+                    subscribers={subscriber},
+                    history=deque(),
+                )
+                self._live_battles[battle_id] = entry
+                owner_task = asyncio.create_task(
+                    self._run_owned_battle(
+                        battle_id=battle_id,
+                        request_id=request_id,
+                    )
+                )
+                entry.owner_task = owner_task
+            else:
+                return asyncio.create_task(
+                    self._observe_running_battle_to_queue(
+                        battle_id=battle_id,
+                        subscriber=subscriber,
+                    )
+                )
+
+        if owner_task is not None:
+            owner_task.add_done_callback(
+                lambda done_task: self._log_background_runner_failure(
+                    task=done_task,
+                    battle_id=battle_id,
+                )
+            )
+        return None
+
+    async def _detach_live_battle_stream(
+        self,
+        *,
+        battle_id: uuid.UUID,
+        subscriber: StreamQueue,
+    ) -> None:
+        async with self._live_battles_guard:
+            entry = self._live_battles.get(battle_id)
+            if entry is None:
+                return
+            entry.subscribers.discard(subscriber)
+
+    async def _run_owned_battle(
+        self,
+        *,
+        battle_id: uuid.UUID,
+        request_id: str | None,
+    ) -> None:
+        async def emit(event: str, data: object) -> None:
+            await self._broadcast_live_battle_event(
+                battle_id=battle_id,
+                event=event,
+                data=data,
+            )
+
+        try:
+            await asyncio.wait_for(
+                self._execute_owned_battle(
+                    battle_id=battle_id,
+                    emit=emit,
+                    request_id=request_id,
+                ),
+                timeout=float(self._battle_running_wait_timeout_seconds),
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "Battle owner task timed out for battle_id=%s after %ss",
+                battle_id,
+                self._battle_running_wait_timeout_seconds,
+            )
+            with suppress(Exception):
+                await self._fail_battle_for_timeout(
+                    battle_id=battle_id,
+                    emit=emit,
+                    detail="runtime_timeout",
+                    error_text=(
+                        "Battle runtime exceeded timeout of "
+                        f"{self._battle_running_wait_timeout_seconds}s"
+                    ),
+                )
+        except Exception as exc:  # noqa: BLE001
+            error_text = str(exc)
+            logger.exception("Battle owner task failed for battle_id=%s", battle_id)
+            with suppress(Exception):
+                await asyncio.to_thread(
+                    lambda: self._mark_battle_status(
+                        battle_id=battle_id,
+                        status="failed",
+                    )
+                )
+            with suppress(Exception):
+                await asyncio.to_thread(
+                    lambda: self._persist_battle_run_errors(
+                        battle_id=battle_id,
+                        error_text=error_text,
+                    )
+                )
+            with suppress(Exception):
+                await emit(
+                    "battle.failed",
+                    {
+                        "battle_id": str(battle_id),
+                        "detail": "owner_task_failed",
+                    },
+                )
+        finally:
+            await self._close_live_battle(battle_id=battle_id)
+
+    async def _fail_battle_for_timeout(
         self,
         *,
         battle_id: uuid.UUID,
         emit: EmitFn,
-        request_id: str | None,
+        detail: str,
+        error_text: str,
     ) -> None:
-        lock = await self._get_lock(battle_id)
-        try:
-            async with lock:
-                await self._stream_locked(
-                    battle_id=battle_id,
-                    emit=emit,
-                    request_id=request_id,
-                )
-        finally:
-            await self._release_lock_ref(battle_id=battle_id, lock=lock)
+        await asyncio.to_thread(
+            lambda: self._mark_battle_status(
+                battle_id=battle_id,
+                status="failed",
+            )
+        )
+        await asyncio.to_thread(
+            lambda: self._persist_battle_run_errors(
+                battle_id=battle_id,
+                error_text=error_text,
+            )
+        )
+        await emit(
+            "battle.failed",
+            {
+                "battle_id": str(battle_id),
+                "detail": detail,
+            },
+        )
 
-    async def _stream_locked(
+    async def _execute_owned_battle(
         self,
         *,
         battle_id: uuid.UUID,
@@ -249,20 +458,12 @@ class BattleOrchestrator:
             return
 
         if battle.status == "running":
-            await self._wait_for_running_battle(battle_id=battle_id, emit=emit)
+            await self._observe_running_battle(battle_id=battle_id, emit=emit)
             return
 
-        # Claim the battle for execution (works across multiple API workers).
-        if not await asyncio.to_thread(
-            lambda: self._try_transition_battle_status(
-                battle_id=battle_id,
-                from_status="pending",
-                to_status="running",
-            )
-        ):
-            await self._wait_for_running_battle(battle_id=battle_id, emit=emit)
-            return
-
+        await asyncio.to_thread(
+            lambda: self._mark_battle_status(battle_id=battle_id, status="running")
+        )
         await emit("battle.started", {"battle_id": str(battle_id)})
 
         try:
@@ -273,35 +474,28 @@ class BattleOrchestrator:
                     request_id=request_id,
                 )
             )
-            results = await asyncio.gather(
-                *[
-                    self._execute_run(prepared=prepared, emit=emit)
-                    for prepared in prepared_runs
-                ],
-                return_exceptions=True,
+            results = await self._execute_runs_synced(
+                prepared_runs=prepared_runs,
+                emit=emit,
             )
         except Exception as exc:  # noqa: BLE001
+            error_text = str(exc)
             logger.exception("Battle execution failed for battle_id=%s", battle_id)
-            final_status = await asyncio.to_thread(
-                lambda: self._finalize_running_battle_status(
-                    battle_id=battle_id,
-                    desired_status="failed",
-                )
+            await asyncio.to_thread(
+                lambda: self._mark_battle_status(battle_id=battle_id, status="failed")
             )
             await asyncio.to_thread(
                 lambda: self._persist_battle_run_errors(
-                    battle_id=battle_id, error_text=str(exc)
+                    battle_id=battle_id,
+                    error_text=error_text,
                 )
             )
             await emit(
-                "battle.completed" if final_status == "completed" else "battle.failed",
-                {"battle_id": str(battle_id)},
+                "battle.failed",
+                {"battle_id": str(battle_id), "detail": "execution_failed"},
             )
             return
 
-        # With return_exceptions=True, exceptions appear as values in the
-        # results list.  Treat them as run failures so one crashing run
-        # does not cancel the other.
         run_ok: list[bool] = []
         for idx, result in enumerate(results):
             if isinstance(result, BaseException):
@@ -315,23 +509,52 @@ class BattleOrchestrator:
             else:
                 run_ok.append(bool(result))
 
-        all_success = all(run_ok)
-        desired_status = "completed" if all_success else "failed"
-        final_status = await asyncio.to_thread(
-            lambda: self._finalize_running_battle_status(
+        desired_status = "completed" if all(run_ok) else "failed"
+        await asyncio.to_thread(
+            lambda: self._mark_battle_status(
                 battle_id=battle_id,
-                desired_status=desired_status,
+                status=desired_status,
             )
         )
+        if desired_status == "completed":
+            await emit("battle.completed", {"battle_id": str(battle_id)})
+        else:
+            await emit(
+                "battle.failed", {"battle_id": str(battle_id), "detail": "run_failed"}
+            )
 
-        await emit(
-            "battle.completed" if final_status == "completed" else "battle.failed",
-            {"battle_id": str(battle_id)},
-        )
+    async def _broadcast_live_battle_event(
+        self,
+        *,
+        battle_id: uuid.UUID,
+        event: str,
+        data: object,
+    ) -> None:
+        payload = sse_event(event=event, data=data)
+        async with self._live_battles_guard:
+            entry = self._live_battles.get(battle_id)
+            if entry is None:
+                return
+            entry.history.append(payload)
+            entry.history_bytes += len(payload)
+            while entry.history and entry.history_bytes > MAX_LIVE_HISTORY_BYTES:
+                entry.history_bytes -= len(entry.history.popleft())
+            subscribers = tuple(entry.subscribers)
+
+        for subscriber in subscribers:
+            subscriber.put_nowait(payload)
+
+    async def _close_live_battle(self, *, battle_id: uuid.UUID) -> None:
+        async with self._live_battles_guard:
+            entry = self._live_battles.pop(battle_id, None)
+        if entry is None:
+            return
+        for subscriber in tuple(entry.subscribers):
+            subscriber.put_nowait(None)
 
     def _load_battle_and_runs(
         self, battle_id: uuid.UUID
-    ) -> tuple[Battle | None, list[Run]]:
+    ) -> tuple[BattleSnapshot | None, list[RunSnapshot]]:
         db: Session = self._SessionLocal()
         try:
             battle = db.get(Battle, battle_id)
@@ -346,7 +569,25 @@ class BattleOrchestrator:
                 .scalars()
                 .all()
             )
-            return battle, list(runs)
+            return (
+                BattleSnapshot(
+                    id=battle.id,
+                    task_id=battle.task_id,
+                    status=battle.status,
+                    metadata_json=deepcopy(battle.metadata_json),
+                ),
+                [
+                    RunSnapshot(
+                        id=run.id,
+                        battle_id=run.battle_id,
+                        side=run.side,
+                        model_id=run.model_id,
+                        output_text=run.output_text,
+                        error_text=run.error_text,
+                    )
+                    for run in runs
+                ],
+            )
         finally:
             db.close()
 
@@ -354,7 +595,7 @@ class BattleOrchestrator:
         self,
         *,
         battle_id: uuid.UUID,
-        runs: list[Run],
+        runs: Sequence[RunSnapshot | Run],
         emit: EmitFn,
         final_event: str,
     ) -> None:
@@ -385,25 +626,37 @@ class BattleOrchestrator:
                     },
                 )
 
-        await emit(
-            final_event,
-            {"battle_id": str(battle_id), "replay": True},
-        )
+        payload: dict[str, object] = {"battle_id": str(battle_id), "replay": True}
+        if final_event == "battle.failed":
+            payload["detail"] = "replay_failed"
+        await emit(final_event, payload)
 
-    async def _wait_for_running_battle(
+    async def _observe_running_battle(
         self,
         *,
         battle_id: uuid.UUID,
         emit: EmitFn,
     ) -> None:
-        settings = get_settings()
         poll_interval_seconds = 0.5
-        max_wait_seconds = max(int(settings.battle_running_wait_timeout_seconds), 1)
-        max_polls = max(1, int(max_wait_seconds / poll_interval_seconds))
+        deadline = time.monotonic() + float(self._battle_running_wait_timeout_seconds)
+        # Unsupported deployment fallback: another process marked the battle
+        # running, but this process has no local owner task. Stay read-only and
+        # wait for persisted terminal state for a bounded period.
+        while True:
+            remaining_seconds = deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                await self._fail_battle_for_timeout(
+                    battle_id=battle_id,
+                    emit=emit,
+                    detail="observer_timeout",
+                    error_text=(
+                        "Battle observer exceeded timeout of "
+                        f"{self._battle_running_wait_timeout_seconds}s"
+                    ),
+                )
+                return
 
-        # Best-effort wait for another worker's execution.
-        for _ in range(max_polls):
-            await asyncio.sleep(poll_interval_seconds)
+            await asyncio.sleep(min(poll_interval_seconds, remaining_seconds))
             battle, runs = await asyncio.to_thread(
                 lambda: self._load_battle_and_runs(battle_id)
             )
@@ -431,100 +684,25 @@ class BattleOrchestrator:
                 )
                 return
 
-        timeout_detail = "timed_out_waiting_for_running_battle"
-        battle, runs = await asyncio.to_thread(
-            lambda: self._load_battle_and_runs(battle_id)
-        )
-        if battle is None:
-            await emit(
-                "battle.error", {"battle_id": str(battle_id), "detail": "not_found"}
-            )
-            return
+    async def _observe_running_battle_to_queue(
+        self,
+        *,
+        battle_id: uuid.UUID,
+        subscriber: StreamQueue,
+    ) -> None:
+        async def emit(event: str, data: object) -> None:
+            await subscriber.put(sse_event(event=event, data=data))
 
-        if battle.status == "completed":
-            await self._replay_finished_runs(
-                battle_id=battle_id,
-                runs=runs,
-                emit=emit,
-                final_event="battle.completed",
-            )
-            return
-
-        if battle.status == "failed":
-            await self._replay_finished_runs(
-                battle_id=battle_id,
-                runs=runs,
-                emit=emit,
-                final_event="battle.failed",
-            )
-            return
-
-        if battle.status == "running":
-            # Avoid leaving battles permanently stuck in running state when
-            # observers time out waiting for another worker to finish.
-            transitioned = await asyncio.to_thread(
-                lambda: self._try_transition_battle_status(
-                    battle_id=battle_id,
-                    from_status="running",
-                    to_status="failed",
-                )
-            )
-            if transitioned:
-                await asyncio.to_thread(
-                    lambda: self._persist_battle_run_errors(
-                        battle_id=battle_id,
-                        error_text=timeout_detail,
-                    )
-                )
-                await emit(
-                    "battle.failed",
-                    {
-                        "battle_id": str(battle_id),
-                        "detail": timeout_detail,
-                    },
-                )
-                return
-
-            battle, runs = await asyncio.to_thread(
-                lambda: self._load_battle_and_runs(battle_id)
-            )
-            if battle is None:
-                await emit(
-                    "battle.error", {"battle_id": str(battle_id), "detail": "not_found"}
-                )
-                return
-
-            if battle.status == "completed":
-                await self._replay_finished_runs(
-                    battle_id=battle_id,
-                    runs=runs,
-                    emit=emit,
-                    final_event="battle.completed",
-                )
-                return
-
-            if battle.status == "failed":
-                await self._replay_finished_runs(
-                    battle_id=battle_id,
-                    runs=runs,
-                    emit=emit,
-                    final_event="battle.failed",
-                )
-                return
-
-        await emit(
-            "battle.error",
-            {
-                "battle_id": str(battle_id),
-                "detail": timeout_detail,
-            },
-        )
+        try:
+            await self._observe_running_battle(battle_id=battle_id, emit=emit)
+        finally:
+            await subscriber.put(None)
 
     def _prepare_runs_for_execution(
         self,
         *,
-        battle: Battle,
-        runs: list[Run],
+        battle: BattleSnapshot,
+        runs: list[RunSnapshot],
         request_id: str | None,
     ) -> list[PreparedRun]:
         db: Session = self._SessionLocal()
@@ -627,7 +805,7 @@ class BattleOrchestrator:
                     "target_lang": target_lang,
                 },
             )
-            return f"{rendered}\n\n{TRANSLATION_ONLY_POLICY}"
+            return rendered
 
         # Use Template.safe_substitute to avoid crashes if language names
         # happen to contain Python format specifiers like {0} or {__class__}.
@@ -639,7 +817,7 @@ class BattleOrchestrator:
             source_lang=source_lang,
             target_lang=target_lang,
         )
-        return f"{default_prompt}\n\n{TRANSLATION_ONLY_POLICY}"
+        return default_prompt
 
     @staticmethod
     def _build_model_params(model: Model) -> dict[str, object]:
@@ -668,6 +846,7 @@ class BattleOrchestrator:
         started = time.monotonic()
 
         text_parts: list[str] = []
+        raw_parts: list[str] = []
         usage: dict[str, object] | None = None
         request_id: str | None = None
         finish_reason: str | None = None
@@ -696,6 +875,7 @@ class BattleOrchestrator:
                 if chunk.finish_reason is not None:
                     finish_reason = chunk.finish_reason
                 if chunk.text_delta:
+                    raw_parts.append(chunk.text_delta)
                     text_parts.append(chunk.text_delta)
                     await emit(
                         "run.delta",
@@ -713,6 +893,13 @@ class BattleOrchestrator:
 
         latency_ms = int((time.monotonic() - started) * 1000)
         output_text = "".join(text_parts) if text_parts else None
+        output_text_raw = "".join(raw_parts) if raw_parts else None
+
+        # Treat empty/whitespace-only output as a failure so the battle can't
+        # end up `completed` but non-votable.
+        if error_text is None and (output_text is None or not output_text.strip()):
+            error_text = "LLM produced empty output"
+            output_text = None
 
         stats: dict[str, object] = {
             "latency_ms": latency_ms,
@@ -726,6 +913,7 @@ class BattleOrchestrator:
             lambda: self._persist_run_result(
                 run_id=prepared.run_id,
                 output_text=output_text,
+                output_text_raw=output_text_raw,
                 stats=stats,
                 error_text=error_text,
                 request_json=prepared.request_json,
@@ -756,11 +944,234 @@ class BattleOrchestrator:
         )
         return True
 
+    async def _execute_runs_synced(
+        self,
+        *,
+        prepared_runs: list[PreparedRun],
+        emit: EmitFn,
+    ) -> list[bool | BaseException]:
+        """Execute runs while synchronizing streamed deltas.
+
+        FastChat's arena UI intentionally synchronizes display to reduce model
+        identity leakage via timing differences. We mimic that behavior by
+        buffering per-run deltas and emitting them in lockstep.
+
+        Notes:
+        - This only applies to the standard two-sided arena (A/B).
+        - We still persist per-run results/stats; we just avoid leaking
+          completion timing via extra SSE events.
+        """
+
+        prepared_sorted = sorted(prepared_runs, key=lambda run: run.side)
+        sides = {run.side for run in prepared_sorted}
+        if len(prepared_runs) != 2 or sides != {"A", "B"}:
+            # Fallback: keep behavior for any future non-A/B modes.
+            return await asyncio.gather(
+                *[
+                    self._execute_run(prepared=prepared, emit=emit)
+                    for prepared in prepared_runs
+                ],
+                return_exceptions=True,
+            )
+
+        states: list[_RunStreamState] = []
+        for prepared in prepared_sorted:
+            states.append(
+                _RunStreamState(
+                    prepared=prepared,
+                    queue=asyncio.Queue(maxsize=1),
+                    text_parts=[],
+                    raw_parts=[],
+                    usage=None,
+                    request_id=None,
+                    finish_reason=None,
+                    error_text=None,
+                    latency_ms=None,
+                )
+            )
+
+        producers = [
+            asyncio.create_task(self._execute_run_buffered(state=state, emit=emit))
+            for state in states
+        ]
+        drainer = asyncio.create_task(
+            self._drain_synced_deltas(states=states, emit=emit)
+        )
+
+        try:
+            results = await asyncio.gather(*producers, return_exceptions=True)
+        finally:
+            # Ensure the drainer exits even if producers fail unexpectedly.
+            for state in states:
+                # Best-effort: do not block if queue is full.
+                try:
+                    state.queue.put_nowait(_RunStreamItem(kind="done"))
+                except asyncio.QueueFull:
+                    pass
+            with suppress(asyncio.CancelledError):
+                await drainer
+
+        results_by_side = {
+            state.prepared.side: result for state, result in zip(states, results)
+        }
+        # Preserve the caller's order for downstream bookkeeping.
+        return [results_by_side.get(run.side, False) for run in prepared_runs]
+
+    async def _execute_run_buffered(
+        self,
+        *,
+        state: _RunStreamState,
+        emit: EmitFn,
+    ) -> bool:
+        """Stream a single run into an internal queue and persist result."""
+
+        prepared = state.prepared
+        started = time.monotonic()
+
+        try:
+            upstream_headers: dict[str, str] = {
+                "X-Arena-Battle-ID": str(prepared.battle_id),
+                "X-Arena-Run-ID": str(prepared.run_id),
+            }
+            if prepared.request_id:
+                upstream_headers["X-Request-ID"] = prepared.request_id
+
+            async for chunk in self._llm_client.stream_chat_completion(
+                base_url=prepared.base_url,
+                model=prepared.model_name,
+                api_key=prepared.api_key,
+                messages=prepared.messages,
+                params=prepared.params,
+                extra_headers=upstream_headers,
+            ):
+                if chunk.request_id is not None and state.request_id is None:
+                    state.request_id = chunk.request_id
+                if chunk.usage is not None:
+                    state.usage = chunk.usage
+                if chunk.finish_reason is not None:
+                    state.finish_reason = chunk.finish_reason
+
+                if not chunk.text_delta:
+                    continue
+                state.raw_parts.append(chunk.text_delta)
+                state.text_parts.append(chunk.text_delta)
+                await state.queue.put(
+                    _RunStreamItem(kind="delta", text_delta=chunk.text_delta)
+                )
+
+        except httpx.HTTPError as exc:
+            state.error_text = f"LLM HTTP error: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            state.error_text = f"LLM stream error: {exc}"
+        finally:
+            await state.queue.put(_RunStreamItem(kind="done"))
+
+        state.latency_ms = int((time.monotonic() - started) * 1000)
+        output_text = "".join(state.text_parts) if state.text_parts else None
+        output_text_raw = "".join(state.raw_parts) if state.raw_parts else None
+
+        if state.error_text is None and (
+            output_text is None or not output_text.strip()
+        ):
+            state.error_text = "LLM produced empty output"
+            output_text = None
+        stats: dict[str, object] = {
+            "latency_ms": state.latency_ms,
+            "request_id": state.request_id,
+            "usage": state.usage,
+            "finish_reason": state.finish_reason,
+            "arena_request_id": prepared.request_id,
+        }
+
+        await asyncio.to_thread(
+            lambda: self._persist_run_result(
+                run_id=prepared.run_id,
+                output_text=output_text,
+                output_text_raw=output_text_raw,
+                stats=stats,
+                error_text=state.error_text,
+                request_json=prepared.request_json,
+                prompt_rendered=prepared.prompt_rendered,
+            )
+        )
+
+        if state.error_text is not None:
+            await emit(
+                "run.error",
+                {
+                    "battle_id": str(prepared.battle_id),
+                    "run_id": str(prepared.run_id),
+                    "side": prepared.side,
+                    "error": state.error_text,
+                },
+            )
+            return False
+
+        return True
+
+    async def _drain_synced_deltas(
+        self,
+        *,
+        states: list[_RunStreamState],
+        emit: EmitFn,
+    ) -> None:
+        """Drain per-run delta queues, emitting deltas in lockstep."""
+
+        state_by_side = {state.prepared.side: state for state in states}
+        sides = sorted(state_by_side.keys())
+        done: set[str] = set()
+
+        while len(done) < len(sides):
+            remaining = [side for side in sides if side not in done]
+            if not remaining:
+                return
+
+            if len(remaining) >= 2:
+                # Deterministic ordering (A then B) + sequential awaits so the
+                # emitted stream is paced by the slowest side.
+                items: list[tuple[str, _RunStreamItem]] = []
+                for side in remaining:
+                    items.append((side, await state_by_side[side].queue.get()))
+
+                for side, item in items:
+                    prepared = state_by_side[side].prepared
+                    if item.kind == "delta" and item.text_delta:
+                        await emit(
+                            "run.delta",
+                            {
+                                "battle_id": str(prepared.battle_id),
+                                "run_id": str(prepared.run_id),
+                                "side": prepared.side,
+                                "text_delta": item.text_delta,
+                            },
+                        )
+                    elif item.kind == "done":
+                        done.add(side)
+                continue
+
+            # Single remaining side: stream without synchronization.
+            side = remaining[0]
+            prepared = state_by_side[side].prepared
+            item = await state_by_side[side].queue.get()
+            if item.kind == "delta" and item.text_delta:
+                await emit(
+                    "run.delta",
+                    {
+                        "battle_id": str(prepared.battle_id),
+                        "run_id": str(prepared.run_id),
+                        "side": prepared.side,
+                        "text_delta": item.text_delta,
+                    },
+                )
+            elif item.kind == "done":
+                done.add(side)
+
     def _persist_run_result(
         self,
         *,
         run_id: uuid.UUID,
         output_text: str | None,
+        output_text_raw: str | None,
         stats: dict[str, object],
         error_text: str | None,
         request_json: dict[str, object] | None = None,
@@ -772,22 +1183,19 @@ class BattleOrchestrator:
             if run is None:
                 return
 
-            # Only update error_text if the run doesn't already have one set
-            # by a timeout observer. This prevents overwriting a timeout error
-            # with None when the executor finishes after the observer timed out.
             if run.error_text is None:
                 run.error_text = error_text
             elif error_text is not None:
-                # Executor also errored — keep the first (observer's) error
-                # but log the executor's error for diagnostics.
+                # Preserve the first persisted run error and log any later
+                # duplicate failure for diagnostics.
                 logger.warning(
-                    "Run %s already has error_text from observer, "
-                    "executor error discarded: %s",
+                    "Run %s already has persisted error_text, duplicate error discarded: %s",
                     run_id,
                     error_text,
                 )
 
             run.output_text = output_text
+            run.output_text_raw = output_text_raw
             run.stats = stats
             if request_json is not None:
                 run.request_json = request_json
@@ -816,62 +1224,6 @@ class BattleOrchestrator:
         finally:
             db.close()
 
-    def _finalize_running_battle_status(
-        self,
-        *,
-        battle_id: uuid.UUID,
-        desired_status: str,
-    ) -> str:
-        """Finalize a running battle without clobbering terminal races.
-
-        Another stream worker can time out and mark a stuck ``running`` battle as
-        ``failed``. When that happens, the original executor must not overwrite
-        the terminal status back to ``completed``.
-        """
-
-        if self._try_transition_battle_status(
-            battle_id=battle_id,
-            from_status="running",
-            to_status=desired_status,
-        ):
-            return desired_status
-
-        battle, _ = self._load_battle_and_runs(battle_id)
-        if battle is None:
-            return desired_status
-
-        if battle.status in {"completed", "failed"}:
-            return battle.status
-
-        # Unexpected non-terminal status (for example, manual DB mutation).
-        # Keep this path deterministic and force the desired terminal status.
-        self._mark_battle_status(battle_id=battle_id, status=desired_status)
-        return desired_status
-
-    def _try_transition_battle_status(
-        self,
-        *,
-        battle_id: uuid.UUID,
-        from_status: str,
-        to_status: str,
-    ) -> bool:
-        db: Session = self._SessionLocal()
-        try:
-            result = db.execute(
-                update(Battle)
-                .where(Battle.id == battle_id, Battle.status == from_status)
-                .values(status=to_status, updated_at=func.now())
-            )
-            db.commit()
-            # SQLAlchemy's rowcount typing varies by backend/stubs.
-            rowcount_attr = "rowcount"
-            return bool(getattr(result, rowcount_attr, 0))
-        except Exception:
-            db.rollback()
-            raise
-        finally:
-            db.close()
-
     def _persist_battle_run_errors(
         self, *, battle_id: uuid.UUID, error_text: str
     ) -> None:
@@ -890,7 +1242,11 @@ class BattleOrchestrator:
             db.close()
 
     @staticmethod
-    def _resolve_task_payload(*, db: Session, battle: Battle) -> tuple[str, str, str]:
+    def _resolve_task_payload(
+        *,
+        db: Session,
+        battle: BattleSnapshot,
+    ) -> tuple[str, str, str]:
         from_metadata = _task_payload_from_battle_metadata(battle.metadata_json)
         if from_metadata is not None:
             return from_metadata
@@ -899,29 +1255,6 @@ class BattleOrchestrator:
         if task is None:
             raise RuntimeError("Battle task not found")
         return task.source_text, task.source_lang, task.target_lang
-
-    async def _get_lock(self, battle_id: uuid.UUID) -> asyncio.Lock:
-        async with self._lock_registry_guard:
-            entry = self._lock_by_battle_id.get(battle_id)
-            if entry is None:
-                entry = BattleLockEntry(lock=asyncio.Lock())
-                self._lock_by_battle_id[battle_id] = entry
-            entry.users += 1
-            return entry.lock
-
-    async def _release_lock_ref(
-        self, *, battle_id: uuid.UUID, lock: asyncio.Lock
-    ) -> None:
-        async with self._lock_registry_guard:
-            entry = self._lock_by_battle_id.get(battle_id)
-            if entry is None or entry.lock is not lock:
-                return
-
-            if entry.users > 0:
-                entry.users -= 1
-
-            if entry.users == 0 and not entry.lock.locked():
-                self._lock_by_battle_id.pop(battle_id, None)
 
 
 @lru_cache(maxsize=1)

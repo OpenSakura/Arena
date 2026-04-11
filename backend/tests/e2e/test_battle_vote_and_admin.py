@@ -306,30 +306,18 @@ def test_vote_pipeline_handles_idempotency_and_conflicts(
         db_session, suffix=suffix
     )
 
-    before_a_rating, before_a_games = _rating_snapshot(db_session, model_a_id)
-    before_b_rating, before_b_games = _rating_snapshot(db_session, model_b_id)
-
+    # Submit initial vote — returns reveal=null (vote is not yet revealed).
     first = backend_client.post(
         f"/api/v1/battles/{battle_id}/vote", json={"winner": "A"}
     )
-    assert first.status_code == 200
+    assert first.status_code == 201
     first_payload = first.json()
     assert first_payload["battle_id"] == str(battle_id)
     assert first_payload["winner"] == "A"
-    assert first_payload["reveal"]["A"]["model_id"] == str(model_a_id)
-    assert first_payload["reveal"]["B"]["model_id"] == str(model_b_id)
+    assert first_payload["reveal"] is None
     first_vote_id = first_payload["vote_id"]
 
-    db_session.expire_all()
-    after_a = db_session.get(ModelRating, model_a_id)
-    after_b = db_session.get(ModelRating, model_b_id)
-    assert after_a is not None
-    assert after_b is not None
-    assert after_a.games_played == before_a_games + 1
-    assert after_b.games_played == before_b_games + 1
-    assert after_a.rating > before_a_rating
-    assert after_b.rating < before_b_rating
-
+    # Re-submitting with the same winner is idempotent.
     second = backend_client.post(
         f"/api/v1/battles/{battle_id}/vote", json={"winner": "A"}
     )
@@ -337,13 +325,34 @@ def test_vote_pipeline_handles_idempotency_and_conflicts(
     second_payload = second.json()
     assert second_payload["vote_id"] == first_vote_id
     assert second_payload["winner"] == "A"
+    assert second_payload["reveal"] is None
 
-    conflicting = backend_client.post(
+    # Changing winner BEFORE reveal is allowed (vote update).
+    updated = backend_client.post(
         f"/api/v1/battles/{battle_id}/vote",
         json={"winner": "B"},
     )
+    assert updated.status_code == 200
+    assert updated.json()["vote_id"] == first_vote_id
+    assert updated.json()["winner"] == "B"
+    assert updated.json()["reveal"] is None
+
+    # Reveal the vote — locks it and returns model identities.
+    reveal = backend_client.post(f"/api/v1/battles/{battle_id}/vote/reveal")
+    assert reveal.status_code == 200
+    reveal_payload = reveal.json()
+    assert reveal_payload["vote_id"] == first_vote_id
+    assert reveal_payload["winner"] == "B"
+    assert reveal_payload["reveal"]["A"]["model_id"] == str(model_a_id)
+    assert reveal_payload["reveal"]["B"]["model_id"] == str(model_b_id)
+
+    # After reveal, changing winner is rejected.
+    conflicting = backend_client.post(
+        f"/api/v1/battles/{battle_id}/vote",
+        json={"winner": "A"},
+    )
     assert conflicting.status_code == 409
-    assert conflicting.json()["detail"] == "Vote already submitted for this battle"
+    assert conflicting.json()["detail"] == "Vote already revealed and cannot be changed"
 
     db_session.expire_all()
     stored_votes = (
@@ -440,11 +449,17 @@ def test_battle_stream_vote_and_leaderboard_reflect_rating_updates(
     vote = backend_client.post(
         f"/api/v1/battles/{battle_id}/vote", json={"winner": "A"}
     )
-    assert vote.status_code == 200
+    assert vote.status_code == 201
     vote_payload = vote.json()
     assert vote_payload["winner"] == "A"
-    assert vote_payload["reveal"]["A"]["model_id"] == str(run_a.model_id)
-    assert vote_payload["reveal"]["B"]["model_id"] == str(run_b.model_id)
+    assert vote_payload["reveal"] is None
+
+    # Reveal models — locks the vote and returns model identities.
+    reveal = backend_client.post(f"/api/v1/battles/{battle_id}/vote/reveal")
+    assert reveal.status_code == 200
+    reveal_payload = reveal.json()
+    assert reveal_payload["reveal"]["A"]["model_id"] == str(run_a.model_id)
+    assert reveal_payload["reveal"]["B"]["model_id"] == str(run_b.model_id)
 
     leaderboard = backend_client.get("/api/v1/leaderboard?method=elo")
     assert leaderboard.status_code == 200
@@ -460,13 +475,17 @@ def test_battle_stream_vote_and_leaderboard_reflect_rating_updates(
     assert row_b["rating"] < before_b_rating
 
 
-def test_turnstile_enforcement_for_anon_and_authenticated_votes(
+def test_turnstile_enforcement_for_anon_and_authenticated_battles(
     backend_client_with_turnstile_enabled,
     db_session,
     monkeypatch: pytest.MonkeyPatch,
     authentik_token: str,
 ) -> None:
-    from app.api.routes import votes as votes_route
+    from app.api.routes import battles as battles_route
+
+    # Seed tasks and models so battle creation can find them.
+    suffix = uuid.uuid4().hex[:8]
+    _seed_task_and_models(db_session, suffix=suffix)
 
     class _TurnstileResponse:
         def __init__(self, *, success: bool) -> None:
@@ -480,70 +499,57 @@ def test_turnstile_enforcement_for_anon_and_authenticated_votes(
 
     verification_calls: list[dict[str, object]] = []
 
-    def fake_post(
-        url: str, *, data: dict[str, str], timeout: float
-    ) -> _TurnstileResponse:
-        verification_calls.append(
-            {
-                "url": url,
-                "data": dict(data),
-                "timeout": timeout,
-            }
-        )
-        return _TurnstileResponse(
-            success=data.get("response") == "valid-turnstile-token"
-        )
+    class _FakeTurnstileClient:
+        def post(self, url: str, *, data: dict[str, str]) -> _TurnstileResponse:
+            verification_calls.append(
+                {
+                    "url": url,
+                    "data": dict(data),
+                }
+            )
+            return _TurnstileResponse(
+                success=data.get("response") == "valid-turnstile-token"
+            )
 
-    monkeypatch.setattr(votes_route.httpx, "post", fake_post)
-
-    missing_token_battle_id, _, _ = _seed_completed_battle(
-        db_session,
-        suffix=f"missing-{uuid.uuid4().hex[:8]}",
+    monkeypatch.setattr(
+        battles_route, "_get_turnstile_http_client", lambda: _FakeTurnstileClient()
     )
+
+    # 1. Anonymous battle creation without token → 400
     missing_token = backend_client_with_turnstile_enabled.post(
-        f"/api/v1/battles/{missing_token_battle_id}/vote",
+        "/api/v1/battles",
         headers={"User-Agent": "arena-e2e-turnstile-missing"},
-        json={"winner": "A"},
+        json={},
     )
     assert missing_token.status_code == 400
     assert missing_token.json()["detail"] == "Missing Turnstile token"
     assert verification_calls == []
 
-    valid_token_battle_id, _, _ = _seed_completed_battle(
-        db_session,
-        suffix=f"valid-{uuid.uuid4().hex[:8]}",
-    )
+    # 2. Anonymous battle creation with valid token → success
     valid_token = backend_client_with_turnstile_enabled.post(
-        f"/api/v1/battles/{valid_token_battle_id}/vote",
+        "/api/v1/battles",
         headers={"User-Agent": "arena-e2e-turnstile-valid"},
-        json={"winner": "B", "turnstile_token": "valid-turnstile-token"},
+        json={"turnstile_token": "valid-turnstile-token"},
     )
-    assert valid_token.status_code == 200
-    assert valid_token.json()["winner"] == "B"
+    assert valid_token.status_code in (200, 201)
     assert len(verification_calls) == 1
     assert verification_calls[0]["url"] == "https://turnstile.example/siteverify"
-    assert verification_calls[0]["timeout"] == 5.0
-    assert verification_calls[0]["data"] == {
-        "secret": "arena-e2e-turnstile-secret",
-        "response": "valid-turnstile-token",
-        "remoteip": "testclient",
-    }
+    call_data = verification_calls[0]["data"]
+    assert isinstance(call_data, dict)
+    assert call_data["secret"] == "arena-e2e-turnstile-secret"
+    assert call_data["response"] == "valid-turnstile-token"
 
-    def fail_if_called(*_args, **_kwargs):
+    # 3. Authenticated battle creation → Turnstile verification skipped
+    def fail_if_called():
         raise AssertionError(
-            "Turnstile verification must be skipped for authenticated votes"
+            "Turnstile verification must be skipped for authenticated battles"
         )
 
-    monkeypatch.setattr(votes_route.httpx, "post", fail_if_called)
+    monkeypatch.setattr(battles_route, "_get_turnstile_http_client", fail_if_called)
 
-    authed_battle_id, _, _ = _seed_completed_battle(
-        db_session,
-        suffix=f"authed-{uuid.uuid4().hex[:8]}",
-    )
-    authed_vote = backend_client_with_turnstile_enabled.post(
-        f"/api/v1/battles/{authed_battle_id}/vote",
+    authed_battle = backend_client_with_turnstile_enabled.post(
+        "/api/v1/battles",
         headers={"Authorization": f"Bearer {authentik_token}"},
-        json={"winner": "tie"},
+        json={},
     )
-    assert authed_vote.status_code == 200
-    assert authed_vote.json()["winner"] == "tie"
+    assert authed_battle.status_code in (200, 201)

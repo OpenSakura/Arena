@@ -5,6 +5,8 @@ Admin endpoints for leaderboard maintenance.
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.security import require_admin
@@ -18,9 +20,9 @@ router = APIRouter(
 
 
 @router.get("/status")
-def get_refresh_status() -> dict[str, object]:
+async def get_refresh_status() -> dict[str, object]:
     refresher = get_leaderboard_refresher()
-    status = refresher.get_status()
+    status = await asyncio.to_thread(refresher.get_status)
     return {
         "enabled": status.enabled,
         "interval_seconds": status.interval_seconds,
@@ -33,10 +35,10 @@ def get_refresh_status() -> dict[str, object]:
 
 
 @router.post("/refresh")
-def run_refresh_now() -> dict[str, object]:
+async def run_refresh_now() -> dict[str, object]:
     refresher = get_leaderboard_refresher()
-    refresher.refresh_once()
-    status = refresher.get_status()
+    await asyncio.to_thread(refresher.refresh_once)
+    status = await asyncio.to_thread(refresher.get_status)
     if status.last_error is not None:
         raise HTTPException(
             status_code=500,

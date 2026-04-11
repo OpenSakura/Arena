@@ -61,29 +61,29 @@ class OIDCVerifier:
         self._last_forced_refresh_monotonic: float = 0.0
         self._forced_refresh_min_interval: float = 30.0
 
-        self._cache_lock = asyncio.Lock()
-
         self._http_client: httpx.AsyncClient | None = None
+        self._cache_lock = asyncio.Lock()
+        self._http_client_lock = asyncio.Lock()
 
-    def _get_http_client(self) -> httpx.AsyncClient:
+    async def _get_http_client(self) -> httpx.AsyncClient:
         """Return (or lazily create) a long-lived httpx client for OIDC fetches.
 
-        Note: there is a benign TOCTOU race if two coroutines call this
-        concurrently before the first client is assigned.  The second
-        coroutine overwrites the reference and the first client leaks its
-        connection pool.  We accept this for simplicity since the window
-        is tiny (only at startup) and the client has no open connections
-        yet.  A proper fix would use an asyncio.Lock, but that requires
-        an async method signature which would ripple through callers.
+        Uses ``_http_client_lock`` to prevent concurrent creation from leaking
+        connection pools at startup.
         """
         client = self._http_client
-        if client is None or client.is_closed:
+        if client is not None and not client.is_closed:
+            return client
+        async with self._http_client_lock:
+            client = self._http_client
+            if client is not None and not client.is_closed:
+                return client
             client = httpx.AsyncClient(
                 timeout=self._http_timeout_seconds,
                 follow_redirects=True,
             )
             self._http_client = client
-        return client
+            return client
 
     async def aclose(self) -> None:
         """Close the underlying HTTP client."""
@@ -269,7 +269,7 @@ class OIDCVerifier:
 
     async def _fetch_json(self, url: str) -> dict[str, Any]:
         try:
-            client = self._get_http_client()
+            client = await self._get_http_client()
             response = await client.get(url)
             response.raise_for_status()
             payload = response.json()

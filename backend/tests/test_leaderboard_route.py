@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 import uuid
 
-from fastapi import HTTPException
+from fastapi import HTTPException  # pyright: ignore[reportMissingImports]
 import pytest
 
 from app.api.routes import leaderboard
@@ -31,10 +31,26 @@ class _FakeRedis:
         return [self.store.get(key) for key in keys]
 
 
+class _FakeConfidenceRedis:
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+        self.ttls: dict[str, int] = {}
+
+    def get(self, key: str) -> str | None:
+        return self.store.get(key)
+
+    def set(self, key: str, value: str, *, ex: int) -> bool:
+        self.store[key] = value
+        self.ttls[key] = ex
+        return True
+
+
 def _settings(**overrides: object) -> SimpleNamespace:
     base = {
         "leaderboard_refresh_daily_vote_cap": 3,
         "leaderboard_refresh_elo_k": 32.0,
+        "leaderboard_elo_shuffle_rounds": 5,
+        "leaderboard_elo_shuffle_seed": 13,
         "leaderboard_elo_bootstrap_rounds": 50,
         "leaderboard_elo_bootstrap_seed": 7,
         "leaderboard_elo_confidence_level": 0.95,
@@ -77,15 +93,11 @@ class _QueueDB:
 
 @pytest.fixture(autouse=True)
 def _reset_confidence_query_guards(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Reset the confidence cache and rate limiter before each test.
-
-    The rate limiter is now Redis-backed, so we inject a fresh
-    ``RollingWindowRateLimiter`` backed by a ``_FakeRedis`` mock.
-    """
-
-    monkeypatch.setattr(leaderboard, "_confidence_cache", {})
+    """Reset shared-confidence cache dependencies before each test."""
 
     from app.utils.rate_limit import RollingWindowRateLimiter
+
+    monkeypatch.setattr(leaderboard, "_get_confidence_cache_client", lambda: None)
 
     monkeypatch.setattr(
         leaderboard,
@@ -149,12 +161,18 @@ def test_get_leaderboard_confidence_uses_cache_for_repeated_requests(
 ) -> None:
     expected = LeaderboardResponse(models=[], method="elo", ci=True)
     calls = {"elo": 0}
+    cache_client = _FakeConfidenceRedis()
 
     def fake_get_leaderboard_elo(**_kwargs: object) -> LeaderboardResponse:
         calls["elo"] += 1
         return expected
 
     monkeypatch.setattr(leaderboard, "_get_leaderboard_elo", fake_get_leaderboard_elo)
+    monkeypatch.setattr(
+        leaderboard,
+        "_get_confidence_cache_client",
+        lambda: cache_client,
+    )
 
     settings = _settings(
         leaderboard_confidence_cache_ttl_seconds=30,
@@ -177,6 +195,8 @@ def test_get_leaderboard_confidence_uses_cache_for_repeated_requests(
     assert calls["elo"] == 1
     assert first == expected
     assert second == expected
+    assert len(cache_client.store) == 1
+    assert set(cache_client.ttls.values()) == {30}
 
 
 def test_get_leaderboard_confidence_rate_limits_uncached_recomputes(
@@ -311,21 +331,18 @@ def test_get_leaderboard_elo_with_confidence_applies_daily_cap(
         leaderboard_elo_confidence_level=0.8,
     )
 
-    raw_votes = [object()]
     capped_votes = [object(), object()]
 
     calls: dict[str, object] = {}
 
-    def fake_load_vote_samples(_db: object) -> list[object]:
-        return raw_votes
-
-    def fake_limit_votes(votes: list[object], *, daily_vote_cap: int) -> list[object]:
+    def fake_load_vote_samples(_db: object, *, daily_vote_cap: int) -> list[object]:
         calls["daily_vote_cap"] = daily_vote_cap
-        assert votes is raw_votes
         return capped_votes
 
-    def fake_compute_elo_ratings(votes: list[object], *, k: float):
+    def fake_compute_elo_ratings(votes: list[object], *, k: float, **kwargs: object):
         calls["k"] = k
+        calls["shuffle_rounds"] = kwargs.get("shuffle_rounds")
+        calls["shuffle_seed"] = kwargs.get("shuffle_seed")
         assert votes is capped_votes
         return {
             model_a: (910.0, 6),
@@ -340,6 +357,8 @@ def test_get_leaderboard_elo_with_confidence_applies_daily_cap(
         seed: int,
         k: float,
         confidence_level: float,
+        shuffle_rounds: int,
+        shuffle_seed: int,
     ) -> dict[uuid.UUID, tuple[float, float]]:
         assert votes is capped_votes
         assert model_ids == [model_a, model_b]
@@ -347,17 +366,14 @@ def test_get_leaderboard_elo_with_confidence_applies_daily_cap(
         assert seed == settings.leaderboard_elo_bootstrap_seed
         assert k == settings.leaderboard_refresh_elo_k
         assert confidence_level == settings.leaderboard_elo_confidence_level
+        assert shuffle_rounds == settings.leaderboard_elo_shuffle_rounds
+        assert shuffle_seed == settings.leaderboard_elo_shuffle_seed
         return {
             model_a: (890.0, 930.0),
             model_b: (1180.0, 1230.0),
         }
 
     monkeypatch.setattr(leaderboard, "load_vote_samples", fake_load_vote_samples)
-    monkeypatch.setattr(
-        leaderboard,
-        "limit_votes_per_judge_per_day",
-        fake_limit_votes,
-    )
     monkeypatch.setattr(leaderboard, "compute_elo_ratings", fake_compute_elo_ratings)
     monkeypatch.setattr(
         leaderboard,
@@ -381,6 +397,8 @@ def test_get_leaderboard_elo_with_confidence_applies_daily_cap(
     assert calls == {
         "daily_vote_cap": settings.leaderboard_refresh_daily_vote_cap,
         "k": settings.leaderboard_refresh_elo_k,
+        "shuffle_rounds": settings.leaderboard_elo_shuffle_rounds,
+        "shuffle_seed": settings.leaderboard_elo_shuffle_seed,
     }
 
 
@@ -393,12 +411,13 @@ def test_get_leaderboard_elo_with_confidence_skips_daily_cap_when_disabled(
 
     vote_samples = [object()]
 
-    monkeypatch.setattr(leaderboard, "load_vote_samples", lambda _db: vote_samples)
-    monkeypatch.setattr(
-        leaderboard,
-        "limit_votes_per_judge_per_day",
-        lambda *_args, **_kwargs: pytest.fail("Daily cap helper should not be called"),
-    )
+    captured: dict[str, object] = {}
+
+    def fake_load_vote_samples(_db: object, *, daily_vote_cap: int) -> list[object]:
+        captured["daily_vote_cap"] = daily_vote_cap
+        return vote_samples
+
+    monkeypatch.setattr(leaderboard, "load_vote_samples", fake_load_vote_samples)
     monkeypatch.setattr(
         leaderboard,
         "compute_elo_ratings",
@@ -420,6 +439,7 @@ def test_get_leaderboard_elo_with_confidence_skips_daily_cap_when_disabled(
     assert response.models[0].games_played == 1
     assert response.models[0].rating_lower == 999.0
     assert response.models[0].rating_upper == 1003.0
+    assert captured == {"daily_vote_cap": 0}
 
 
 def test_get_leaderboard_bt_returns_empty_response_without_models() -> None:
@@ -489,9 +509,10 @@ def test_get_leaderboard_bt_without_confidence_computes_from_votes_not_model_rat
         ]
     )
     settings = _settings(leaderboard_refresh_daily_vote_cap=2)
+    captured: dict[str, object] = {}
 
     now = datetime.now(tz=timezone.utc)
-    raw_vote_samples = [
+    capped_vote_samples = [
         VoteSample(
             vote_id=uuid.uuid4(),
             created_at=now,
@@ -509,27 +530,13 @@ def test_get_leaderboard_bt_without_confidence_computes_from_votes_not_model_rat
             model_b_id=model_a,
         ),
     ]
-    capped_vote_samples = [raw_vote_samples[0]]
 
     monkeypatch.setattr(
         leaderboard,
         "load_vote_samples",
-        lambda _db: raw_vote_samples,
-    )
-
-    captured: dict[str, object] = {}
-
-    def fake_limit_votes(
-        vote_samples: list[VoteSample], *, daily_vote_cap: int
-    ) -> list[VoteSample]:
-        captured["daily_vote_cap"] = daily_vote_cap
-        assert vote_samples is raw_vote_samples
-        return capped_vote_samples
-
-    monkeypatch.setattr(
-        leaderboard,
-        "limit_votes_per_judge_per_day",
-        fake_limit_votes,
+        lambda _db, *, daily_vote_cap: (
+            captured.update({"daily_vote_cap": daily_vote_cap}) or capped_vote_samples
+        ),
     )
 
     def fake_compute_bt_ratings(
@@ -575,7 +582,10 @@ def test_get_leaderboard_bt_without_confidence_computes_from_votes_not_model_rat
 
     votes = captured["votes"]
     assert isinstance(votes, list)
-    assert votes == [PairwiseVote(model_a_id=model_a, model_b_id=model_b, winner="A")]
+    assert votes == [
+        PairwiseVote(model_a_id=model_a, model_b_id=model_b, winner="A"),
+        PairwiseVote(model_a_id=model_b, model_b_id=model_a, winner="B"),
+    ]
     assert captured["max_iterations"] == settings.leaderboard_bt_max_iterations
     assert captured["tolerance"] == settings.leaderboard_bt_tolerance
     assert captured["prior"] == settings.leaderboard_bt_prior
@@ -616,7 +626,15 @@ def test_get_leaderboard_bt_confidence_populates_intervals(
             model_b_id=model_b,
         ),
     ]
-    monkeypatch.setattr(leaderboard, "load_vote_samples", lambda _db: vote_samples)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        leaderboard,
+        "load_vote_samples",
+        lambda _db, *, daily_vote_cap: (
+            captured.update({"daily_vote_cap": daily_vote_cap}) or vote_samples
+        ),
+    )
 
     monkeypatch.setattr(
         leaderboard,
@@ -626,8 +644,6 @@ def test_get_leaderboard_bt_confidence_populates_intervals(
             model_b: (980.0, 5),
         },
     )
-
-    captured: dict[str, object] = {}
 
     def fake_compute_bt_confidence_intervals(
         *,
@@ -682,72 +698,85 @@ def test_get_leaderboard_bt_confidence_populates_intervals(
     assert captured["max_iterations"] == settings.leaderboard_bt_max_iterations
     assert captured["tolerance"] == settings.leaderboard_bt_tolerance
     assert captured["prior"] == settings.leaderboard_bt_prior
+    assert captured["daily_vote_cap"] == settings.leaderboard_refresh_daily_vote_cap
     assert len(db.statements) == 1
     assert "model_ratings" not in str(db.statements[0]).lower()
 
 
-def test_confidence_cache_evicts_expired_entries_on_store() -> None:
-    """Verify that ``_store_cached_confidence_leaderboard`` purges expired
-    entries and enforces the max-size bound."""
+def test_confidence_cache_uses_redis_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_client = _FakeConfidenceRedis()
+    response = LeaderboardResponse(models=[], method="elo", ci=True)
+    settings = _settings(leaderboard_confidence_cache_ttl_seconds=45)
 
-    import time as _time
-
-    from app.api.routes.leaderboard import (
-        _MAX_CONFIDENCE_CACHE_ENTRIES,
-        _confidence_cache,
-        _store_cached_confidence_leaderboard,
+    monkeypatch.setattr(
+        leaderboard,
+        "_get_confidence_cache_client",
+        lambda: cache_client,
     )
 
-    now = _time.monotonic()
-    response = LeaderboardResponse(models=[], method="elo", ci=True)
-
-    # Fill cache to capacity with already-expired entries.
-    for i in range(_MAX_CONFIDENCE_CACHE_ENTRIES):
-        _confidence_cache[f"expired:{i}"] = (now - 100.0, response)
-
-    # Storing a new entry should purge all expired ones first.
-    settings = _settings(leaderboard_confidence_cache_ttl_seconds=30)
-    _store_cached_confidence_leaderboard(
-        cache_key="fresh",
+    leaderboard._store_cached_confidence_leaderboard(
+        cache_key="elo:test",
         response=response,
         settings=settings,  # type: ignore[arg-type]
     )
 
-    assert "fresh" in _confidence_cache
-    # All expired entries should have been purged.
-    assert len(_confidence_cache) == 1
-
-
-def test_confidence_cache_evicts_oldest_when_full() -> None:
-    """When the cache is full with non-expired entries, the entry closest
-    to expiry is evicted to make room."""
-
-    import time as _time
-
-    from app.api.routes.leaderboard import (
-        _MAX_CONFIDENCE_CACHE_ENTRIES,
-        _confidence_cache,
-        _store_cached_confidence_leaderboard,
-    )
-
-    now = _time.monotonic()
-    response = LeaderboardResponse(models=[], method="elo", ci=True)
-
-    # Fill cache to capacity with entries that expire far in the future.
-    for i in range(_MAX_CONFIDENCE_CACHE_ENTRIES):
-        _confidence_cache[f"live:{i}"] = (now + 1000.0 + i, response)
-
-    # The entry with the earliest expiry should be evicted.
-    settings = _settings(leaderboard_confidence_cache_ttl_seconds=30)
-    _store_cached_confidence_leaderboard(
-        cache_key="new_entry",
-        response=response,
+    cached = leaderboard._load_cached_confidence_leaderboard(
+        cache_key="elo:test",
         settings=settings,  # type: ignore[arg-type]
     )
 
-    assert "new_entry" in _confidence_cache
-    assert "live:0" not in _confidence_cache  # earliest expiry evicted
-    assert len(_confidence_cache) == _MAX_CONFIDENCE_CACHE_ENTRIES
+    assert cached == response
+    redis_key = leaderboard._confidence_cache_redis_key(
+        cache_key="elo:test",
+        settings=settings,  # type: ignore[arg-type]
+    )
+    assert cache_client.ttls[redis_key] == 45
+
+
+def test_confidence_cache_redis_failures_fall_back_to_recompute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FailingRedis:
+        def get(self, key: str) -> str | None:
+            raise leaderboard.redis_utils.RedisError("get failed")
+
+        def set(self, key: str, value: str, *, ex: int) -> bool:
+            raise leaderboard.redis_utils.RedisError("set failed")
+
+    calls = {"elo": 0}
+
+    def fake_get_leaderboard_elo(**_kwargs: object) -> LeaderboardResponse:
+        calls["elo"] += 1
+        return LeaderboardResponse(models=[], method="elo", ci=True)
+
+    monkeypatch.setattr(leaderboard, "_get_leaderboard_elo", fake_get_leaderboard_elo)
+    monkeypatch.setattr(
+        leaderboard,
+        "_get_confidence_cache_client",
+        lambda: _FailingRedis(),
+    )
+
+    settings = _settings(
+        leaderboard_confidence_cache_ttl_seconds=30,
+        leaderboard_confidence_rate_limit=20,
+    )
+
+    leaderboard.get_leaderboard(
+        method="elo",
+        include_confidence=True,
+        db=object(),  # type: ignore[arg-type]
+        settings=settings,  # type: ignore[arg-type]
+    )
+    leaderboard.get_leaderboard(
+        method="elo",
+        include_confidence=True,
+        db=object(),  # type: ignore[arg-type]
+        settings=settings,  # type: ignore[arg-type]
+    )
+
+    assert calls["elo"] == 2
 
 
 class TestSharedIdentityContractConsistency:
@@ -830,6 +859,7 @@ class TestSharedIdentityContractConsistency:
 #           confidence cache Redis-absent fallback.
 # ---------------------------------------------------------------------------
 
+
 def test_bt_cache_key_includes_daily_vote_cap() -> None:
     """BT cache key must change when daily_vote_cap changes so stale cached
     results are not served after the cap is reconfigured."""
@@ -869,11 +899,14 @@ def test_daily_vote_cap_cache_invalidation() -> None:
         calls["bt"] += 1
         return LeaderboardResponse(models=[], method="bt", ci=True)
 
-    # Wire the BT handler so we can count calls.
-    import pytest as _pytest
-    # monkeypatch is not available at module level; use direct attribute swap.
-    original_bt = leaderboard._get_leaderboard_bt
-    leaderboard._get_leaderboard_bt = fake_get_leaderboard_bt  # type: ignore[assignment]
+    cache_client = _FakeConfidenceRedis()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(leaderboard, "_get_leaderboard_bt", fake_get_leaderboard_bt)
+    monkeypatch.setattr(
+        leaderboard,
+        "_get_confidence_cache_client",
+        lambda: cache_client,
+    )
 
     try:
         settings_cap3 = _settings(
@@ -887,7 +920,6 @@ def test_daily_vote_cap_cache_invalidation() -> None:
             leaderboard_confidence_rate_limit=20,
         )
 
-        # First call with cap=3 — hits backend, caches.
         leaderboard.get_leaderboard(
             method="bt",
             include_confidence=True,
@@ -896,25 +928,23 @@ def test_daily_vote_cap_cache_invalidation() -> None:
         )
         assert calls["bt"] == 1
 
-        # Second call with cap=3 — served from cache.
         leaderboard.get_leaderboard(
             method="bt",
             include_confidence=True,
             db=object(),  # type: ignore[arg-type]
             settings=settings_cap3,  # type: ignore[arg-type]
         )
-        assert calls["bt"] == 1  # still 1 — cache hit
+        assert calls["bt"] == 1
 
-        # Call with cap=7 — different cache key, must recompute.
         leaderboard.get_leaderboard(
             method="bt",
             include_confidence=True,
             db=object(),  # type: ignore[arg-type]
             settings=settings_cap7,  # type: ignore[arg-type]
         )
-        assert calls["bt"] == 2  # cache miss, backend called again
+        assert calls["bt"] == 2
     finally:
-        leaderboard._get_leaderboard_bt = original_bt  # type: ignore[assignment]
+        monkeypatch.undo()
 
 
 def test_bt_cache_key_unchanged_when_other_bt_settings_same() -> None:
@@ -932,11 +962,11 @@ def test_bt_cache_key_unchanged_when_other_bt_settings_same() -> None:
 
 
 def test_confidence_cache_absent_redis_skips_shared_caching() -> None:
-    """When Redis is absent (rate limiter has no Redis client), the in-process
-    cache is still used for intra-worker deduplication but cross-worker
-    sharing is explicitly absent.  This test proves the fallback path works:
-    the response is still served (no crash) and the in-process cache is
-    populated normally."""
+    """When Redis is absent, confidence requests recompute directly.
+
+    Task 1 forbids falling back to a process-local shared cache because it is
+    inconsistent across workers.
+    """
 
     from app.utils.rate_limit import RollingWindowRateLimiter
 
@@ -949,8 +979,12 @@ def test_confidence_cache_absent_redis_skips_shared_caching() -> None:
         redis_prefix="test",
     )
 
-    # Replace the autouse-injected limiter with the no-Redis one.
-    leaderboard._get_confidence_rate_limiter = lambda: no_redis_limiter  # type: ignore[assignment]
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        leaderboard,
+        "_get_confidence_rate_limiter",
+        lambda: no_redis_limiter,
+    )
 
     calls = {"elo": 0}
 
@@ -958,8 +992,7 @@ def test_confidence_cache_absent_redis_skips_shared_caching() -> None:
         calls["elo"] += 1
         return LeaderboardResponse(models=[], method="elo", ci=True)
 
-    original_elo = leaderboard._get_leaderboard_elo
-    leaderboard._get_leaderboard_elo = fake_get_leaderboard_elo  # type: ignore[assignment]
+    monkeypatch.setattr(leaderboard, "_get_leaderboard_elo", fake_get_leaderboard_elo)
 
     try:
         settings = _settings(
@@ -967,7 +1000,9 @@ def test_confidence_cache_absent_redis_skips_shared_caching() -> None:
             leaderboard_confidence_rate_limit=20,
         )
 
-        # First call — must hit backend and populate in-process cache.
+        monkeypatch.setattr(leaderboard, "_get_confidence_cache_client", lambda: None)
+
+        # First call — must hit backend.
         r1 = leaderboard.get_leaderboard(
             method="elo",
             include_confidence=True,
@@ -977,14 +1012,14 @@ def test_confidence_cache_absent_redis_skips_shared_caching() -> None:
         assert calls["elo"] == 1
         assert r1.method == "elo"
 
-        # Second call — in-process cache hit, backend not called again.
+        # Second call — no Redis, so there is no shared-cache hit.
         r2 = leaderboard.get_leaderboard(
             method="elo",
             include_confidence=True,
             db=object(),  # type: ignore[arg-type]
             settings=settings,  # type: ignore[arg-type]
         )
-        assert calls["elo"] == 1  # still 1
+        assert calls["elo"] == 2
         assert r2 == r1
     finally:
-        leaderboard._get_leaderboard_elo = original_elo  # type: ignore[assignment]
+        monkeypatch.undo()

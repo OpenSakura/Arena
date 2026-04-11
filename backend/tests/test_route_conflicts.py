@@ -8,9 +8,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 
-from app.api.routes import admin_prompts, admin_tasks, votes
-from app.api.routes.votes import _get_or_create_rating
-from app.models.rating import ModelRating
+from app.api.routes import admin_prompts, admin_tasks
 from app.schemas.prompts import PromptTemplateCreate
 
 
@@ -186,107 +184,3 @@ def test_create_prompt_template_stops_after_max_retries(
 
     assert db.commit_calls == 3
     assert db.rollback_calls == 3
-
-
-class _DummyNestedTx:
-    def __enter__(self) -> "_DummyNestedTx":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> bool:
-        _ = (exc_type, exc, tb)
-        return False
-
-
-class _RatingCreateSession:
-    def __init__(self) -> None:
-        self.added: ModelRating | None = None
-        self.flush_calls = 0
-
-    def get(
-        self, _model: type[ModelRating], _model_id: uuid.UUID
-    ) -> ModelRating | None:
-        return None
-
-    def add(self, rating: ModelRating) -> None:
-        self.added = rating
-
-    def flush(self) -> None:
-        self.flush_calls += 1
-
-    def begin_nested(self) -> _DummyNestedTx:
-        return _DummyNestedTx()
-
-
-def test_get_or_create_rating_creates_row_when_missing() -> None:
-    model_id = uuid.uuid4()
-    session = _RatingCreateSession()
-
-    rating = _get_or_create_rating(session, model_id)  # type: ignore[arg-type]
-
-    assert rating.model_id == model_id
-    assert session.flush_calls == 1
-    assert session.added is rating
-
-
-class _RatingRaceSession:
-    def __init__(self, model_id: uuid.UUID) -> None:
-        self._existing = ModelRating(model_id=model_id, rating=1012.0, games_played=7)
-        self._get_calls = 0
-        self.flush_calls = 0
-
-    def get(
-        self, _model: type[ModelRating], _model_id: uuid.UUID
-    ) -> ModelRating | None:
-        self._get_calls += 1
-        if self._get_calls == 1:
-            return None
-        return self._existing
-
-    def add(self, _: ModelRating) -> None:
-        return None
-
-    def flush(self) -> None:
-        self.flush_calls += 1
-        raise _integrity_error(
-            'duplicate key value violates unique constraint "model_ratings_pkey"'
-        )
-
-    def begin_nested(self) -> _DummyNestedTx:
-        return _DummyNestedTx()
-
-
-def test_get_or_create_rating_recovers_from_insert_race() -> None:
-    model_id = uuid.uuid4()
-    session = _RatingRaceSession(model_id)
-
-    rating = _get_or_create_rating(session, model_id)  # type: ignore[arg-type]
-
-    assert rating.model_id == model_id
-    assert rating.games_played == 7
-    assert session.flush_calls == 1
-
-
-def test_lock_ratings_for_vote_uses_stable_lock_order(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    model_a = uuid.uuid4()
-    model_b = uuid.uuid4()
-    locked_order: list[uuid.UUID] = []
-
-    def fake_get_or_create_for_update(_db: object, model_id: uuid.UUID) -> ModelRating:
-        locked_order.append(model_id)
-        return ModelRating(model_id=model_id)
-
-    monkeypatch.setattr(
-        votes, "_get_or_create_rating_for_update", fake_get_or_create_for_update
-    )
-
-    rating_a, rating_b = votes._lock_ratings_for_vote(
-        object(),  # type: ignore[arg-type]
-        model_a_id=model_b,
-        model_b_id=model_a,
-    )
-
-    assert locked_order == sorted([model_a, model_b], key=str)
-    assert rating_a.model_id == model_b
-    assert rating_b.model_id == model_a

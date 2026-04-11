@@ -48,6 +48,8 @@ from typing import Callable
 
 from fastapi import Request
 
+from app.utils.client_ip import get_client_ip
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -296,28 +298,23 @@ def build_anon_rate_limit_key(
         When ``True``, ``X-Forwarded-For`` is preferred over
         ``request.client.host``.  **Must only be enabled when the app
         runs behind a trusted reverse proxy** that overwrites this
-        header; otherwise an attacker can spoof it with any IP to get a
-        fresh rate-limit bucket.
+        header (or sets Cloudflare's ``CF-Connecting-IP``); otherwise an
+        attacker can spoof it with any IP to get a fresh rate-limit
+        bucket.
     ip_hash_salt:
         Salt mixed into the IP hash to prevent rainbow-table attacks.
     """
 
-    if trust_x_forwarded_for:
-        forwarded_for = request.headers.get("x-forwarded-for")
-        if forwarded_for:
-            # Take the leftmost IP (the original client) from the chain.
-            ip = forwarded_for.split(",")[0].strip()
-        else:
-            ip = request.client.host if request.client is not None else ""
-    else:
-        ip = request.client.host if request.client is not None else ""
+    # WARNING: only trust forwarded headers behind a trusted proxy.
+    ip = get_client_ip(request, trust_x_forwarded_for=trust_x_forwarded_for) or ""
 
     if not ip:
-        # Avoid sharing a single bucket for all clients without a socket.
-        # Use a per-request fallback so unknown clients are isolated.
-        import secrets
-
-        ip = f"__unknown_{secrets.token_hex(8)}"
+        # When the client IP cannot be determined (e.g. Unix-socket proxy
+        # without X-Forwarded-For), use a shared sentinel key so all
+        # unknown clients share a single rate-limit bucket.  This fails
+        # closed — a burst from unknown clients is throttled — rather than
+        # giving each request a fresh bucket (which would bypass the limit).
+        ip = "__unknown_shared"
 
     fingerprint = hashlib.sha256(f"{ip_hash_salt}|{ip}".encode("utf-8")).hexdigest()
     return f"{scope}:{fingerprint}"

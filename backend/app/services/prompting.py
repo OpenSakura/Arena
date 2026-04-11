@@ -32,7 +32,7 @@ def render_prompt_template(template_text: str, inputs: dict[str, Any]) -> str:
     # include literal ``{{...}}`` without being treated as malformed template
     # syntax.
     template_without_tokens = _TOKEN_PATTERN.sub("", template_text)
-    if "{{" in template_without_tokens or "}}" in template_without_tokens:
+    if "{{" in template_without_tokens:
         raise ValueError("Invalid prompt template syntax")
 
     def replace(match: re.Match[str]) -> str:

@@ -10,6 +10,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.schemas._types import UuidStr
+
 
 _MAX_JSON_DICT_BYTES = 65_536  # 64 KB
 
@@ -65,7 +67,7 @@ class TaskPublic(BaseModel):
 
 
 class TaskCreate(BaseModel):
-    task_set_id: str | None = None
+    task_set_id: UuidStr | None = None
     source_lang: str = Field(default="ja", max_length=16)
     target_lang: str = Field(default="zh", max_length=16)
     source_text: str = Field(..., max_length=131072)
@@ -78,7 +80,7 @@ class TaskCreate(BaseModel):
 
 
 class TaskUpdate(BaseModel):
-    task_set_id: str | None = None
+    task_set_id: UuidStr | None = None
     source_lang: str | None = Field(default=None, max_length=16)
     target_lang: str | None = Field(default=None, max_length=16)
     source_text: str | None = Field(default=None, max_length=131072)

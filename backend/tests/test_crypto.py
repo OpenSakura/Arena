@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet
 import pytest
 
 from app.core import crypto
@@ -56,5 +56,5 @@ def test_decrypt_secret_rejects_tokens_from_other_keys(
 
     foreign_token = Fernet(Fernet.generate_key()).encrypt(b"payload").decode("ascii")
 
-    with pytest.raises(InvalidToken):
+    with pytest.raises(crypto.SecretDecryptionError):
         crypto.decrypt_secret(foreign_token)

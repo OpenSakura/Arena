@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
 
 from app.services.llm_client import (
+    LLMClient,
+    StreamTotalTimeoutError,
     _extract_upstream_error,
     _iter_lines_from_bytes,
     _iter_sse_data_events,
+    _MAX_RETRIES,
 )
 
 
@@ -149,3 +156,200 @@ def test_iter_lines_from_bytes_preserves_same_chunk_data_after_oversized_line() 
     )
 
     assert lines == ["data: ok"]
+
+
+_BASE_KWARGS = dict(
+    base_url="https://llm.example",
+    model="test-model",
+    api_key="key",
+    messages=[{"role": "user", "content": "hello"}],
+)
+
+
+def _make_sse_body(chunks: list[str]) -> bytes:
+    parts: list[str] = []
+    for c in chunks:
+        parts.append(f"data: {c}\n\n")
+    parts.append("data: [DONE]\n\n")
+    return "".join(parts).encode()
+
+
+class _FakeResponse:
+    def __init__(self, status_code: int, body: bytes, headers: dict | None = None):
+        self.status_code = status_code
+        self._body = body
+        self.headers = headers or {}
+        self._raised = False
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            resp = MagicMock(status_code=self.status_code)
+            raise httpx.HTTPStatusError(
+                "error",
+                request=MagicMock(),
+                response=resp,
+            )
+
+    async def aiter_raw(self):
+        yield self._body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
+
+
+async def _collect_stream(client: LLMClient, **extra_kwargs) -> list[str]:
+    chunks: list[str] = []
+    kwargs = {**_BASE_KWARGS, **extra_kwargs}
+    async for chunk in client.stream_chat_completion(**kwargs):
+        if chunk.text_delta:
+            chunks.append(chunk.text_delta)
+    return chunks
+
+
+def test_readtimeout_is_retried_pre_stream() -> None:
+    call_count = 0
+
+    async def _run():
+        nonlocal call_count
+        client = LLMClient()
+        body = _make_sse_body(
+            ['{"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}']
+        )
+
+        def _fake_stream(method, url, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 1:
+                raise httpx.ReadTimeout("timed out")
+            return _FakeResponse(200, body)
+
+        mock_http = AsyncMock()
+        mock_http.is_closed = False
+        mock_http.stream = _fake_stream
+        client._http_client = mock_http
+
+        with patch("app.services.llm_client.asyncio.sleep", new_callable=AsyncMock):
+            result = await _collect_stream(client, timeout_seconds=5.0)
+        return result
+
+    result = asyncio.run(_run())
+    assert result == ["ok"]
+    assert call_count == 2
+
+
+def test_pooltimeout_is_retried_pre_stream() -> None:
+    call_count = 0
+
+    async def _run():
+        nonlocal call_count
+        client = LLMClient()
+        body = _make_sse_body(
+            ['{"choices":[{"delta":{"content":"pool-ok"},"finish_reason":null}]}']
+        )
+
+        def _fake_stream(method, url, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 1:
+                raise httpx.PoolTimeout("pool full")
+            return _FakeResponse(200, body)
+
+        mock_http = AsyncMock()
+        mock_http.is_closed = False
+        mock_http.stream = _fake_stream
+        client._http_client = mock_http
+
+        with patch("app.services.llm_client.asyncio.sleep", new_callable=AsyncMock):
+            result = await _collect_stream(client, timeout_seconds=5.0)
+        return result
+
+    result = asyncio.run(_run())
+    assert result == ["pool-ok"]
+    assert call_count == 2
+
+
+def test_does_not_retry_after_receiving_bytes() -> None:
+    call_count = 0
+
+    async def _run():
+        nonlocal call_count
+        client = LLMClient()
+
+        class _FailMidStream:
+            def __init__(self):
+                self.status_code = 200
+                self.headers = {}
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_raw(self):
+                yield b'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}\n\n'
+                raise httpx.ReadTimeout("mid-stream timeout")
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+        def _fake_stream(method, url, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return _FailMidStream()
+
+        mock_http = AsyncMock()
+        mock_http.is_closed = False
+        mock_http.stream = _fake_stream
+        client._http_client = mock_http
+
+        with pytest.raises(httpx.ReadTimeout):
+            await _collect_stream(client, timeout_seconds=5.0)
+
+    asyncio.run(_run())
+    assert call_count == 1
+
+
+def test_total_timeout_raises_stream_total_timeout_error() -> None:
+    async def _run():
+        client = LLMClient()
+
+        class _SlowStream:
+            def __init__(self):
+                self.status_code = 200
+                self.headers = {}
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_raw(self):
+                chunk = '{"choices":[{"delta":{"content":"tok"},"finish_reason":null}]}'
+                for _ in range(100):
+                    yield f"data: {chunk}\n\n".encode()
+                    await asyncio.sleep(0.05)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+        def _fake_stream(method, url, **kwargs):
+            return _SlowStream()
+
+        mock_http = AsyncMock()
+        mock_http.is_closed = False
+        mock_http.stream = _fake_stream
+        client._http_client = mock_http
+
+        with pytest.raises(StreamTotalTimeoutError, match="total wall-clock timeout"):
+            await _collect_stream(
+                client,
+                timeout_seconds=5.0,
+                total_timeout_seconds=0.1,
+            )
+
+    asyncio.run(_run())

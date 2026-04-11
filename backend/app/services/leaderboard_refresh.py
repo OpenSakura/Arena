@@ -11,16 +11,17 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 import hashlib
 import logging
 import random
 import threading
+from typing import Any, cast
 import uuid
 
-from sqlalchemy import and_, select, text
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy import and_, func, select, text  # pyright: ignore[reportMissingImports]
+from sqlalchemy.orm import Session, aliased  # pyright: ignore[reportMissingImports]
 
 from app.core.config import get_settings
 from app.db.session import get_engine
@@ -68,11 +69,15 @@ class LeaderboardRefresher:
         interval_seconds: int,
         daily_vote_cap: int,
         elo_k: float,
+        elo_shuffle_rounds: int = 1,
+        elo_shuffle_seed: int = 0,
     ) -> None:
         self._enabled = enabled
         self._interval_seconds = max(interval_seconds, 5)
         self._daily_vote_cap = max(daily_vote_cap, 0)
         self._elo_k = max(float(elo_k), 1.0)
+        self._elo_shuffle_rounds = max(int(elo_shuffle_rounds), 0)
+        self._elo_shuffle_seed = int(elo_shuffle_seed)
 
         self._status_lock = threading.Lock()
         self._last_attempted_at: datetime | None = None
@@ -184,12 +189,12 @@ class LeaderboardRefresher:
         model_ids = self._load_all_model_ids(db)
         vote_samples = self._load_vote_samples(db)
 
-        if self._daily_vote_cap > 0:
-            vote_samples = limit_votes_per_judge_per_day(
-                vote_samples, daily_vote_cap=self._daily_vote_cap
-            )
-
-        ratings = compute_elo_ratings(vote_samples, k=self._elo_k)
+        ratings = compute_elo_ratings(
+            vote_samples,
+            k=self._elo_k,
+            shuffle_rounds=self._elo_shuffle_rounds,
+            shuffle_seed=self._elo_shuffle_seed,
+        )
 
         # Now serialize against live vote writes only for the persist phase.
         self._lock_model_ratings_for_refresh(db)
@@ -209,9 +214,8 @@ class LeaderboardRefresher:
     def _load_all_model_ids(db: Session) -> list[uuid.UUID]:
         return list(db.execute(select(Model.id)).scalars().all())
 
-    @staticmethod
-    def _load_vote_samples(db: Session) -> list[VoteSample]:
-        return load_vote_samples(db)
+    def _load_vote_samples(self, db: Session) -> list[VoteSample]:
+        return load_vote_samples(db, daily_vote_cap=self._daily_vote_cap)
 
     @staticmethod
     def _persist_ratings(
@@ -288,13 +292,49 @@ def limit_votes_per_judge_per_day(
     return kept
 
 
-def load_vote_samples(db: Session) -> list[VoteSample]:
+def load_vote_samples(db: Session, *, daily_vote_cap: int = 0) -> list[VoteSample]:
     """Load pairwise vote samples in battle execution order."""
 
+    if daily_vote_cap <= 0:
+        rows = db.execute(_vote_sample_stmt()).all()
+        return _rows_to_vote_samples(rows)
+
+    bounds = db.execute(_vote_sample_bounds_stmt()).one()
+    first_created_at, last_created_at = bounds
+    if first_created_at is None or last_created_at is None:
+        return []
+
+    day_start, _ = _utc_day_bounds(_ensure_utc(first_created_at))
+    _, final_day_end = _utc_day_bounds(_ensure_utc(last_created_at))
+
+    samples: list[VoteSample] = []
+    current_day_start = day_start
+    while current_day_start < final_day_end:
+        current_day_end = current_day_start + timedelta(days=1)
+        day_rows = db.execute(
+            _vote_sample_stmt(day_start=current_day_start, day_end=current_day_end)
+        ).all()
+        day_samples = _rows_to_vote_samples(day_rows)
+        samples.extend(
+            _limit_vote_samples_for_single_day(
+                day_samples,
+                daily_vote_cap=daily_vote_cap,
+            )
+        )
+        current_day_start = current_day_end
+
+    return samples
+
+
+def _vote_sample_stmt(
+    *,
+    day_start: datetime | None = None,
+    day_end: datetime | None = None,
+):
     run_a = aliased(Run)
     run_b = aliased(Run)
 
-    rows = db.execute(
+    stmt = (
         select(
             Vote.id,
             Vote.created_at,
@@ -314,14 +354,53 @@ def load_vote_samples(db: Session) -> list[VoteSample]:
             run_b,
             and_(run_b.battle_id == Vote.battle_id, run_b.side == "B"),
         )
-        # Only include votes where the voter has confirmed the model reveal.
-        # Unrevealed votes are provisional and must not enter the rating pipeline.
         .where(Vote.revealed.is_(True))
-        .order_by(Vote.created_at.asc(), Vote.id.asc())
-    ).all()
+    )
 
+    if day_start is not None and day_end is not None:
+        stmt = stmt.where(
+            Vote.created_at >= day_start,
+            Vote.created_at < day_end,
+        )
+
+    return stmt.order_by(Vote.created_at.asc(), Vote.id.asc())
+
+
+def _vote_sample_bounds_stmt():
+    run_a = aliased(Run)
+    run_b = aliased(Run)
+
+    return (
+        select(func.min(Vote.created_at), func.max(Vote.created_at))
+        .join(
+            run_a,
+            and_(run_a.battle_id == Vote.battle_id, run_a.side == "A"),
+        )
+        .join(
+            run_b,
+            and_(run_b.battle_id == Vote.battle_id, run_b.side == "B"),
+        )
+        .where(Vote.revealed.is_(True))
+    )
+
+
+type _VoteSampleRow = tuple[
+    uuid.UUID,
+    datetime,
+    str,
+    uuid.UUID | None,
+    str | None,
+    str | None,
+    str | None,
+    uuid.UUID,
+    uuid.UUID,
+]
+
+
+def _rows_to_vote_samples(rows: list[tuple[Any, ...]]) -> list[VoteSample]:
     samples: list[VoteSample] = []
-    for row in rows:
+    for raw_row in rows:
+        row = cast(_VoteSampleRow, raw_row)
         samples.append(
             VoteSample(
                 vote_id=row[0],
@@ -339,6 +418,27 @@ def load_vote_samples(db: Session) -> list[VoteSample]:
         )
 
     return samples
+
+
+def _limit_vote_samples_for_single_day(
+    vote_samples: list[VoteSample],
+    *,
+    daily_vote_cap: int,
+) -> list[VoteSample]:
+    if daily_vote_cap <= 0:
+        return vote_samples
+
+    usage: dict[str, int] = {}
+    kept: list[VoteSample] = []
+
+    for vote in vote_samples:
+        current = usage.get(vote.judge_key, 0)
+        if current >= daily_vote_cap:
+            continue
+        usage[vote.judge_key] = current + 1
+        kept.append(vote)
+
+    return kept
 
 
 def compute_elo_ratings(
@@ -363,41 +463,20 @@ def compute_elo_ratings(
     """
 
     events = _build_elo_events(vote_samples)
-
-    if shuffle_rounds <= 1 or not events:
-        # Original single-pass path — unchanged semantics.
-        ratings, games_played = _compute_elo_ratings_from_events(events=events, k=k)
-        return {
-            model_id: (rating, games_played.get(model_id, 0))
-            for model_id, rating in ratings.items()
-        }
-
-    # Shuffle-and-average: run ``shuffle_rounds`` independently shuffled passes
-    # and average the resulting ratings per model.  games_played is taken from
-    # the unshuffled pass (order does not affect counts, only ratings differ).
-    rng = random.Random(shuffle_seed)
-    event_indices = list(range(len(events)))
-
-    accumulated: dict[uuid.UUID, float] = {}
-    for _ in range(shuffle_rounds):
-        rng.shuffle(event_indices)
-        round_ratings, _ = _compute_elo_ratings_from_events(
-            events=events,
-            k=k,
-            sampled_indices=event_indices,
-        )
-        for model_id, rating in round_ratings.items():
-            accumulated[model_id] = accumulated.get(model_id, 0.0) + rating
-
-    # games_played is order-independent; compute it once from the original order.
-    _, games_played = _compute_elo_ratings_from_events(events=events, k=k)
+    shuffle_rng = random.Random(shuffle_seed) if shuffle_rounds > 1 else None
+    averaged_ratings, games_played = _compute_shuffled_average_elo_from_events(
+        events=events,
+        k=k,
+        shuffle_rounds=shuffle_rounds,
+        shuffle_rng=shuffle_rng,
+    )
 
     return {
         model_id: (
-            accumulated[model_id] / shuffle_rounds,
+            averaged_ratings[model_id],
             games_played.get(model_id, 0),
         )
-        for model_id in accumulated
+        for model_id in averaged_ratings
     }
 
 
@@ -409,6 +488,8 @@ def compute_elo_confidence_intervals(
     seed: int,
     k: float,
     confidence_level: float = 0.95,
+    shuffle_rounds: int = 1,
+    shuffle_seed: int = 0,
 ) -> dict[uuid.UUID, tuple[float, float]]:
     """Compute bootstrap confidence intervals for Elo ratings.
 
@@ -419,7 +500,12 @@ def compute_elo_confidence_intervals(
     if not model_ids:
         return {}
 
-    base_ratings = compute_elo_ratings(vote_samples, k=k)
+    base_ratings = compute_elo_ratings(
+        vote_samples,
+        k=k,
+        shuffle_rounds=shuffle_rounds,
+        shuffle_seed=shuffle_seed,
+    )
     if not vote_samples:
         return {
             model_id: _point_interval(base_ratings.get(model_id, (1000.0, 0))[0])
@@ -437,15 +523,18 @@ def compute_elo_confidence_intervals(
     upper_quantile = 1.0 - lower_quantile
 
     rng = random.Random(seed)
+    shuffle_rng = random.Random(shuffle_seed) if shuffle_rounds > 1 else None
     samples_by_model: dict[uuid.UUID, list[float]] = {
         model_id: [] for model_id in model_ids
     }
 
     for _ in range(bootstrap_rounds):
         sampled_indices = [rng.randrange(sample_size) for _ in range(sample_size)]
-        sampled_ratings, _ = _compute_elo_ratings_from_events(
+        sampled_ratings, _ = _compute_shuffled_average_elo_from_events(
             events=events,
             k=k,
+            shuffle_rounds=shuffle_rounds,
+            shuffle_rng=shuffle_rng,
             sampled_indices=sampled_indices,
         )
 
@@ -511,6 +600,51 @@ def _compute_elo_ratings_from_events(
     return ratings, games_played
 
 
+def _compute_shuffled_average_elo_from_events(
+    *,
+    events: list[_EloEvent],
+    k: float,
+    shuffle_rounds: int,
+    shuffle_rng: random.Random | None,
+    sampled_indices: list[int] | None = None,
+) -> tuple[dict[uuid.UUID, float], dict[uuid.UUID, int]]:
+    if shuffle_rounds <= 1 or not events:
+        return _compute_elo_ratings_from_events(
+            events=events,
+            k=k,
+            sampled_indices=sampled_indices,
+        )
+
+    base_indices = (
+        list(sampled_indices)
+        if sampled_indices is not None
+        else list(range(len(events)))
+    )
+
+    accumulated: dict[uuid.UUID, float] = {}
+    for _ in range(shuffle_rounds):
+        round_indices = list(base_indices)
+        if shuffle_rng is not None:
+            shuffle_rng.shuffle(round_indices)
+        round_ratings, _ = _compute_elo_ratings_from_events(
+            events=events,
+            k=k,
+            sampled_indices=round_indices,
+        )
+        for model_id, rating in round_ratings.items():
+            accumulated[model_id] = accumulated.get(model_id, 0.0) + rating
+
+    _, games_played = _compute_elo_ratings_from_events(
+        events=events,
+        k=k,
+        sampled_indices=base_indices,
+    )
+    averaged_ratings = {
+        model_id: total / shuffle_rounds for model_id, total in accumulated.items()
+    }
+    return averaged_ratings, games_played
+
+
 def _point_interval(value: float) -> tuple[float, float]:
     return value, value
 
@@ -539,6 +673,12 @@ def _ensure_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _utc_day_bounds(value: datetime) -> tuple[datetime, datetime]:
+    value = _ensure_utc(value)
+    day_start = value.replace(hour=0, minute=0, second=0, microsecond=0)
+    return day_start, day_start + timedelta(days=1)
+
+
 @lru_cache(maxsize=1)
 def get_leaderboard_refresher() -> LeaderboardRefresher:
     settings = get_settings()
@@ -547,6 +687,8 @@ def get_leaderboard_refresher() -> LeaderboardRefresher:
         interval_seconds=settings.leaderboard_refresh_interval_seconds,
         daily_vote_cap=settings.leaderboard_refresh_daily_vote_cap,
         elo_k=settings.leaderboard_refresh_elo_k,
+        elo_shuffle_rounds=settings.leaderboard_elo_shuffle_rounds,
+        elo_shuffle_seed=settings.leaderboard_elo_shuffle_seed,
     )
 
 

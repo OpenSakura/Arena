@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -52,7 +53,7 @@ def test_get_refresh_status_returns_current_refresher_state(
         lambda: refresher,
     )
 
-    response = admin_leaderboard.get_refresh_status()
+    response = asyncio.run(admin_leaderboard.get_refresh_status())
 
     assert response == {
         "enabled": True,
@@ -85,7 +86,7 @@ def test_run_refresh_now_returns_success_when_last_error_is_empty(
         lambda: refresher,
     )
 
-    response = admin_leaderboard.run_refresh_now()
+    response = asyncio.run(admin_leaderboard.run_refresh_now())
 
     assert refresher.refresh_calls == 1
     assert response == {
@@ -117,8 +118,43 @@ def test_run_refresh_now_returns_failure_when_last_error_is_present(
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        admin_leaderboard.run_refresh_now()
+        asyncio.run(admin_leaderboard.run_refresh_now())
 
     assert refresher.refresh_calls == 1
     assert exc_info.value.status_code == 500
     assert "database unavailable" in exc_info.value.detail
+
+
+def test_refresh_runs_via_asyncio_to_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 2, 18, 10, 15, tzinfo=timezone.utc)
+    status = _Status(
+        enabled=True,
+        interval_seconds=300,
+        daily_vote_cap=40,
+        last_attempted_at=now,
+        last_succeeded_at=now,
+        last_error=None,
+        total_refreshes=15,
+    )
+    refresher = _Refresher(status)
+    monkeypatch.setattr(
+        admin_leaderboard,
+        "get_leaderboard_refresher",
+        lambda: refresher,
+    )
+
+    to_thread_funcs: list[str] = []
+    _real_to_thread = asyncio.to_thread
+
+    async def _tracking_to_thread(func, *args, **kwargs):  # type: ignore[no-untyped-def]
+        to_thread_funcs.append(getattr(func, "__name__", str(func)))
+        return await _real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(admin_leaderboard.asyncio, "to_thread", _tracking_to_thread)
+
+    asyncio.run(admin_leaderboard.run_refresh_now())
+
+    assert refresher.refresh_calls == 1
+    assert "refresh_once" in to_thread_funcs

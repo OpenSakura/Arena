@@ -12,11 +12,12 @@ Rate limiting
 Confidence-enabled leaderboard requests (``?include_confidence=true``) are
 CPU-expensive because they run bootstrap resampling.  To prevent abuse:
 
-1. **Short-lived cache** — Computed results are cached in-memory for
-   ``leaderboard_confidence_cache_ttl_seconds`` (default 15 s).  Repeated
-   identical requests within the TTL window are served from cache without
-   recomputation.  The cache is bounded to ``_MAX_CONFIDENCE_CACHE_ENTRIES``
-   to prevent unbounded memory growth.
+1. **Short-lived shared cache** — When Redis is configured, computed
+   results are cached in Redis for
+   ``leaderboard_confidence_cache_ttl_seconds`` (default 15 s). Repeated
+   identical requests within the TTL window are served from the shared
+   cache without recomputation. When Redis is absent or unavailable,
+   requests fall back to direct recomputation.
 
 2. **Redis-backed rate limiter** — Uncached recomputations are throttled
    globally via ``RollingWindowRateLimiter`` (Redis-backed).  This enforces
@@ -29,13 +30,13 @@ CPU-expensive because they run bootstrap resampling.  To prevent abuse:
 from __future__ import annotations
 
 from functools import lru_cache
-import threading
-import time
+from typing import Protocol, cast
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, HTTPException, Query  # pyright: ignore[reportMissingImports]
+from pydantic import ValidationError
+from sqlalchemy import func, select  # pyright: ignore[reportMissingImports]
+from sqlalchemy.orm import Session  # pyright: ignore[reportMissingImports]
 
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
@@ -50,25 +51,24 @@ from app.services.leaderboard_bt import (
 from app.services.leaderboard_refresh import (
     compute_elo_confidence_intervals,
     compute_elo_ratings,
-    limit_votes_per_judge_per_day,
     load_vote_samples,
 )
 from app.utils.rate_limit import RollingWindowRateLimiter
-from app.utils.redis import get_rate_limit_redis_client
+from app.utils import redis as redis_utils
 
 router = APIRouter(tags=["leaderboard"])
+
+
+class _ConfidenceCacheClient(Protocol):
+    def get(self, key: str) -> str | bytes | None: ...
+
+    def set(self, key: str, value: str, *, ex: int) -> object: ...
+
 
 # ---------------------------------------------------------------------------
 # Confidence leaderboard cache
 # ---------------------------------------------------------------------------
-# Maximum number of distinct cache entries.  Each unique combination of
-# method + settings produces a separate key.  In practice there are only
-# 2 methods × 1 configuration = 2 entries, but we cap at a safe upper bound
-# to prevent unbounded growth if settings are mutated dynamically.
-_MAX_CONFIDENCE_CACHE_ENTRIES = 16
-
-_confidence_cache_guard = threading.Lock()
-_confidence_cache: dict[str, tuple[float, LeaderboardResponse]] = {}
+_CONFIDENCE_CACHE_NAMESPACE = "leaderboard:confidence"
 
 
 def _confidence_cache_ttl_seconds(settings: Settings) -> int:
@@ -102,6 +102,8 @@ def _confidence_cache_key(*, method: str, settings: Settings) -> str:
             "elo"
             f":{settings.leaderboard_refresh_daily_vote_cap}"
             f":{settings.leaderboard_refresh_elo_k}"
+            f":{settings.leaderboard_elo_shuffle_rounds}"
+            f":{settings.leaderboard_elo_shuffle_seed}"
             f":{settings.leaderboard_elo_bootstrap_rounds}"
             f":{settings.leaderboard_elo_bootstrap_seed}"
             f":{settings.leaderboard_elo_confidence_level}"
@@ -120,26 +122,35 @@ def _confidence_cache_key(*, method: str, settings: Settings) -> str:
 
 
 def _load_cached_confidence_leaderboard(
-    *, cache_key: str
+    *, cache_key: str, settings: Settings
 ) -> LeaderboardResponse | None:
-    """Return a cached response if it exists and has not expired.
+    """Return a cached response from Redis when shared caching is available."""
 
-    Expired entries are eagerly evicted on read so they do not accumulate.
-    Returns a deep copy so the caller cannot mutate the cached object.
-    """
+    ttl_seconds = _confidence_cache_ttl_seconds(settings)
+    if ttl_seconds <= 0:
+        return None
 
-    now = time.monotonic()
-    with _confidence_cache_guard:
-        entry = _confidence_cache.get(cache_key)
-        if entry is None:
-            return None
+    redis_client = _get_confidence_cache_client()
+    if redis_client is None:
+        return None
+    redis_client = cast(_ConfidenceCacheClient, redis_client)
 
-        expires_at, response = entry
-        if now >= expires_at:
-            _confidence_cache.pop(cache_key, None)
-            return None
+    try:
+        payload = redis_client.get(
+            _confidence_cache_redis_key(cache_key=cache_key, settings=settings)
+        )
+    except redis_utils.RedisError:
+        return None
 
-        return response.model_copy(deep=True)
+    if payload is None:
+        return None
+
+    try:
+        if isinstance(payload, bytes):
+            payload = payload.decode("utf-8")
+        return LeaderboardResponse.model_validate_json(payload)
+    except (UnicodeDecodeError, ValidationError, ValueError):
+        return None
 
 
 def _store_cached_confidence_leaderboard(
@@ -148,31 +159,34 @@ def _store_cached_confidence_leaderboard(
     response: LeaderboardResponse,
     settings: Settings,
 ) -> None:
-    """Store a confidence leaderboard response in the cache.
-
-    If the cache is full, expired entries are purged first.  If it is
-    still full after purging, the oldest entry is evicted (LRU-ish).
-    """
+    """Store a confidence leaderboard response in Redis when available."""
 
     ttl_seconds = _confidence_cache_ttl_seconds(settings)
     if ttl_seconds <= 0:
         return
 
-    now = time.monotonic()
-    expires_at = now + float(ttl_seconds)
+    redis_client = _get_confidence_cache_client()
+    if redis_client is None:
+        return
+    redis_client = cast(_ConfidenceCacheClient, redis_client)
 
-    with _confidence_cache_guard:
-        # Purge expired entries before inserting.
-        expired_keys = [k for k, (exp, _) in _confidence_cache.items() if now >= exp]
-        for k in expired_keys:
-            _confidence_cache.pop(k, None)
+    try:
+        redis_client.set(
+            _confidence_cache_redis_key(cache_key=cache_key, settings=settings),
+            response.model_dump_json(),
+            ex=ttl_seconds,
+        )
+    except redis_utils.RedisError:
+        return
 
-        # If still at capacity, evict the entry closest to expiry.
-        if len(_confidence_cache) >= _MAX_CONFIDENCE_CACHE_ENTRIES:
-            oldest_key = min(_confidence_cache, key=lambda k: _confidence_cache[k][0])
-            _confidence_cache.pop(oldest_key, None)
 
-        _confidence_cache[cache_key] = (expires_at, response.model_copy(deep=True))
+def _get_confidence_cache_client() -> object | None:
+    return redis_utils.get_confidence_cache_redis_client()
+
+
+def _confidence_cache_redis_key(*, cache_key: str, settings: Settings) -> str:
+    prefix = settings.rate_limit_redis_key_prefix.strip().strip(":") or "arena"
+    return f"{prefix}:{_CONFIDENCE_CACHE_NAMESPACE}:{cache_key}"
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +213,7 @@ def _get_confidence_rate_limiter() -> RollingWindowRateLimiter:
         bucket_seconds=max(
             settings.leaderboard_confidence_rate_limit_window_seconds // 6, 1
         ),
-        redis_client=get_rate_limit_redis_client(),
+        redis_client=redis_utils.get_rate_limit_redis_client(),
         redis_prefix=settings.rate_limit_redis_key_prefix,
     )
 
@@ -259,7 +273,10 @@ def get_leaderboard(
     cache_key: str | None = None
     if include_confidence:
         cache_key = _confidence_cache_key(method=method, settings=settings)
-        cached = _load_cached_confidence_leaderboard(cache_key=cache_key)
+        cached = _load_cached_confidence_leaderboard(
+            cache_key=cache_key,
+            settings=settings,
+        )
         if cached is not None:
             return cached
 
@@ -337,14 +354,17 @@ def _get_leaderboard_elo(
         ]
         return LeaderboardResponse(models=rows, method="elo", ci=False)
 
-    vote_samples = load_vote_samples(db)
-    if settings.leaderboard_refresh_daily_vote_cap > 0:
-        vote_samples = limit_votes_per_judge_per_day(
-            vote_samples,
-            daily_vote_cap=settings.leaderboard_refresh_daily_vote_cap,
-        )
+    vote_samples = load_vote_samples(
+        db,
+        daily_vote_cap=settings.leaderboard_refresh_daily_vote_cap,
+    )
 
-    baseline = compute_elo_ratings(vote_samples, k=settings.leaderboard_refresh_elo_k)
+    baseline = compute_elo_ratings(
+        vote_samples,
+        k=settings.leaderboard_refresh_elo_k,
+        shuffle_rounds=settings.leaderboard_elo_shuffle_rounds,
+        shuffle_seed=settings.leaderboard_elo_shuffle_seed,
+    )
 
     intervals = compute_elo_confidence_intervals(
         vote_samples,
@@ -353,6 +373,8 @@ def _get_leaderboard_elo(
         seed=settings.leaderboard_elo_bootstrap_seed,
         k=settings.leaderboard_refresh_elo_k,
         confidence_level=settings.leaderboard_elo_confidence_level,
+        shuffle_rounds=settings.leaderboard_elo_shuffle_rounds,
+        shuffle_seed=settings.leaderboard_elo_shuffle_seed,
     )
 
     rows: list[LeaderboardRow] = []
@@ -404,12 +426,10 @@ def _get_leaderboard_bt(
 
     # BT is always computed on demand from vote samples. ``model_ratings``
     # persists Elo snapshots only and must not be treated as a BT fast path.
-    vote_samples = load_vote_samples(db)
-    if settings.leaderboard_refresh_daily_vote_cap > 0:
-        vote_samples = limit_votes_per_judge_per_day(
-            vote_samples,
-            daily_vote_cap=settings.leaderboard_refresh_daily_vote_cap,
-        )
+    vote_samples = load_vote_samples(
+        db,
+        daily_vote_cap=settings.leaderboard_refresh_daily_vote_cap,
+    )
 
     votes = [
         PairwiseVote(

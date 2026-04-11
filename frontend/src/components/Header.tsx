@@ -18,13 +18,14 @@ type NavLink = {
   href: string;
   label: string;
   prefix?: string;
+  authRequired?: boolean;
 };
 
 const NAV_LINKS: NavLink[] = [
   { href: "/battle/new", label: "Battle", prefix: "/battle" },
   { href: "/leaderboard", label: "Leaderboard" },
   { href: "/onboarding", label: "Profile" },
-  { href: "/admin/models", label: "Admin", prefix: "/admin" },
+  { href: "/admin/models", label: "Admin", prefix: "/admin", authRequired: true },
 ];
 
 function SakuraIcon({ className = "" }: { className?: string }) {
@@ -95,7 +96,7 @@ export function Header() {
 
         {/* Desktop nav */}
         <nav className="hidden md:flex items-center gap-1 text-sm font-medium">
-          {NAV_LINKS.filter((link) => !link.prefix || isAuthenticated).map((link) => (
+          {NAV_LINKS.filter((link) => !link.authRequired || isAuthenticated).map((link) => (
             <Link
               key={link.href}
               href={link.href}
@@ -173,7 +174,7 @@ export function Header() {
             className="md:hidden border-t border-border/50 bg-background/95 backdrop-blur-xl overflow-hidden"
           >
             <div className="px-6 py-4 space-y-1">
-              {NAV_LINKS.filter((link) => !link.prefix || isAuthenticated).map((link) => (
+              {NAV_LINKS.filter((link) => !link.authRequired || isAuthenticated).map((link) => (
                 <Link
                   key={link.href}
                   href={link.href}

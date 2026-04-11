@@ -12,9 +12,14 @@ from __future__ import annotations
 from typing import Annotated, Any
 from functools import lru_cache
 import json
+import logging
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from pydantic_settings import (  # pyright: ignore[reportMissingImports]
+    BaseSettings,
+    NoDecode,
+    SettingsConfigDict,
+)
 
 
 class Settings(BaseSettings):
@@ -111,11 +116,9 @@ class Settings(BaseSettings):
     leaderboard_elo_confidence_level: float = 0.95
 
     # Shuffle-and-average Elo: run this many shuffled passes before computing
-    # the base rating to reduce order-dependent artifacts.  Set to 0 or 1 to
-    # use the original single-pass path.  Seed is shared with bootstrap when
-    # leaderboard_elo_shuffle_seed == 0 (uses leaderboard_elo_bootstrap_seed);
-    # set it explicitly to decouple the two RNG streams.
-    leaderboard_elo_shuffle_rounds: int = 1
+    # the base rating to reduce order-dependent artifacts. Set to 0 or 1 to
+    # use the original single-pass path.
+    leaderboard_elo_shuffle_rounds: int = 5
     leaderboard_elo_shuffle_seed: int = 0
 
     # Bradley-Terry leaderboard settings (computed on demand).
@@ -196,6 +199,15 @@ class Settings(BaseSettings):
             raise ValueError(
                 "Security-critical production configuration errors:\n"
                 + "\n".join(f"  - {e}" for e in errors)
+            )
+
+        _config_logger = logging.getLogger("app.core.config")
+
+        if not self.rate_limit_redis_url.strip():
+            _config_logger.warning(
+                "RATE_LIMIT_REDIS_URL is not configured in production — "
+                "anonymous rate limiting and shared confidence caching are "
+                "disabled"
             )
 
         return self

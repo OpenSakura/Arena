@@ -17,6 +17,7 @@ function renderHeader() {
 }
 
 const useSessionMock = vi.fn();
+const usePathnameMock = vi.fn();
 const signInMock = vi.fn();
 const signOutMock = vi.fn();
 
@@ -37,7 +38,7 @@ vi.mock("next/link", () => ({
 }));
 
 vi.mock("next/navigation", () => ({
-  usePathname: () => "/",
+  usePathname: () => usePathnameMock(),
 }));
 
 vi.mock("next-auth/react", () => ({
@@ -48,8 +49,12 @@ vi.mock("next-auth/react", () => ({
 
 beforeEach(() => {
   useSessionMock.mockReset();
+  usePathnameMock.mockReset();
   signInMock.mockReset();
   signOutMock.mockReset();
+
+  usePathnameMock.mockReturnValue("/");
+  window.history.replaceState({}, "", "/");
 });
 
 describe("Header", () => {
@@ -93,5 +98,37 @@ describe("Header", () => {
     await user.click(screen.getByRole("button", { name: "Logout" }));
 
     expect(signOutMock).toHaveBeenCalledWith({ callbackUrl: "/" });
+  });
+
+  it("shows Battle nav link for anonymous users", () => {
+    useSessionMock.mockReturnValue({ data: null, status: "unauthenticated" });
+
+    renderHeader();
+
+    expect(screen.getAllByText("Battle").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows Admin nav link for authenticated users", () => {
+    useSessionMock.mockReturnValue({
+      data: { accessToken: "admin-token", user: { email: "admin@example.com" } },
+      status: "authenticated",
+    });
+
+    renderHeader();
+
+    const adminLinks = screen.getAllByText("Admin");
+    expect(adminLinks.length).toBeGreaterThanOrEqual(1);
+    const desktopLink = adminLinks.find(
+      (el) => el.closest("a")?.getAttribute("href") === "/admin/models",
+    );
+    expect(desktopLink).toBeDefined();
+  });
+
+  it("hides Admin nav link for anonymous users", () => {
+    useSessionMock.mockReturnValue({ data: null, status: "unauthenticated" });
+
+    renderHeader();
+
+    expect(screen.queryByText("Admin")).toBeNull();
   });
 });

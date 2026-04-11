@@ -1,4 +1,45 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
+
+const CORS_HEADERS: Record<string, string> = {
+  "access-control-allow-origin": "http://localhost:13000",
+  "access-control-allow-credentials": "true",
+  "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+  "access-control-allow-headers": "authorization, content-type, accept",
+};
+
+async function handleCorsIfPreflight(route: Route): Promise<boolean> {
+  if (route.request().method() === "OPTIONS") {
+    await route.fulfill({ status: 204, headers: CORS_HEADERS });
+    return true;
+  }
+  return false;
+}
+
+async function mockBattleDetails(
+  page: Page,
+  battlesById: Map<string, BattlePublic>,
+): Promise<void> {
+  await page.route(/\/api\/v1\/battles\/[^/]+$/, async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
+    if (route.request().method() !== "GET") {
+      await route.abort();
+      return;
+    }
+
+    const match = /\/battles\/([^/?]+)$/.exec(route.request().url());
+    const battleId = match?.[1] ?? "";
+    const battle = battlesById.get(battleId);
+
+    await route.fulfill({
+      status: battle ? 200 : 404,
+      contentType: "application/json",
+      headers: CORS_HEADERS,
+      body: JSON.stringify(
+        battle ?? { detail: `Mock battle not found: ${battleId}` },
+      ),
+    });
+  });
+}
 
 type Side = "A" | "B";
 
@@ -59,33 +100,46 @@ function sseBody(events: Array<{ event: string; data: unknown }>): string {
 }
 
 async function mockCompletedBattle(page: Page, battleId: string): Promise<void> {
+  const battlesById = new Map<string, BattlePublic>();
+
   await page.route("**/api/v1/public-config", async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ anon_vote_turnstile_required: false }),
+      headers: CORS_HEADERS,
+      body: JSON.stringify({ anon_battle_turnstile_required: false }),
     });
   });
 
   await page.route("**/api/v1/battles", async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
     if (route.request().method() !== "POST") {
       await route.abort();
       return;
     }
 
+    const battle = makeBattle(battleId);
+    battlesById.set(battle.id, battle);
+
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(makeBattle(battleId)),
+      headers: CORS_HEADERS,
+      body: JSON.stringify(battle),
     });
   });
 
+  await mockBattleDetails(page, battlesById);
+
   await page.route(/\/api\/v1\/battles\/[^/]+\/stream$/, async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
     await route.fulfill({
       status: 200,
       headers: {
         "content-type": "text/event-stream; charset=utf-8",
         "cache-control": "no-cache",
+        ...CORS_HEADERS,
       },
       body: sseBody([
         { event: "run.delta", data: { side: "A", text_delta: "Vote output A" } },
@@ -102,11 +156,28 @@ test("submits tie votes with rubric tags and comment payload", async ({ page }) 
   await mockCompletedBattle(page, "battle-vote-tie");
 
   await page.route(/\/api\/v1\/battles\/[^/]+\/vote$/, async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
     votePayloads.push(route.request().postDataJSON());
 
     await route.fulfill({
       status: 200,
       contentType: "application/json",
+      headers: CORS_HEADERS,
+      body: JSON.stringify({
+        vote_id: "vote-tie-1",
+        battle_id: "battle-vote-tie",
+        winner: "tie",
+        reveal: null,
+      }),
+    });
+  });
+
+  await page.route(/\/api\/v1\/battles\/[^/]+\/vote\/reveal$/, async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: CORS_HEADERS,
       body: JSON.stringify({
         vote_id: "vote-tie-1",
         battle_id: "battle-vote-tie",
@@ -121,7 +192,7 @@ test("submits tie votes with rubric tags and comment payload", async ({ page }) 
 
   await page.goto("/battle/new");
 
-  await expect(page.getByText(/done/i)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText(/complete/i)).toBeVisible({ timeout: 60_000 });
 
   await page.getByRole("button", { name: "Tie" }).click();
   await page.getByRole("button", { name: "accuracy" }).click();
@@ -136,7 +207,6 @@ test("submits tie votes with rubric tags and comment payload", async ({ page }) 
   expect(payload).toMatchObject({
     winner: "tie",
     comment: "Both outputs are strong in different dimensions.",
-    turnstile_token: null,
   });
 
   const rubric = payload.rubric as Record<string, unknown>;
@@ -150,6 +220,7 @@ test("shows conflict errors and allows retry with the same vote state", async ({
   await mockCompletedBattle(page, "battle-vote-conflict");
 
   await page.route(/\/api\/v1\/battles\/[^/]+\/vote$/, async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
     submitCount += 1;
     votePayloads.push(route.request().postDataJSON());
 
@@ -157,6 +228,7 @@ test("shows conflict errors and allows retry with the same vote state", async ({
       await route.fulfill({
         status: 409,
         contentType: "application/json",
+        headers: CORS_HEADERS,
         body: JSON.stringify({ detail: "Vote already submitted for this battle" }),
       });
       return;
@@ -165,6 +237,22 @@ test("shows conflict errors and allows retry with the same vote state", async ({
     await route.fulfill({
       status: 200,
       contentType: "application/json",
+      headers: CORS_HEADERS,
+      body: JSON.stringify({
+        vote_id: "vote-conflict-retry",
+        battle_id: "battle-vote-conflict",
+        winner: "A",
+        reveal: null,
+      }),
+    });
+  });
+
+  await page.route(/\/api\/v1\/battles\/[^/]+\/vote\/reveal$/, async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: CORS_HEADERS,
       body: JSON.stringify({
         vote_id: "vote-conflict-retry",
         battle_id: "battle-vote-conflict",
@@ -179,7 +267,7 @@ test("shows conflict errors and allows retry with the same vote state", async ({
 
   await page.goto("/battle/new");
 
-  await expect(page.getByText(/done/i)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText(/complete/i)).toBeVisible({ timeout: 60_000 });
 
   await page.getByRole("button", { name: /Model A is better/i }).click();
   await page.getByRole("button", { name: "fluency" }).click();
@@ -204,12 +292,10 @@ test("shows conflict errors and allows retry with the same vote state", async ({
   expect(firstPayload).toMatchObject({
     winner: "A",
     comment: "Retrying after conflict",
-    turnstile_token: null,
   });
   expect(secondPayload).toMatchObject({
     winner: "A",
     comment: "Retrying after conflict",
-    turnstile_token: null,
   });
 
   const firstRubric = firstPayload.rubric as Record<string, unknown>;
@@ -225,6 +311,7 @@ test("submits only once when users double-click submit under latency", async ({ 
   await mockCompletedBattle(page, "battle-vote-idempotent");
 
   await page.route(/\/api\/v1\/battles\/[^/]+\/vote$/, async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
     voteCallCount += 1;
     votePayloads.push(route.request().postDataJSON());
 
@@ -235,6 +322,22 @@ test("submits only once when users double-click submit under latency", async ({ 
     await route.fulfill({
       status: 200,
       contentType: "application/json",
+      headers: CORS_HEADERS,
+      body: JSON.stringify({
+        vote_id: "vote-idempotent-1",
+        battle_id: "battle-vote-idempotent",
+        winner: "A",
+        reveal: null,
+      }),
+    });
+  });
+
+  await page.route(/\/api\/v1\/battles\/[^/]+\/vote\/reveal$/, async (route) => {
+    if (await handleCorsIfPreflight(route)) return;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: CORS_HEADERS,
       body: JSON.stringify({
         vote_id: "vote-idempotent-1",
         battle_id: "battle-vote-idempotent",
@@ -249,7 +352,7 @@ test("submits only once when users double-click submit under latency", async ({ 
 
   await page.goto("/battle/new");
 
-  await expect(page.getByText(/done/i)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText(/complete/i)).toBeVisible({ timeout: 60_000 });
 
   await page.getByRole("button", { name: /Model A is better/i }).click();
   const submitVote = page.getByRole("button", { name: "Submit Vote" });
@@ -263,6 +366,5 @@ test("submits only once when users double-click submit under latency", async ({ 
   expect(votePayloads).toHaveLength(1);
   expect(votePayloads[0]).toMatchObject({
     winner: "A",
-    turnstile_token: null,
   });
 });

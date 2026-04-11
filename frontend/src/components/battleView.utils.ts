@@ -3,11 +3,16 @@ import { apiGet, apiPost } from "../lib/api";
 export async function loadOrCreateBattle<TBattle>(
   battleId: string,
   accessToken?: string,
+  turnstileToken?: string,
 ): Promise<TBattle> {
   const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined;
 
   if (battleId === "new") {
-    return (await apiPost("/battles", {}, { headers })) as TBattle;
+    const body: Record<string, unknown> = {};
+    if (turnstileToken) {
+      body.turnstile_token = turnstileToken;
+    }
+    return (await apiPost("/battles", body, { headers })) as TBattle;
   }
 
   return (await apiGet(`/battles/${encodeURIComponent(battleId)}`, { headers })) as TBattle;

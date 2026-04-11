@@ -20,7 +20,6 @@ def seed_frontend_playwright_fixture() -> None:
             text(
                 """
                 TRUNCATE TABLE
-                    rating_events,
                     votes,
                     runs,
                     battles,

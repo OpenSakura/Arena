@@ -201,7 +201,12 @@ def test_test_model_returns_error_when_api_key_decryption_fails(
         async def chat_completion(self, **_kwargs: object) -> dict[str, object]:
             raise AssertionError("chat_completion should not be called")
 
-    monkeypatch.setattr(admin_models, "LLMClient", lambda: _UnexpectedClient())
+    class _FakeOrchestrator:
+        _llm_client = _UnexpectedClient()
+
+    monkeypatch.setattr(
+        admin_models, "get_battle_orchestrator", lambda: _FakeOrchestrator()
+    )
 
     response = asyncio.run(admin_models.test_model(str(model.id), db=db))  # type: ignore[arg-type]
 
@@ -235,10 +240,12 @@ def test_test_model_merges_parameters_and_returns_preview(
                 "request_id": "req-42",
             }
 
-        async def aclose(self) -> None:
-            pass
+    class _FakeOrchestrator:
+        _llm_client = _FakeClient()
 
-    monkeypatch.setattr(admin_models, "LLMClient", lambda: _FakeClient())
+    monkeypatch.setattr(
+        admin_models, "get_battle_orchestrator", lambda: _FakeOrchestrator()
+    )
 
     response = asyncio.run(admin_models.test_model(str(model.id), db=db))  # type: ignore[arg-type]
 
@@ -255,8 +262,8 @@ def test_test_model_merges_parameters_and_returns_preview(
     assert captured["api_key"] == "secret-key"
     assert captured["timeout_seconds"] == 20.0
     assert captured["params"] == {
-        "max_tokens": 64,
-        "temperature": 0.2,
+        "max_tokens": 12,
+        "temperature": 0,
         "foo": "extra",
         "frequency_penalty": 0.5,
         "top_p": 0.9,
@@ -273,16 +280,18 @@ def test_test_model_returns_failure_payload_on_client_errors(
         async def chat_completion(self, **_kwargs: object) -> dict[str, object]:
             raise RuntimeError("gateway timeout")
 
-        async def aclose(self) -> None:
-            pass
+    class _FakeOrchestrator:
+        _llm_client = _FailingClient()
 
-    monkeypatch.setattr(admin_models, "LLMClient", lambda: _FailingClient())
+    monkeypatch.setattr(
+        admin_models, "get_battle_orchestrator", lambda: _FakeOrchestrator()
+    )
 
     response = asyncio.run(admin_models.test_model(str(model.id), db=db))  # type: ignore[arg-type]
 
     assert response == {
         "ok": False,
-        "note": "Connectivity test failed",
+        "note": "Connectivity test failed: RuntimeError: gateway timeout",
         "model_id": str(model.id),
         "has_api_key": False,
     }
@@ -420,3 +429,36 @@ def test_delete_model_rolls_back_and_returns_conflict_on_integrity_error() -> No
     assert db.deleted == [model]
     assert db.commit_calls == 1
     assert db.rollback_calls == 1
+
+
+def test_test_model_uses_shared_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _model_stub(encrypted_api_key=None)
+    db = _LookupDB(model)
+
+    class _SharedClient:
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        async def chat_completion(self, **_kwargs: object) -> dict[str, object]:
+            self.call_count += 1
+            return {
+                "choices": [{"message": {"content": "ok"}}],
+            }
+
+    shared = _SharedClient()
+
+    class _FakeOrchestrator:
+        _llm_client = shared
+
+    monkeypatch.setattr(
+        admin_models,
+        "get_battle_orchestrator",
+        lambda: _FakeOrchestrator(),
+    )
+
+    response = asyncio.run(admin_models.test_model(str(model.id), db=db))  # type: ignore[arg-type]
+
+    assert response["ok"] is True
+    assert shared.call_count == 1

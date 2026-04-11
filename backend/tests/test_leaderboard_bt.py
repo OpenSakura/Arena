@@ -150,3 +150,19 @@ def test_bt_confidence_intervals_keep_zero_game_models_at_baseline() -> None:
     )
 
     assert intervals[model_c] == pytest.approx((1000.0, 1000.0))
+
+
+def test_bt_ratings_ignore_votes_for_models_outside_requested_view() -> None:
+    public_a = uuid.uuid4()
+    public_b = uuid.uuid4()
+    hidden_model = uuid.uuid4()
+
+    votes = [
+        *[_vote(public_a, hidden_model, "A") for _ in range(12)],
+        *[_vote(public_b, public_a, "A") for _ in range(8)],
+    ]
+
+    ratings = compute_bt_ratings(model_ids=[public_a, public_b], votes=votes)
+
+    assert ratings[public_a][1] == 8
+    assert ratings[public_b][1] == 8

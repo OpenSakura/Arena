@@ -9,13 +9,12 @@
 
 "use client";
 
-import { signIn, useSession } from "next-auth/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
-import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api";
 import { parseJsonObjectOrNull, parseNumberOrNull } from "@/lib/adminParsers";
+import { useAuthHeaders } from "@/hooks/useAuthHeaders";
 
 type ModelAdmin = {
   id: string;
@@ -66,19 +65,10 @@ type EditState = {
 };
 
 export default function AdminModelsPage() {
-  const { data: session, status: authStatus } = useSession();
-  const accessToken = session?.accessToken;
-
-  const accessTokenRef = useRef(accessToken);
-  useEffect(() => { accessTokenRef.current = accessToken; }, [accessToken]);
-
-  const headers = useMemo(() => {
-    return accessTokenRef.current ? { Authorization: `Bearer ${accessTokenRef.current}` } : undefined;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accessToken]);
+  const { headers } = useAuthHeaders();
 
   const [models, setModels] = useState<ModelAdmin[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [errorText, setErrorText] = useState<string | null>(null);
 
   const [creating, setCreating] = useState(false);
@@ -288,9 +278,6 @@ export default function AdminModelsPage() {
     }
   }
 
-  const isReady = authStatus !== "loading";
-  const isAuthed = authStatus === "authenticated" && Boolean(accessToken);
-
   return (
     <div className="grid gap-4">
       <div className="flex items-center justify-between gap-2.5">
@@ -298,26 +285,9 @@ export default function AdminModelsPage() {
         <span className="text-xs text-muted-foreground font-mono">/admin/models</span>
       </div>
 
-      {!isReady ? <p className="m-0 text-muted-foreground text-sm">Checking login...</p> : null}
-
-      {isReady && !isAuthed ? (
-        <div className="glass-panel-accent p-5">
-          <div className="font-bold text-foreground">Admin login required</div>
-          <p className="mt-1.5 mb-0 leading-relaxed text-muted-foreground text-sm">
-            This page requires an Authentik login and the configured admin group claim.
-          </p>
-          <div className="mt-3">
-            <Button type="button" onClick={() => void signIn("authentik")}>
-              Login
-            </Button>
-          </div>
-        </div>
-      ) : null}
-
       {errorText ? <p className="m-0 text-sm text-destructive">{errorText}</p> : null}
 
-      {isAuthed ? (
-        <section className="glass-panel-accent p-5">
+      <section className="glass-panel-accent p-5">
           <div className="section-header mb-1">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="section-header-icon" aria-hidden>
               <line x1="12" y1="5" x2="12" y2="19" />
@@ -526,10 +496,8 @@ export default function AdminModelsPage() {
             </div>
           </div>
         </section>
-      ) : null}
 
-      {isAuthed ? (
-        <section className="glass-panel p-5">
+      <section className="glass-panel p-5">
           <div className="flex items-baseline justify-between gap-2.5 section-header">
             <span>Models</span>
             {loading ? <Skeleton className="h-3 w-16" /> : null}
@@ -584,9 +552,8 @@ export default function AdminModelsPage() {
             </table>
           ) : null}
         </section>
-      ) : null}
 
-      {isAuthed && edit ? (
+      {edit ? (
         <section className="glass-panel-accent p-5">
           <div className="flex items-baseline justify-between gap-2.5">
             <div className="section-header">Edit model</div>
@@ -742,6 +709,9 @@ export default function AdminModelsPage() {
                   className="textarea-premium"
                 />
               </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="edit-extra-body">
                   extra_body (JSON object)
@@ -756,19 +726,20 @@ export default function AdminModelsPage() {
                   className="textarea-premium"
                 />
               </div>
-            </div>
-
-            <div className="grid gap-1.5">
-              <label className="label-premium" htmlFor="edit-default-params">
-                default_params (JSON object)
-              </label>
-              <textarea
-                id="edit-default-params"
-                value={edit.defaultParamsText}
-                onChange={(e) => setEdit((prev) => (prev ? { ...prev, defaultParamsText: e.target.value } : prev))}
-                rows={4}
-                className="textarea-premium"
-              />
+              <div className="grid gap-1.5">
+                <label className="label-premium" htmlFor="edit-default-params">
+                  default_params (JSON object)
+                </label>
+                <textarea
+                  id="edit-default-params"
+                  value={edit.defaultParamsText}
+                  onChange={(e) =>
+                    setEdit((prev) => (prev ? { ...prev, defaultParamsText: e.target.value } : prev))
+                  }
+                  rows={4}
+                  className="textarea-premium"
+                />
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

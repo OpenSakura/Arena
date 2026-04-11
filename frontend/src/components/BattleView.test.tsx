@@ -82,7 +82,7 @@ beforeEach(() => {
   loadOrCreateBattleMock.mockReset();
 
   useSearchParamsMock.mockReturnValue({ get: () => null });
-  apiGetMock.mockResolvedValue({ anon_vote_turnstile_required: false });
+  apiGetMock.mockResolvedValue({ anon_battle_turnstile_required: false });
   getBackendBaseUrlMock.mockReturnValue("http://backend.test");
   streamSSEMock.mockReturnValue(emptyEventStream());
 });
@@ -127,7 +127,7 @@ describe("BattleView", () => {
     render(<BattleView battleId="new" />);
 
     await screen.findByText("JP source");
-    expect(loadOrCreateBattleMock).toHaveBeenCalledWith("new", "access-token");
+    expect(loadOrCreateBattleMock).toHaveBeenCalledWith("new", "access-token", undefined);
 
     await screen.findByText("Alpha");
     await screen.findByText("Beta");
@@ -149,7 +149,6 @@ describe("BattleView", () => {
           winner: "A",
           rubric: { tags: [] },
           comment: null,
-          turnstile_token: null,
         },
         {
           headers: { Authorization: "Bearer access-token" },
@@ -224,15 +223,26 @@ describe("BattleView", () => {
     });
   });
 
-  it("requires Turnstile token for anonymous users when site key is configured", async () => {
+  it("requires Turnstile verification for anonymous battle creation", async () => {
     process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY = "site-key";
-    apiGetMock.mockResolvedValue({ anon_vote_turnstile_required: true });
+    apiGetMock.mockResolvedValue({ anon_battle_turnstile_required: true });
 
     useSessionMock.mockReturnValue({
       data: null,
       status: "unauthenticated",
     });
 
+    // Delay battle creation so config loads first and Turnstile gate activates
+    loadOrCreateBattleMock.mockImplementation(
+      () => new Promise(() => {}), // never resolves — gate should prevent reaching this
+    );
+
+    render(<BattleView battleId="new" />);
+
+    // Should show verification gate
+    await screen.findByText("Verification Required");
+
+    // After solving Turnstile, battle should be created with the token
     loadOrCreateBattleMock.mockResolvedValue({
       id: "battle-2",
       task_id: "task-2",
@@ -240,63 +250,37 @@ describe("BattleView", () => {
       source_lang: "ja",
       target_lang: "zh",
       mode: "jp2zh_ab",
-      status: "completed",
-      run_a: { id: "run-a", side: "A", output_text: "A out", stats: null, error_text: null },
-      run_b: { id: "run-b", side: "B", output_text: "B out", stats: null, error_text: null },
-    });
-
-    render(<BattleView battleId="battle-2" />);
-    await waitFor(() => {
-      expect(screen.getByText(/complete/i)).toBeDefined();
+      status: "pending",
+      run_a: { id: "run-a", side: "A", output_text: null, stats: null, error_text: null },
+      run_b: { id: "run-b", side: "B", output_text: null, stats: null, error_text: null },
     });
 
     const user = userEvent.setup();
-    let btn = screen.getByText(/Model A is better/i).closest('button');
-    if (btn) await user.click(btn);
-
-    const submit = screen.getByText(/Submit Vote/i).closest('button') as HTMLButtonElement;
-    expect(submit.hasAttribute("disabled")).toBe(true);
-
     await user.click(screen.getByRole("button", { name: "Solve Turnstile" }));
 
     await waitFor(() => {
-      expect(submit.hasAttribute("disabled")).toBe(false);
+      expect(loadOrCreateBattleMock).toHaveBeenCalledWith("new", undefined, "turnstile-token");
     });
   });
 
-  it("blocks anonymous submit when backend requires Turnstile but site key is missing", async () => {
-    apiGetMock.mockResolvedValue({ anon_vote_turnstile_required: true });
+  it("shows misconfiguration warning when backend requires Turnstile but site key is missing", async () => {
+    // No NEXT_PUBLIC_TURNSTILE_SITE_KEY set
+    apiGetMock.mockResolvedValue({ anon_battle_turnstile_required: true });
 
     useSessionMock.mockReturnValue({
       data: null,
       status: "unauthenticated",
     });
 
-    loadOrCreateBattleMock.mockResolvedValue({
-      id: "battle-5",
-      task_id: "task-5",
-      source_text: "Another source",
-      source_lang: "ja",
-      target_lang: "zh",
-      mode: "jp2zh_ab",
-      status: "completed",
-      run_a: { id: "run-a", side: "A", output_text: "A out", stats: null, error_text: null },
-      run_b: { id: "run-b", side: "B", output_text: "B out", stats: null, error_text: null },
-    });
+    loadOrCreateBattleMock.mockImplementation(
+      () => new Promise(() => {}),
+    );
 
-    render(<BattleView battleId="battle-5" />);
-    await waitFor(() => {
-      expect(screen.getByText(/complete/i)).toBeDefined();
-    });
+    render(<BattleView battleId="new" />);
 
-    const user = userEvent.setup();
-    let btn = screen.getByText(/Model A is better/i).closest('button');
-    if (btn) await user.click(btn);
-
-    const submit = screen.getByText(/Submit Vote/i).closest('button') as HTMLButtonElement;
-    expect(submit.hasAttribute("disabled")).toBe(true);
+    await screen.findByText("Verification Required");
     expect(
-      screen.getByText(/Backend requires Turnstile for anonymous voting/),
+      screen.getByText(/NEXT_PUBLIC_TURNSTILE_SITE_KEY/),
     ).toBeDefined();
   });
 
@@ -381,12 +365,199 @@ describe("BattleView", () => {
     render(<BattleView battleId="battle-3" />);
 
     await waitFor(() => {
-      expect(screen.getByText(/error/i)).toBeDefined();
+      expect(screen.getAllByText(/failed/i).length).toBeGreaterThan(0);
     });
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Start another battle" }));
 
     expect(pushMock).toHaveBeenCalledWith(expect.stringMatching(/^\/battle\/new\?r=.+/));
+  });
+
+  it("keeps retry controls visible when a retry request fails", async () => {
+    useSessionMock.mockReturnValue({
+      data: { accessToken: "access-token" },
+      status: "authenticated",
+    });
+
+    loadOrCreateBattleMock.mockResolvedValue({
+      id: "battle-retry",
+      task_id: "task-retry",
+      source_text: "source",
+      source_lang: "ja",
+      target_lang: "zh",
+      mode: "jp2zh_ab",
+      status: "pending",
+      run_a: { id: "run-a", side: "A", output_text: null, stats: null, error_text: null },
+      run_b: { id: "run-b", side: "B", output_text: null, stats: null, error_text: null },
+    });
+
+    streamSSEMock.mockReturnValue(
+      (async function* () {
+        yield { event: "battle.failed", data: {} };
+      })(),
+    );
+    apiPostMock.mockRejectedValue(new Error("retry failed"));
+
+    render(<BattleView battleId="battle-retry" />);
+
+    await screen.findAllByText(/failed/i);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Retry Battle" }));
+
+    await screen.findByText("retry failed");
+    expect(screen.getByRole("button", { name: "Retry Battle" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Start another battle" })).toBeDefined();
+  });
+
+  it("resets UI and re-streams after a successful retry", async () => {
+    useSessionMock.mockReturnValue({
+      data: { accessToken: "access-token" },
+      status: "authenticated",
+    });
+
+    loadOrCreateBattleMock.mockResolvedValue({
+      id: "battle-retry-ok",
+      task_id: "task-retry-ok",
+      source_text: "source",
+      source_lang: "ja",
+      target_lang: "zh",
+      mode: "jp2zh_ab",
+      status: "pending",
+      run_a: { id: "run-a", side: "A", output_text: null, stats: null, error_text: null },
+      run_b: { id: "run-b", side: "B", output_text: null, stats: null, error_text: null },
+    });
+
+    streamSSEMock.mockReturnValueOnce(
+      (async function* () {
+        yield { event: "battle.failed", data: {} };
+      })(),
+    );
+    apiPostMock.mockResolvedValue({});
+
+    streamSSEMock.mockReturnValueOnce(
+      (async function* () {
+        yield { event: "run.delta", data: { side: "A", text_delta: "Retried Alpha" } };
+        yield { event: "run.delta", data: { side: "B", text_delta: "Retried Beta" } };
+        yield { event: "battle.completed", data: {} };
+      })(),
+    );
+
+    render(<BattleView battleId="battle-retry-ok" />);
+
+    await screen.findAllByText(/failed/i);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Retry Battle" }));
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith(
+        "/battles/battle-retry-ok/retry",
+        {},
+        { headers: { Authorization: "Bearer access-token" } },
+      );
+    });
+
+    await screen.findByText("Retried Alpha");
+    await screen.findByText("Retried Beta");
+
+    await waitFor(() => {
+      expect(screen.getByText(/complete/i)).toBeDefined();
+    });
+  });
+
+  it("hides vote controls before completion and handles missing reveal data", async () => {
+    useSessionMock.mockReturnValue({
+      data: { accessToken: "access-token" },
+      status: "authenticated",
+    });
+
+    loadOrCreateBattleMock.mockResolvedValue({
+      id: "battle-hidden",
+      task_id: "task-1",
+      source_text: "JP source",
+      source_lang: "ja",
+      target_lang: "zh",
+      mode: "jp2zh_ab",
+      status: "streaming",
+      run_a: { id: "run-a", side: "A", output_text: null, stats: null, error_text: null },
+      run_b: { id: "run-b", side: "B", output_text: null, stats: null, error_text: null },
+    });
+
+    streamSSEMock.mockReturnValue(
+      (async function* () {
+        yield { event: "run.delta", data: { side: "A", text_delta: "Alpha" } };
+        yield { event: "run.delta", data: { side: "B", text_delta: "Beta" } };
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        yield { event: "battle.completed", data: {} };
+      })(),
+    );
+
+    apiPostMock.mockResolvedValue({
+      vote_id: "vote-1",
+      battle_id: "battle-hidden",
+      winner: "A",
+      reveal: null,
+    });
+
+    render(<BattleView battleId="battle-hidden" />);
+
+    expect(screen.queryByText(/Cast Your Vote/i)).toBeNull();
+
+    await screen.findByText("Alpha");
+    await screen.findByText("Beta");
+
+    await waitFor(() => {
+      expect(screen.getByText(/Cast Your Vote/i)).toBeDefined();
+    });
+
+    const user = userEvent.setup();
+    let btn = screen.getByText(/Model A is better/i).closest('button');
+    if (btn) await user.click(btn);
+    btn = screen.getByText(/Submit Vote/i).closest('button');
+    if (btn) await user.click(btn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Reveal succeeded but response was missing reveal data/i)).toBeDefined();
+    });
+  });
+
+  it("blocks interactions when session refresh has failed", async () => {
+    useSessionMock.mockReturnValue({
+      data: { accessToken: "access-token", error: "RefreshTokenExpired" },
+      status: "authenticated",
+    });
+
+    loadOrCreateBattleMock.mockResolvedValue({
+      id: "battle-refresh-fail",
+      task_id: "task-1",
+      source_text: "JP source",
+      source_lang: "ja",
+      target_lang: "zh",
+      mode: "jp2zh_ab",
+      status: "completed",
+      run_a: { id: "run-a", side: "A", output_text: "Output A", stats: null, error_text: null },
+      run_b: { id: "run-b", side: "B", output_text: "Output B", stats: null, error_text: null },
+    });
+
+    streamSSEMock.mockReturnValue(emptyEventStream());
+
+    render(<BattleView battleId="battle-refresh-fail" />);
+
+    await screen.findByText("Output A");
+    await screen.findByText("Output B");
+
+    await waitFor(() => {
+      expect(screen.getByText(/Cast Your Vote/i)).toBeDefined();
+    });
+
+    const user = userEvent.setup();
+    let btn = screen.getByText(/Model A is better/i).closest('button');
+    if (btn) await user.click(btn);
+
+    const submitBtn = screen.getByText(/Submit Vote/i).closest('button');
+    expect(submitBtn).toBeDefined();
+    expect(submitBtn?.disabled).toBe(true);
   });
 });

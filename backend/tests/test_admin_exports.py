@@ -166,6 +166,7 @@ def test_export_runs_serializes_ids_stats_and_null_errors() -> None:
             "request_json": {"model": "model-a"},
             "prompt_rendered": "prompt",
             "output_text": "translated",
+            "output_text_raw": None,
             "stats": {"input_tokens": 12, "output_tokens": 18},
             "error_text": None,
             "created_at": created_at.isoformat(),
@@ -216,9 +217,8 @@ def test_export_battles_and_votes_capture_expected_fields() -> None:
     assert vote_record["created_at"] == created_at.isoformat()
 
 
-def test_export_ratings_emits_model_ratings_followed_by_events() -> None:
+def test_export_ratings_emits_model_ratings() -> None:
     updated_at = datetime(2026, 2, 18, 11, 15, tzinfo=timezone.utc)
-    created_at = datetime(2026, 2, 18, 11, 20, tzinfo=timezone.utc)
 
     model_rating = SimpleNamespace(
         model_id=uuid.uuid4(),
@@ -226,16 +226,7 @@ def test_export_ratings_emits_model_ratings_followed_by_events() -> None:
         games_played=24,
         updated_at=updated_at,
     )
-    event = SimpleNamespace(
-        id=uuid.uuid4(),
-        vote_id=uuid.uuid4(),
-        model_a_id=model_rating.model_id,
-        model_b_id=uuid.uuid4(),
-        delta_a=12.0,
-        delta_b=-12.0,
-        created_at=created_at,
-    )
-    db = _QueueDB([[model_rating], [event]])
+    db = _QueueDB([[model_rating]])
 
     response = admin_exports.export_ratings(db=db)  # type: ignore[arg-type]
     records = _jsonl_records(response)
@@ -246,24 +237,51 @@ def test_export_ratings_emits_model_ratings_followed_by_events() -> None:
     )
     assert [record["record_type"] for record in records] == [
         "model_rating",
-        "rating_event",
     ]
     assert records[0] == {
         "schema_version": admin_exports.SCHEMA_VERSION,
         "record_type": "model_rating",
+        "rating_method": "elo",
         "model_id": str(model_rating.model_id),
         "rating": 1032.5,
         "games_played": 24,
         "updated_at": updated_at.isoformat(),
     }
-    assert records[1] == {
-        "schema_version": admin_exports.SCHEMA_VERSION,
-        "record_type": "rating_event",
-        "id": str(event.id),
-        "vote_id": str(event.vote_id),
-        "model_a_id": str(event.model_a_id),
-        "model_b_id": str(event.model_b_id),
-        "delta_a": 12.0,
-        "delta_b": -12.0,
-        "created_at": created_at.isoformat(),
-    }
+
+
+def test_stream_export_safe_after_session_close() -> None:
+    """Rows are materialized before session teardown so streaming
+    succeeds even when the session is closed before body iteration."""
+    created_at = datetime(2026, 2, 18, 12, 0, tzinfo=timezone.utc)
+    task = SimpleNamespace(
+        id=uuid.uuid4(),
+        task_set_id=None,
+        source_lang="ja",
+        target_lang="zh",
+        source_text="text",
+        metadata_json=None,
+        created_at=created_at,
+    )
+
+    class _ClosingDB:
+        """DB stub that closes after execute — simulating get_db teardown."""
+
+        def __init__(self, rows: list[object]) -> None:
+            self._rows = rows
+            self.closed = False
+
+        def execute(self, _stmt: object) -> _ScalarResult:
+            return _ScalarResult(self._rows)
+
+        def close(self) -> None:
+            self.closed = True
+
+    db = _ClosingDB([task])
+    response = admin_exports.export_tasks(db=db)  # type: ignore[arg-type]
+
+    db.close()
+    assert db.closed
+
+    records = _jsonl_records(response)
+    assert len(records) == 1
+    assert records[0]["id"] == str(task.id)

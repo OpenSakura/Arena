@@ -70,17 +70,17 @@ function modelRecord(overrides: Record<string, unknown> = {}) {
 }
 
 describe("AdminModelsPage", () => {
-  it("shows login prompt and triggers Authentik sign-in for unauthenticated users", async () => {
+  it("does not load models when unauthenticated and stays in loading state", async () => {
     useSessionMock.mockReturnValue({ data: null, status: "unauthenticated" });
 
     render(<AdminModelsPage />);
 
-    await screen.findByText("Admin login required");
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Login" }));
-
-    expect(signInMock).toHaveBeenCalledWith("authentik");
+    // Without a valid session, the page renders the heading but no API calls
+    // are made (headers are undefined, so the useEffect early-returns).
+    await screen.findByText("Model Registry");
     expect(apiGetMock).not.toHaveBeenCalled();
+
+    expect(screen.queryByText("No models yet.")).toBeNull();
   });
 
   it("loads and renders model rows when authenticated", async () => {

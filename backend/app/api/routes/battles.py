@@ -5,18 +5,21 @@ Battle orchestration endpoints.
 Notes:
 - A "battle" is a pairwise comparison between two model runs on the same task.
 - Streaming should be done via SSE so the UI can display partial outputs.
+- Live execution assumes a single API worker/process owns the cached
+  ``BattleOrchestrator`` singleton; additional stream consumers are observers.
 - Anonymous users can create battles; authenticated users enrich audit logs.
 """
 
 from __future__ import annotations
 
+import asyncio
+import datetime
 from functools import lru_cache
-import random
-import secrets
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
+import httpx
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -28,11 +31,14 @@ from app.models.battle import Battle, Run
 from app.models.model_registry import Model
 from app.models.rating import ModelRating
 from app.models.task import Task
+from app.models.vote import Vote
 from app.schemas.battles import BattleCreate, BattlePublic, RunPublic
 from app.services.battle_orchestrator import BattleOrchestrator, get_battle_orchestrator
 from app.services.sampling import CandidateModel, SamplingPolicy, select_battle_pair
 from app.utils.anon import get_or_set_anon_id
+from app.utils.client_ip import get_client_ip
 from app.utils.id import parse_uuid
+from app.utils.requester_identity import RequesterIdentity
 from app.utils.rate_limit import RollingWindowRateLimiter, build_anon_rate_limit_key
 from app.utils.redis import get_rate_limit_redis_client
 
@@ -49,7 +55,7 @@ def create_battle(
     settings: Settings = Depends(get_settings),
 ) -> BattlePublic:
     # By design: authenticated users are trusted and not rate-limited.
-    # Only anonymous users are subject to anti-abuse throttling.
+    # Only anonymous users are subject to anti-abuse throttling and Turnstile.
     if not principal.is_authenticated:
         get_or_set_anon_id(
             request=request,
@@ -60,6 +66,21 @@ def create_battle(
             request=request,
             settings=settings,
         )
+        _verify_turnstile_or_raise(
+            turnstile_token=payload.turnstile_token,
+            request=request,
+            settings=settings,
+        )
+
+    # Block battle creation when the daily vote cap is reached, to prevent
+    # wasting LLM inference on battles whose votes would be silently excluded
+    # from ratings.
+    _enforce_daily_vote_cap(
+        db=db,
+        principal=principal,
+        request=request,
+        settings=settings,
+    )
 
     task = _select_task(db=db, payload=payload)
     model_a_id, model_b_id = _select_model_pair(db, settings=settings)
@@ -138,6 +159,13 @@ def get_battle(battle_id: str, db: Session = Depends(get_db)) -> BattlePublic:
     )
     run_map = {run.side: run for run in runs}
 
+    has_vote = (
+        db.execute(
+            select(Vote.id).where(Vote.battle_id == battle.id).limit(1)
+        ).scalar_one_or_none()
+        is not None
+    )
+
     return _to_battle_public(
         battle=battle,
         source_text=source_text,
@@ -145,6 +173,7 @@ def get_battle(battle_id: str, db: Session = Depends(get_db)) -> BattlePublic:
         target_lang=target_lang,
         run_a=run_map.get("A"),
         run_b=run_map.get("B"),
+        include_stats=has_vote,
     )
 
 
@@ -166,12 +195,16 @@ async def stream_battle(
 
     # Anonymous stream connections are rate-limited to prevent resource
     # exhaustion via many concurrent SSE connections.
+    # Run the sync Redis call in a thread to avoid blocking the event loop.
     if not principal.is_authenticated:
-        _enforce_anon_battle_stream_rate_limit(
+        await asyncio.to_thread(
+            _enforce_anon_battle_stream_rate_limit,
             request=request,
             settings=settings,
         )
 
+    # The cached orchestrator owns live execution inside this API process.
+    # Additional consumers for the same battle attach as read-only observers.
     request_id = getattr(request.state, "request_id", None)
     return StreamingResponse(
         orchestrator.stream_battle(battle_uuid, request_id=request_id),
@@ -184,6 +217,88 @@ async def stream_battle(
     )
 
 
+@router.post("/{battle_id}/retry")
+def retry_battle(battle_id: str, db: Session = Depends(get_db)) -> BattlePublic:
+    """Reset a failed, unvoted battle to pending so it can be re-executed.
+
+    Clears all persisted run artifacts (output, error, stats, request_json,
+    prompt_rendered) and sets battle status back to ``pending``.  The next
+    SSE stream connection will re-execute both runs from scratch under the
+    single-owner execution model.
+    """
+    battle_uuid = parse_uuid(battle_id, "battle_id")
+    battle = db.execute(
+        select(Battle).where(Battle.id == battle_uuid).with_for_update()
+    ).scalar_one_or_none()
+    if battle is None:
+        raise HTTPException(status_code=404, detail="Battle not found")
+
+    if battle.status != "failed":
+        raise HTTPException(
+            status_code=409,
+            detail="Only failed battles can be retried",
+        )
+
+    # Check that no vote has been submitted — retrying after voting would
+    # invalidate the vote.
+    has_vote = (
+        db.execute(
+            select(Vote.id).where(Vote.battle_id == battle.id).limit(1)
+        ).scalar_one_or_none()
+        is not None
+    )
+    if has_vote:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot retry a battle that already has a vote",
+        )
+
+    # Reset all persisted run artifacts so the next execution starts clean.
+    # This includes request_json and prompt_rendered which the orchestrator
+    # will re-populate on the retry attempt — leaving stale copies from the
+    # previous failed attempt would confuse frontend displays and exports.
+    runs = (
+        db.execute(
+            select(Run).where(Run.battle_id == battle.id).order_by(Run.side.asc())
+        )
+        .scalars()
+        .all()
+    )
+    for run in runs:
+        run.output_text = None
+        run.output_text_raw = None
+        run.error_text = None
+        run.stats = None
+        run.request_json = None
+        run.prompt_rendered = None
+
+    battle.status = "pending"  # type: ignore[assignment]
+    db.add(battle)
+    db.commit()
+    db.refresh(battle)
+
+    snapshot = _battle_task_snapshot(battle)
+    if snapshot is None:
+        task = db.get(Task, battle.task_id)
+        if task is None:
+            raise HTTPException(status_code=500, detail="Battle task not found")
+        source_text = task.source_text
+        source_lang = task.source_lang
+        target_lang = task.target_lang
+    else:
+        source_text, source_lang, target_lang = snapshot
+
+    run_map = {run.side: run for run in runs}
+    return _to_battle_public(
+        battle=battle,
+        source_text=source_text,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        run_a=run_map.get("A"),
+        run_b=run_map.get("B"),
+    )
+
+
 def _select_task(*, db: Session, payload: BattleCreate) -> Task:
     if payload.task_id is not None:
         task = db.get(Task, parse_uuid(payload.task_id, "task_id"))
@@ -191,34 +306,28 @@ def _select_task(*, db: Session, payload: BattleCreate) -> Task:
             raise HTTPException(status_code=404, detail="Task not found")
         return task
 
-    stmt = select(Task)
+    # Single-query weighted random selection: tasks with fewer battles are
+    # sampled more often.  `random() / (1 + battle_count)` gives higher
+    # scores to under-represented tasks, achieving the same inverse-frequency
+    # weighting as the old two-query approach without loading IDs into memory.
+    battle_count = (
+        select(Battle.task_id, func.count(Battle.id).label("cnt"))
+        .group_by(Battle.task_id)
+        .subquery()
+    )
+
+    stmt = select(Task).outerjoin(battle_count, Task.id == battle_count.c.task_id)
     if payload.task_set_id is not None:
         task_set_uuid = parse_uuid(payload.task_set_id, "task_set_id")
         stmt = stmt.where(Task.task_set_id == task_set_uuid)
 
-    # Use DB-level random sampling with a reasonable limit to avoid loading
-    # all tasks into memory.  Fetch task IDs and battle counts in one query.
-    task_id_rows = (
-        db.execute(stmt.with_only_columns(Task.id).limit(10_000)).scalars().all()
-    )
-    if not task_id_rows:
-        raise HTTPException(status_code=400, detail="No tasks available for battle")
+    stmt = stmt.order_by(
+        func.random() / (1 + func.coalesce(battle_count.c.cnt, 0))
+    ).limit(1)
 
-    task_ids = list(task_id_rows)
-    counts = {
-        task_id: count
-        for task_id, count in db.execute(
-            select(Battle.task_id, func.count(Battle.id))
-            .where(Battle.task_id.in_(task_ids))
-            .group_by(Battle.task_id)
-        ).all()
-    }
-    weights = [1.0 / (1.0 + float(counts.get(tid, 0))) for tid in task_ids]
-    rng = random.Random(secrets.token_bytes(8))
-    selected_id = rng.choices(task_ids, weights=weights, k=1)[0]
-    task = db.get(Task, selected_id)
+    task = db.execute(stmt).scalar_one_or_none()
     if task is None:
-        raise HTTPException(status_code=500, detail="Selected task not found")
+        raise HTTPException(status_code=400, detail="No tasks available for battle")
     return task
 
 
@@ -245,13 +354,7 @@ def _select_model_pair(
         for row in model_rows
     ]
 
-    policy = SamplingPolicy(
-        weights=settings.battle_sampling_weights,
-        targets=settings.battle_targets,
-        strict_targets=settings.battle_strict_targets,
-        outage_models=set(settings.battle_outage_models),
-        boost_models=set(settings.battle_sampling_boost_models),
-    )
+    policy = _build_sampling_policy(settings)
 
     try:
         return select_battle_pair(candidates=candidates, policy=policy)
@@ -260,6 +363,17 @@ def _select_model_pair(
             status_code=400,
             detail="No valid model pair available for sampling",
         ) from exc
+
+
+def _build_sampling_policy(settings: Settings) -> SamplingPolicy:
+    """Build a SamplingPolicy from env-backed settings."""
+    return SamplingPolicy(
+        weights=settings.battle_sampling_weights,
+        targets=settings.battle_targets,
+        strict_targets=settings.battle_strict_targets,
+        outage_models=set(settings.battle_outage_models),
+        boost_models=set(settings.battle_sampling_boost_models),
+    )
 
 
 def _to_run_public(run: Run | None, *, include_stats: bool = False) -> RunPublic | None:
@@ -285,6 +399,7 @@ def _to_battle_public(
     target_lang: str,
     run_a: Run | None,
     run_b: Run | None,
+    include_stats: bool = False,
 ) -> BattlePublic:
     return BattlePublic(
         id=str(battle.id),
@@ -294,8 +409,8 @@ def _to_battle_public(
         target_lang=target_lang,
         mode=battle.mode,
         status=battle.status,
-        run_a=_to_run_public(run_a),
-        run_b=_to_run_public(run_b),
+        run_a=_to_run_public(run_a, include_stats=include_stats),
+        run_b=_to_run_public(run_b, include_stats=include_stats),
     )
 
 
@@ -390,4 +505,115 @@ def _enforce_anon_battle_stream_rate_limit(
                     settings.anon_battle_stream_rate_limit_window_seconds
                 )
             },
+        )
+
+
+@lru_cache(maxsize=1)
+def _get_turnstile_http_client() -> httpx.Client:
+    """Shared httpx client for Turnstile verification (connection pooling)."""
+    return httpx.Client(timeout=5.0)
+
+
+def _verify_turnstile_or_raise(
+    *,
+    turnstile_token: str | None,
+    request: Request,
+    settings: Settings,
+) -> None:
+    if not settings.turnstile_secret_key:
+        return
+
+    if not turnstile_token:
+        raise HTTPException(status_code=400, detail="Missing Turnstile token")
+
+    remote_ip = get_client_ip(
+        request,
+        trust_x_forwarded_for=settings.trust_x_forwarded_for,
+    )
+    form_data: dict[str, str] = {
+        "secret": settings.turnstile_secret_key,
+        "response": turnstile_token,
+    }
+    if remote_ip:
+        form_data["remoteip"] = remote_ip
+
+    client = _get_turnstile_http_client()
+    try:
+        res = client.post(settings.turnstile_verify_url, data=form_data)
+        res.raise_for_status()
+        body = res.json()
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502, detail="Turnstile verification failed"
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Turnstile verification response was invalid",
+        ) from exc
+
+    if not isinstance(body, dict) or body.get("success") is not True:
+        raise HTTPException(status_code=400, detail="Invalid Turnstile token")
+
+
+def _enforce_daily_vote_cap(
+    *,
+    db: Session,
+    principal: Principal,
+    request: Request,
+    settings: Settings,
+) -> None:
+    """Block battle creation when the daily vote cap is reached.
+
+    Uses the shared ``RequesterIdentity`` contract (see
+    ``app.utils.requester_identity``) to count today's votes via the
+    requester's *primary* identity filter.  This prevents wasting LLM
+    inference on battles whose votes would be silently excluded from
+    ratings anyway.
+
+    The primary-filter approach is intentionally stricter than the
+    battle-lookup fallback chain: an ip-only requester only counts
+    ip-only historical votes, and an unknown requester (primary_kind ==
+    "unknown") is explicitly allowed through.
+    """
+    cap = settings.leaderboard_refresh_daily_vote_cap
+    if cap <= 0:
+        return
+
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    voter_user_id: uuid.UUID | None = None
+    if principal.is_authenticated and principal.user_id is not None:
+        voter_user_id = uuid.UUID(principal.user_id)
+
+    requester_identity = RequesterIdentity.from_request(
+        request,
+        voter_user_id=voter_user_id,
+        voter_anon_id=request.cookies.get("arena_anon_id"),
+        ip_hash_salt=settings.anon_ip_hash_salt,
+        user_agent_hash_salt=settings.anon_user_agent_hash_salt,
+        trust_x_forwarded_for=settings.trust_x_forwarded_for,
+    )
+    identity_filter = requester_identity.primary_vote_filter()
+    if identity_filter is None:
+        # primary_kind == "unknown": no identifiable signal at all.
+        # Allow through — Turnstile + rate limiter already throttle
+        # truly anonymous traffic.
+        return
+
+    count = db.execute(
+        select(func.count(Vote.id)).where(
+            identity_filter,
+            Vote.created_at >= today_start,
+        )
+    ).scalar_one()
+
+    if count >= cap:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Daily vote limit reached ({cap} votes per day). "
+                "New battles cannot be created until tomorrow."
+            ),
         )

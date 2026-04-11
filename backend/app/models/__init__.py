@@ -10,7 +10,7 @@ Notes:
 from app.models.battle import Battle, Run
 from app.models.model_registry import Model
 from app.models.prompt_template import PromptTemplate
-from app.models.rating import ModelRating, RatingEvent
+from app.models.rating import ModelRating
 from app.models.task import Task, TaskSet
 from app.models.user import User, UserProfile
 from app.models.vote import Vote
@@ -20,7 +20,6 @@ __all__ = [
     "Model",
     "ModelRating",
     "PromptTemplate",
-    "RatingEvent",
     "Run",
     "Task",
     "TaskSet",

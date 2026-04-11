@@ -33,6 +33,19 @@ async function readErrorDetail(res: Response): Promise<string | null> {
       if (data && typeof data === "object") {
         const detail = (data as Record<string, unknown>).detail;
         if (typeof detail === "string") return detail;
+        if (Array.isArray(detail)) {
+          return detail
+            .map((err) => {
+              if (typeof err === "object" && err !== null) {
+                const loc = Array.isArray(err.loc) ? err.loc.join(".") : "";
+                const msg = typeof err.msg === "string" ? err.msg : "";
+                return loc ? `${loc}: ${msg}` : msg;
+              }
+              return JSON.stringify(err);
+            })
+            .filter(Boolean)
+            .join(", ");
+        }
       }
       return JSON.stringify(data);
     }

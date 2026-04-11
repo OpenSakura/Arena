@@ -20,6 +20,10 @@ out/
 dist/
 playwright-report/
 test-results/
+*.tsbuildinfo
+
+# Logs
+*.log
 
 # Env files
 .env
@@ -31,3 +35,21 @@ backend/tests/e2e/test.env
 
 # OS
 .DS_Store
+
+# Tool / IDE data
+.sisyphus/
+.playwright-mcp/
+
+# Third-party cloned repos
+3rdparty/
+
+# Scratch / debug files
+/notes.md
+/admin-network.txt
+/admin-snapshot.md
+/t8-*.txt
+/task8-*.txt
+/*.png
+frontend/debug.js
+frontend/output.txt
+frontend/run_test.mjs

@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, model_validator
 
 class MeResponse(BaseModel):
     authenticated: bool
+    is_admin: bool = False
     user: dict[str, Any] | None = None
     profile: dict[str, Any] | None = None
 

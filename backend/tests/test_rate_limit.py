@@ -344,7 +344,11 @@ def test_build_anon_rate_limit_key_ignores_x_forwarded_for_by_default() -> None:
 
 
 def test_build_anon_rate_limit_key_uses_x_forwarded_for_when_trusted() -> None:
-    """When trust_x_forwarded_for is True, X-Forwarded-For is used."""
+    """When trust_x_forwarded_for is True, X-Forwarded-For is used.
+
+    With a trusted proxy that overwrites/sanitizes X-Forwarded-For, the
+    leftmost entry is the original client IP.
+    """
 
     from app.utils.rate_limit import build_anon_rate_limit_key
 
@@ -359,6 +363,7 @@ def test_build_anon_rate_limit_key_uses_x_forwarded_for_when_trusted() -> None:
     )
 
     # Key should be based on the leftmost X-Forwarded-For IP (1.2.3.4)
+    # which represents the original client.
     key_xff_ip = build_anon_rate_limit_key(
         scope="test",
         request=_request(ip="1.2.3.4", user_agent="agent"),

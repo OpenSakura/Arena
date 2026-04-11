@@ -27,9 +27,32 @@ from app.core.logging import clear_request_id, configure_logging, set_request_id
 from app.services.leaderboard_refresh import get_leaderboard_refresher
 from app.services.battle_orchestrator import get_battle_orchestrator
 from app.services.oidc import get_oidc_verifier
+from app.utils.client_ip import get_client_ip
+from app.utils.redis import close_all_redis_clients
 
 
 logger = logging.getLogger(__name__)
+
+_NON_PRODUCTION_ENVS = {"dev", "development", "test", "testing", "local"}
+
+
+def _emit_startup_warnings(settings: object) -> None:
+    env = getattr(settings, "app_env", "dev").lower()
+    is_prod = env not in _NON_PRODUCTION_ENVS
+
+    if is_prod and not getattr(settings, "rate_limit_redis_url", "").strip():
+        logger.warning(
+            "RATE_LIMIT_REDIS_URL is not configured in production — "
+            "anonymous rate limiting and shared confidence caching are disabled. "
+            "Set RATE_LIMIT_REDIS_URL to enable Redis-backed protections."
+        )
+
+    if is_prod:
+        logger.warning(
+            "Live battle execution relies on in-process singletons and is "
+            "only supported with a single API worker. If running multiple "
+            "uvicorn workers, battle state will not be shared across them."
+        )
 
 
 def create_app() -> FastAPI:
@@ -38,6 +61,8 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        _emit_startup_warnings(settings)
+
         stop_event = asyncio.Event()
         refresh_task: asyncio.Task[None] | None = None
 
@@ -74,12 +99,33 @@ def create_app() -> FastAPI:
                 orchestrator = get_battle_orchestrator()
                 await orchestrator._llm_client.aclose()
 
+            with suppress(Exception):
+                close_all_redis_clients()
+
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
     if settings.app_env.lower() == "production":
         app.openapi_url = None
 
     _REQUEST_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+    _is_production = settings.app_env.lower() == "production"
+
+    def _apply_security_headers(response_headers, *, request_id: str) -> None:
+        """Apply security headers to a response (shared between success and
+        error paths to avoid header duplication drift)."""
+        response_headers["X-Request-ID"] = request_id
+        response_headers["X-Content-Type-Options"] = "nosniff"
+        # In dev, relax CSP so that Swagger UI / ReDoc work correctly.
+        if not _is_production:
+            response_headers["Content-Security-Policy"] = (
+                "default-src 'self'; script-src 'self' 'unsafe-inline' "
+                "https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data:"
+            )
+        else:
+            response_headers["Strict-Transport-Security"] = (
+                "max-age=31536000; includeSubDomains"
+            )
 
     @app.middleware("http")
     async def attach_request_id(request: Request, call_next):
@@ -95,18 +141,7 @@ def create_app() -> FastAPI:
         try:
             response = await call_next(request)
             status_code = response.status_code
-            response.headers["X-Request-ID"] = request_id
-            response.headers["X-Content-Type-Options"] = "nosniff"
-            response.headers["X-Frame-Options"] = "DENY"
-            response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-            response.headers["Content-Security-Policy"] = "default-src 'none'"
-            response.headers["Permissions-Policy"] = (
-                "camera=(), microphone=(), geolocation=()"
-            )
-            if settings.app_env.lower() == "production":
-                response.headers["Strict-Transport-Security"] = (
-                    "max-age=63072000; includeSubDomains; preload"
-                )
+            _apply_security_headers(response.headers, request_id=request_id)
             return response
         except Exception:
             logger.exception(
@@ -120,20 +155,7 @@ def create_app() -> FastAPI:
                 status_code=500,
                 media_type="text/plain",
             )
-            error_response.headers["X-Request-ID"] = request_id
-            error_response.headers["X-Content-Type-Options"] = "nosniff"
-            error_response.headers["X-Frame-Options"] = "DENY"
-            error_response.headers["Referrer-Policy"] = (
-                "strict-origin-when-cross-origin"
-            )
-            error_response.headers["Content-Security-Policy"] = "default-src 'none'"
-            error_response.headers["Permissions-Policy"] = (
-                "camera=(), microphone=(), geolocation=()"
-            )
-            if settings.app_env.lower() == "production":
-                error_response.headers["Strict-Transport-Security"] = (
-                    "max-age=63072000; includeSubDomains; preload"
-                )
+            _apply_security_headers(error_response.headers, request_id=request_id)
             return error_response
         finally:
             if settings.access_log_enabled:
@@ -149,8 +171,9 @@ def create_app() -> FastAPI:
                         "path": request.url.path,
                         "status_code": status_code,
                         "duration_ms": duration_ms,
-                        "client_ip": (
-                            request.client.host if request.client is not None else None
+                        "client_ip": get_client_ip(
+                            request,
+                            trust_x_forwarded_for=settings.trust_x_forwarded_for,
                         ),
                     },
                 )
@@ -162,6 +185,7 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+        expose_headers=["X-Request-ID"],
     )
 
     app.include_router(api_router, prefix=settings.api_v1_prefix)

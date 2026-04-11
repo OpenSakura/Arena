@@ -54,10 +54,26 @@ def test_render_prompt_template_rejects_unclosed_tokens() -> None:
         )
 
 
-def test_render_prompt_template_rejects_unmatched_closing_braces() -> None:
+def test_render_prompt_template_accepts_standalone_closing_braces() -> None:
+    rendered = render_prompt_template(
+        "{{ source_text }} }}",
+        {"source_text": "x"},
+    )
+    assert rendered == "x }}"
+
+
+def test_render_prompt_template_allows_literal_closing_braces_in_template() -> None:
+    rendered = render_prompt_template(
+        'Format: {"key": "value"}} after {{ source_text }}',
+        {"source_text": "hello"},
+    )
+    assert rendered == 'Format: {"key": "value"}} after hello'
+
+
+def test_render_prompt_template_still_rejects_malformed_opening_braces() -> None:
     with pytest.raises(ValueError, match="Invalid prompt template syntax"):
         render_prompt_template(
-            "{{ source_text }} }}",
+            "{{ source_text }} {{ dangling",
             {"source_text": "x"},
         )
 

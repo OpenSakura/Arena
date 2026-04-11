@@ -50,10 +50,10 @@ export function ThemeToggle({ className = "" }: { className?: string }) {
     >
       <span className="relative block h-4 w-4">
         <SunIcon
-          className={`absolute inset-0 transition-opacity ${mounted && isDark ? "opacity-100" : "opacity-0"}`}
+          className={`absolute inset-0 transition-opacity ${!mounted ? "opacity-0 dark:opacity-100" : isDark ? "opacity-100" : "opacity-0"}`}
         />
         <MoonIcon
-          className={`absolute inset-0 transition-opacity ${mounted && !isDark ? "opacity-100" : "opacity-0"}`}
+          className={`absolute inset-0 transition-opacity ${!mounted ? "opacity-100 dark:opacity-0" : !isDark ? "opacity-100" : "opacity-0"}`}
         />
       </span>
     </Button>

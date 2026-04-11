@@ -121,3 +121,31 @@ def test_sampling_rejects_pairs_when_outage_excludes_all_models() -> None:
         assert "non-outage" in str(exc)
     else:
         raise AssertionError("Expected ValueError when all candidates are in outage")
+
+
+def test_zero_weight_fallback_never_selects_disabled_model() -> None:
+    candidates = [
+        _candidate("model-a"),
+        _candidate("model-b"),
+        _candidate("model-c"),
+    ]
+    policy = _policy(
+        weights={"model-a": 1.0, "model-b": 0, "model-c": 1.0},
+        strict_targets={
+            "model-a": ["model-b"],
+            "model-c": ["model-b"],
+        },
+    )
+
+    id_to_name = {c.id: c.model_name for c in candidates}
+
+    for seed in range(200):
+        pair = select_battle_pair(
+            candidates=candidates,
+            policy=policy,
+            randomizer=random.Random(seed),
+        )
+        names = {id_to_name[pair[0]], id_to_name[pair[1]]}
+        assert "model-b" not in names, (
+            f"seed={seed}: zero-weight model-b was selected in pair {names}"
+        )

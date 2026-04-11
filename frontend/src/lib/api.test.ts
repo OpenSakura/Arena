@@ -217,4 +217,23 @@ describe("api helpers", () => {
       }),
     );
   });
+
+  it("parses validation error arrays from FastAPI into readable strings", async () => {
+    const errorBody = {
+      detail: [
+        { loc: ["body", "winner"], msg: "field required", type: "value_error.missing" },
+        { loc: ["query", "page"], msg: "must be an integer", type: "type_error.integer" }
+      ]
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(errorBody), {
+        status: 422,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await expect(apiPost("/some-endpoint", {})).rejects.toThrow(
+      "POST /some-endpoint failed: 422 - body.winner: field required, query.page: must be an integer"
+    );
+  });
 });

@@ -74,17 +74,17 @@ function taskRecord(overrides: Record<string, unknown> = {}) {
 }
 
 describe("AdminTasksPage", () => {
-  it("shows login guard and invokes signIn for anonymous users", async () => {
+  it("does not make API calls when user is not authenticated and stays in loading state", async () => {
     useSessionMock.mockReturnValue({ data: null, status: "unauthenticated" });
 
     render(<AdminTasksPage />);
 
-    await screen.findByText("Admin login required");
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Login" }));
-
-    expect(signInMock).toHaveBeenCalledWith("authentik");
+    // Page still renders its UI (middleware handles redirect),
+    // but no admin API calls are made without a token.
+    await screen.findByText("Tasks & Task Sets");
     expect(apiGetMock).not.toHaveBeenCalled();
+
+    expect(screen.queryByText("Showing 0 task(s)")).toBeNull();
   });
 
   it("loads task sets and tasks when authenticated", async () => {

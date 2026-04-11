@@ -36,6 +36,7 @@ test("onboarding saves profile payload for authenticated users", async ({ page }
       contentType: "application/json",
       body: JSON.stringify({
         authenticated: true,
+        is_admin: false,
         profile: {
           display_name: "Existing User",
           ui_language: "en",
@@ -61,6 +62,7 @@ test("onboarding saves profile payload for authenticated users", async ({ page }
       contentType: "application/json",
       body: JSON.stringify({
         authenticated: true,
+        is_admin: false,
         profile: {
           ...payload,
           completed_at: "2026-02-19T12:34:56.000Z",
@@ -83,7 +85,7 @@ test("onboarding saves profile payload for authenticated users", async ({ page }
 
   await page.getByRole("button", { name: "Save profile" }).click();
 
-  await expect(page.getByText(/Saved:/)).toBeVisible();
+  await expect(page.getByText(/Saved/)).toBeVisible();
 
   expect(saveCalls).toHaveLength(1);
   expect(saveCalls[0]?.authHeader).toBe("Bearer frontend-e2e-access-token");
@@ -96,23 +98,26 @@ test("onboarding saves profile payload for authenticated users", async ({ page }
   });
 });
 
-test("admin models page shows login guard for anonymous users", async ({ page }) => {
-  await page.route("**/api/auth/session*", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: "null",
-    });
-  });
-
+test("admin routes redirect unauthenticated users to home page", async ({ page }) => {
   await page.goto("/admin/models");
 
-  await expect(page.getByText("Admin login required")).toBeVisible();
-  await expect(page.getByRole("main").getByRole("button", { name: "Login" })).toBeVisible();
+  await page.waitForURL((url) => url.pathname === "/");
+  const url = new URL(page.url());
+  expect(url.pathname).toBe("/");
+  expect(url.searchParams.has("callbackUrl")).toBe(true);
 });
 
 test("admin models page performs a basic authenticated create flow", async ({ page }) => {
   const createCalls: Array<{ authHeader: string | undefined; payload: Record<string, unknown> }> = [];
+
+  await page.context().addCookies([
+    {
+      name: "next-auth.session-token",
+      value: "e2e-mock-session-token",
+      domain: "localhost",
+      path: "/",
+    },
+  ]);
 
   await page.route("**/api/auth/session*", async (route) => {
     await route.fulfill({
@@ -122,6 +127,17 @@ test("admin models page performs a basic authenticated create flow", async ({ pa
         user: { name: "Admin Arena", email: "admin@example.com" },
         expires: "2099-01-01T00:00:00.000Z",
         accessToken: "frontend-admin-access-token",
+      }),
+    });
+  });
+
+  await page.route(/\/api\/v1\/me$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authenticated: true,
+        is_admin: true,
       }),
     });
   });
@@ -158,8 +174,7 @@ test("admin models page performs a basic authenticated create flow", async ({ pa
           temperature: null,
           frequency_penalty: null,
           presence_penalty: null,
-          extra_body: null,
-          default_params: null,
+          params: null,
           prompt_template_id: null,
           has_api_key: false,
           created_at: "2026-02-19T00:00:00.000Z",
@@ -174,7 +189,7 @@ test("admin models page performs a basic authenticated create flow", async ({ pa
 
   await page.goto("/admin/models");
 
-  await expect(page.getByText("Admin / Models")).toBeVisible();
+  await expect(page.getByText("Model Registry")).toBeVisible();
   await page.getByLabel("Display name").fill("Playwright Created Model");
   await page.getByLabel("Model name").fill("playwright-model");
   await page.getByLabel("Base URL").fill("http://127.0.0.1:18080");

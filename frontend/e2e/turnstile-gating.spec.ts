@@ -1,23 +1,26 @@
 import { expect, test, type Page } from "@playwright/test";
 
-type VoteCapture = {
+type BattleCreateCapture = {
   authHeader: string | undefined;
   payload: Record<string, unknown>;
 };
 
 type MockBattleRoutesOptions = {
   battleId: string;
-  anonVoteTurnstileRequired: boolean;
-  onVote: (vote: VoteCapture) => void;
+  anonBattleTurnstileRequired: boolean;
+  onCreate: (create: BattleCreateCapture) => void;
 };
 
-async function mockBattleRoutes(page: Page, options: MockBattleRoutesOptions): Promise<void> {
+async function mockBattleRoutes(
+  page: Page,
+  options: MockBattleRoutesOptions,
+): Promise<void> {
   await page.route("**/api/v1/public-config", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        anon_vote_turnstile_required: options.anonVoteTurnstileRequired,
+        anon_battle_turnstile_required: options.anonBattleTurnstileRequired,
       }),
     });
   });
@@ -27,6 +30,12 @@ async function mockBattleRoutes(page: Page, options: MockBattleRoutesOptions): P
       await route.abort();
       return;
     }
+
+    const payload = route.request().postDataJSON() as Record<string, unknown>;
+    options.onCreate({
+      authHeader: route.request().headers()["authorization"],
+      payload,
+    });
 
     await route.fulfill({
       status: 200,
@@ -67,37 +76,70 @@ async function mockBattleRoutes(page: Page, options: MockBattleRoutesOptions): P
       body: "",
     });
   });
+}
 
-  await page.route(/\/api\/v1\/battles\/[^/]+\/vote$/, async (route) => {
-    const payload = route.request().postDataJSON() as Record<string, unknown>;
-    const winner =
-      payload.winner === "A" || payload.winner === "B" || payload.winner === "tie"
-        ? payload.winner
-        : "A";
+async function mockTurnstileScript(
+  page: Page,
+  options: { includeExpireButton?: boolean; includeErrorButton?: boolean } = {},
+): Promise<void> {
+  await page.addInitScript((scriptOptions) => {
+    (window as any).turnstile = {
+      render: (container: HTMLElement, callbackOptions: Record<string, unknown>) => {
+        const solveButton = document.createElement("button");
+        solveButton.type = "button";
+        solveButton.textContent = "Solve Turnstile";
+        solveButton.addEventListener("click", () => {
+          const callback = callbackOptions.callback;
+          if (typeof callback === "function") {
+            callback("mock-turnstile-token");
+          }
+        });
+        container.appendChild(solveButton);
 
-    options.onVote({
-      authHeader: route.request().headers()["authorization"],
-      payload,
-    });
+        if (scriptOptions.includeExpireButton) {
+          const expireButton = document.createElement("button");
+          expireButton.type = "button";
+          expireButton.textContent = "Expire Turnstile";
+          expireButton.addEventListener("click", () => {
+            const onExpire = callbackOptions["expired-callback"];
+            if (typeof onExpire === "function") {
+              onExpire();
+            }
+          });
+          container.appendChild(expireButton);
+        }
 
+        if (scriptOptions.includeErrorButton) {
+          const errorButton = document.createElement("button");
+          errorButton.type = "button";
+          errorButton.textContent = "Trigger Turnstile Error";
+          errorButton.addEventListener("click", () => {
+            const onError = callbackOptions["error-callback"];
+            if (typeof onError === "function") {
+              onError();
+            }
+          });
+          container.appendChild(errorButton);
+        }
+
+        return "mock-turnstile-widget";
+      },
+      reset: () => {},
+      remove: () => {},
+    };
+  }, options);
+
+  await page.route("**/turnstile/v0/api.js*", async (route) => {
     await route.fulfill({
       status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        vote_id: "vote-1",
-        battle_id: options.battleId,
-        winner,
-        reveal: {
-          A: { model_id: "model-a", display_name: "Model A" },
-          B: { model_id: "model-b", display_name: "Model B" },
-        },
-      }),
+      contentType: "application/javascript",
+      body: "",
     });
   });
 }
 
-test("anonymous submit is blocked until Turnstile returns a token", async ({ page }) => {
-  const votes: VoteCapture[] = [];
+test("anonymous battle creation waits for Turnstile before POSTing", async ({ page }) => {
+  const creates: BattleCreateCapture[] = [];
 
   await page.route("**/api/auth/session*", async (route) => {
     await route.fulfill({
@@ -107,68 +149,33 @@ test("anonymous submit is blocked until Turnstile returns a token", async ({ pag
     });
   });
 
-  await page.addInitScript(() => {
-    (window as any).turnstile = {
-      render: (container: HTMLElement, options: Record<string, unknown>) => {
-        const solveButton = document.createElement("button");
-        solveButton.type = "button";
-        solveButton.textContent = "Solve Turnstile";
-        solveButton.addEventListener("click", () => {
-          const callback = options.callback;
-          if (typeof callback === "function") {
-            callback("mock-turnstile-token");
-          }
-        });
-        container.appendChild(solveButton);
-        return "mock-turnstile-widget";
-      },
-      reset: () => {},
-      remove: () => {},
-    };
-  });
-
-  await page.route("**/turnstile/v0/api.js*", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/javascript",
-      body: "",
-    });
-  });
-
+  await mockTurnstileScript(page);
   await mockBattleRoutes(page, {
     battleId: "battle-turnstile-anon",
-    anonVoteTurnstileRequired: true,
-    onVote: (vote) => {
-      votes.push(vote);
+    anonBattleTurnstileRequired: true,
+    onCreate: (create) => {
+      creates.push(create);
     },
   });
 
   await page.goto("/battle/new");
 
-  await expect(page.getByText(/done/i)).toBeVisible({
+  await expect(page.getByText("Verification Required")).toBeVisible({
     timeout: 60_000,
   });
-  
-  await page.getByRole("button", { name: /Model B is better/i }).click();
-
-  const submit = page.getByRole("button", { name: "Submit Vote" });
-  await expect(submit).toBeDisabled();
+  expect(creates).toHaveLength(0);
 
   await page.getByRole("button", { name: "Solve Turnstile" }).click();
-  await expect(submit).toBeEnabled();
 
-  await submit.click();
-  await expect(page.getByText("Model A", { exact: true }).first()).toBeVisible();
-
-  expect(votes).toHaveLength(1);
-  expect(votes[0]?.payload).toMatchObject({
-    winner: "B",
+  await expect(page.getByText(/done/i)).toBeVisible({ timeout: 60_000 });
+  expect(creates).toHaveLength(1);
+  expect(creates[0]?.payload).toMatchObject({
     turnstile_token: "mock-turnstile-token",
   });
 });
 
-test("authenticated users bypass Turnstile even when backend requires it", async ({ page }) => {
-  const votes: VoteCapture[] = [];
+test("authenticated users bypass Turnstile for battle creation", async ({ page }) => {
+  const creates: BattleCreateCapture[] = [];
 
   await page.route("**/api/auth/session*", async (route) => {
     await route.fulfill({
@@ -184,36 +191,24 @@ test("authenticated users bypass Turnstile even when backend requires it", async
 
   await mockBattleRoutes(page, {
     battleId: "battle-turnstile-authed",
-    anonVoteTurnstileRequired: true,
-    onVote: (vote) => {
-      votes.push(vote);
+    anonBattleTurnstileRequired: true,
+    onCreate: (create) => {
+      creates.push(create);
     },
   });
 
   await page.goto("/battle/new");
 
-  await expect(page.getByText(/done/i)).toBeVisible({
-    timeout: 60_000,
-  });
-    await expect(page.getByRole("button", { name: "Solve Turnstile" })).toHaveCount(0);
+  await expect(page.getByText(/done/i)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole("button", { name: "Solve Turnstile" })).toHaveCount(0);
 
-  await page.getByRole("button", { name: /Model A is better/i }).click();
-  const submit = page.getByRole("button", { name: "Submit Vote" });
-  await expect(submit).toBeEnabled();
-  await submit.click();
-
-  await expect(page.getByText("Model A", { exact: true }).first()).toBeVisible();
-
-  expect(votes).toHaveLength(1);
-  expect(votes[0]?.authHeader).toBe("Bearer e2e-access-token");
-  expect(votes[0]?.payload).toMatchObject({
-    winner: "A",
-    turnstile_token: null,
-  });
+  expect(creates).toHaveLength(1);
+  expect(creates[0]?.authHeader).toBe("Bearer e2e-access-token");
+  expect(creates[0]?.payload).toEqual({});
 });
 
-test("requires Turnstile after an authenticated session expires", async ({ page }) => {
-  const votes: VoteCapture[] = [];
+test("a new anonymous battle is gated after an authenticated session expires", async ({ page }) => {
+  const creates: BattleCreateCapture[] = [];
   let isAuthenticated = true;
 
   await page.route("**/api/auth/session*", async (route) => {
@@ -237,80 +232,40 @@ test("requires Turnstile after an authenticated session expires", async ({ page 
     });
   });
 
-  await page.addInitScript(() => {
-    (window as any).turnstile = {
-      render: (container: HTMLElement, options: Record<string, unknown>) => {
-        const solveButton = document.createElement("button");
-        solveButton.type = "button";
-        solveButton.textContent = "Solve Turnstile";
-        solveButton.addEventListener("click", () => {
-          const callback = options.callback;
-          if (typeof callback === "function") {
-            callback("mock-turnstile-token");
-          }
-        });
-        container.appendChild(solveButton);
-        return "mock-turnstile-widget";
-      },
-      reset: () => {},
-      remove: () => {},
-    };
-  });
-
-  await page.route("**/turnstile/v0/api.js*", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/javascript",
-      body: "",
-    });
-  });
-
+  await mockTurnstileScript(page);
   await mockBattleRoutes(page, {
     battleId: "battle-turnstile-session-expired",
-    anonVoteTurnstileRequired: true,
-    onVote: (vote) => {
-      votes.push(vote);
+    anonBattleTurnstileRequired: true,
+    onCreate: (create) => {
+      creates.push(create);
     },
   });
 
   await page.goto("/battle/new");
-
-  await expect(page.getByText(/done/i)).toBeVisible({
-    timeout: 60_000,
-  });
-    await expect(page.getByRole("button", { name: "Solve Turnstile" })).toHaveCount(0);
-
-  await page.getByRole("button", { name: /Model A is better/i }).click();
-  const submitBeforeExpiry = page.getByRole("button", { name: "Submit Vote" });
-  await expect(submitBeforeExpiry).toBeEnabled();
+  await expect(page.getByText(/done/i)).toBeVisible({ timeout: 60_000 });
+  expect(creates).toHaveLength(1);
+  expect(creates[0]?.authHeader).toBe("Bearer e2e-access-token");
 
   isAuthenticated = false;
-  await page.reload();
+  await page.goto("/battle/new?expired=1");
 
-  await expect(page.getByText(/done/i)).toBeVisible({
+  await expect(page.getByText("Verification Required")).toBeVisible({
     timeout: 60_000,
   });
-  
-  await page.getByRole("button", { name: /Model A is better/i }).click();
-  const submitAfterExpiry = page.getByRole("button", { name: "Submit Vote" });
-  await expect(submitAfterExpiry).toBeDisabled();
+  expect(creates).toHaveLength(1);
 
   await page.getByRole("button", { name: "Solve Turnstile" }).click();
-  await expect(submitAfterExpiry).toBeEnabled();
 
-  await submitAfterExpiry.click();
-  await expect(page.getByText("Model A", { exact: true }).first()).toBeVisible();
-
-  expect(votes).toHaveLength(1);
-  expect(votes[0]?.authHeader).toBeUndefined();
-  expect(votes[0]?.payload).toMatchObject({
-    winner: "A",
+  await expect(page.getByText(/done/i)).toBeVisible({ timeout: 60_000 });
+  expect(creates).toHaveLength(2);
+  expect(creates[1]?.authHeader).toBeUndefined();
+  expect(creates[1]?.payload).toMatchObject({
     turnstile_token: "mock-turnstile-token",
   });
 });
 
-test("anonymous submit re-locks after Turnstile token expires", async ({ page }) => {
-  const votes: VoteCapture[] = [];
+test("battle creation stays blocked and shows an error when Turnstile fails", async ({ page }) => {
+  const creates: BattleCreateCapture[] = [];
 
   await page.route("**/api/auth/session*", async (route) => {
     await route.fulfill({
@@ -320,143 +275,23 @@ test("anonymous submit re-locks after Turnstile token expires", async ({ page })
     });
   });
 
-  await page.addInitScript(() => {
-    (window as any).turnstile = {
-      render: (container: HTMLElement, options: Record<string, unknown>) => {
-        const solveButton = document.createElement("button");
-        solveButton.type = "button";
-        solveButton.textContent = "Solve Turnstile";
-        solveButton.addEventListener("click", () => {
-          const callback = options.callback;
-          if (typeof callback === "function") {
-            callback("mock-turnstile-token");
-          }
-        });
-
-        const expireButton = document.createElement("button");
-        expireButton.type = "button";
-        expireButton.textContent = "Expire Turnstile";
-        expireButton.addEventListener("click", () => {
-          const onExpire = options["expired-callback"];
-          if (typeof onExpire === "function") {
-            onExpire();
-          }
-        });
-
-        container.appendChild(solveButton);
-        container.appendChild(expireButton);
-        return "mock-turnstile-widget";
-      },
-      reset: () => {},
-      remove: () => {},
-    };
-  });
-
-  await page.route("**/turnstile/v0/api.js*", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/javascript",
-      body: "",
-    });
-  });
-
-  await mockBattleRoutes(page, {
-    battleId: "battle-turnstile-expire",
-    anonVoteTurnstileRequired: true,
-    onVote: (vote) => {
-      votes.push(vote);
-    },
-  });
-
-  await page.goto("/battle/new");
-
-  await expect(page.getByText(/done/i)).toBeVisible({
-    timeout: 60_000,
-  });
-
-  await page.getByRole("button", { name: /Model A is better/i }).click();
-
-  const submit = page.getByRole("button", { name: "Submit Vote" });
-  await expect(submit).toBeDisabled();
-
-  await page.getByRole("button", { name: "Solve Turnstile" }).click();
-  await expect(submit).toBeEnabled();
-
-  await page.getByRole("button", { name: "Expire Turnstile" }).click();
-  await expect(submit).toBeDisabled();
-
-  await page.getByRole("button", { name: "Solve Turnstile" }).click();
-  await expect(submit).toBeEnabled();
-
-  await submit.click();
-  await expect(page.getByText("Model A", { exact: true }).first()).toBeVisible();
-
-  expect(votes).toHaveLength(1);
-  expect(votes[0]?.payload).toMatchObject({
-    winner: "A",
-    turnstile_token: "mock-turnstile-token",
-  });
-});
-
-test("keeps submit disabled and shows error when Turnstile widget errors", async ({ page }) => {
-  await page.route("**/api/auth/session*", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: "null",
-    });
-  });
-
-  await page.addInitScript(() => {
-    (window as any).turnstile = {
-      render: (container: HTMLElement, options: Record<string, unknown>) => {
-        const errorButton = document.createElement("button");
-        errorButton.type = "button";
-        errorButton.textContent = "Trigger Turnstile Error";
-        errorButton.addEventListener("click", () => {
-          const onError = options["error-callback"];
-          if (typeof onError === "function") {
-            onError();
-          }
-        });
-
-        container.appendChild(errorButton);
-        return "mock-turnstile-widget";
-      },
-      reset: () => {},
-      remove: () => {},
-    };
-  });
-
-  await page.route("**/turnstile/v0/api.js*", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/javascript",
-      body: "",
-    });
-  });
-
+  await mockTurnstileScript(page, { includeErrorButton: true });
   await mockBattleRoutes(page, {
     battleId: "battle-turnstile-error",
-    anonVoteTurnstileRequired: true,
-    onVote: () => {
-      throw new Error("Vote endpoint should not be called when Turnstile fails");
+    anonBattleTurnstileRequired: true,
+    onCreate: (create) => {
+      creates.push(create);
     },
   });
 
   await page.goto("/battle/new");
 
-  await expect(page.getByText(/done/i)).toBeVisible({
+  await expect(page.getByText("Verification Required")).toBeVisible({
     timeout: 60_000,
   });
-
-  await page.getByRole("button", { name: /Model B is better/i }).click();
-  const submit = page.getByRole("button", { name: "Submit Vote" });
-  await expect(submit).toBeDisabled();
-
   await page.getByRole("button", { name: "Trigger Turnstile Error" }).click();
 
   await expect(page.getByText(/^Turnstile error$/)).toBeVisible();
-  await expect(submit).toBeDisabled();
-  await expect(page.getByText("Reveal")).toHaveCount(0);
+  expect(creates).toHaveLength(0);
+  await expect(page.getByRole("button", { name: "Solve Turnstile" })).toBeVisible();
 });

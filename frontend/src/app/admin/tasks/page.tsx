@@ -6,13 +6,12 @@
 
 "use client";
 
-import { signIn, useSession } from "next-auth/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
-import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiDelete, apiGet, apiPost, apiPut, getBackendBaseUrl } from "@/lib/api";
 import { parseJsonObjectOrNull } from "@/lib/adminParsers";
+import { useAuthHeaders } from "@/hooks/useAuthHeaders";
 
 type TaskSet = {
   id: string;
@@ -57,16 +56,7 @@ type EditTaskState = {
 };
 
 export default function AdminTasksPage() {
-  const { data: session, status: authStatus } = useSession();
-  const accessToken = session?.accessToken;
-
-  const accessTokenRef = useRef(accessToken);
-  useEffect(() => { accessTokenRef.current = accessToken; }, [accessToken]);
-
-  const headers = useMemo(() => {
-    return accessTokenRef.current ? { Authorization: `Bearer ${accessTokenRef.current}` } : undefined;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accessToken]);
+  const { headers } = useAuthHeaders();
 
   const [taskSets, setTaskSets] = useState<TaskSet[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -77,8 +67,8 @@ export default function AdminTasksPage() {
   const [editingTask, setEditingTask] = useState<EditTaskState | null>(null);
   const [savingTask, setSavingTask] = useState(false);
 
-  const [loadingSets, setLoadingSets] = useState(false);
-  const [loadingTasks, setLoadingTasks] = useState(false);
+  const [loadingSets, setLoadingSets] = useState(true);
+  const [loadingTasks, setLoadingTasks] = useState(true);
   const [errorText, setErrorText] = useState<string | null>(null);
 
   const [creatingSet, setCreatingSet] = useState(false);
@@ -389,9 +379,6 @@ export default function AdminTasksPage() {
     }
   }
 
-  const isReady = authStatus !== "loading";
-  const isAuthed = authStatus === "authenticated" && Boolean(accessToken);
-
   return (
     <div className="grid gap-4">
       <div className="flex items-center justify-between gap-2.5">
@@ -399,26 +386,9 @@ export default function AdminTasksPage() {
         <span className="text-xs text-muted-foreground font-mono">/admin/tasks</span>
       </div>
 
-      {!isReady ? <p className="m-0 text-muted-foreground">Checking login...</p> : null}
-
-      {isReady && !isAuthed ? (
-        <div className="glass-panel-accent p-5">
-          <div className="font-bold text-foreground">Admin login required</div>
-          <p className="mt-1.5 mb-0 leading-relaxed text-muted-foreground text-sm">
-            This page requires an Authentik login and the configured admin group claim.
-          </p>
-          <div className="mt-3">
-            <Button type="button" onClick={() => void signIn("authentik")}>
-              Login
-            </Button>
-          </div>
-        </div>
-      ) : null}
-
       {errorText ? <p className="m-0 text-sm text-destructive">{errorText}</p> : null}
 
-      {isAuthed ? (
-        <section className="glass-panel-accent p-5">
+      <section className="glass-panel-accent p-5">
           <div className="section-header mb-1">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="section-header-icon" aria-hidden>
               <line x1="12" y1="5" x2="12" y2="19" />
@@ -478,10 +448,8 @@ export default function AdminTasksPage() {
             </div>
           </div>
         </section>
-      ) : null}
 
-      {isAuthed ? (
-        <section className="glass-panel p-5">
+      <section className="glass-panel p-5">
           <div className="flex items-center justify-between gap-2.5 section-header">
             <span>Task sets</span>
             {loadingSets ? <Skeleton className="h-3 w-16" /> : null}
@@ -579,10 +547,8 @@ export default function AdminTasksPage() {
             </div>
           ) : null}
         </section>
-      ) : null}
 
-      {isAuthed ? (
-        <section className="glass-panel-accent p-5">
+      <section className="glass-panel-accent p-5">
           <div className="section-header mb-1">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="section-header-icon" aria-hidden>
               <line x1="12" y1="5" x2="12" y2="19" />
@@ -659,10 +625,8 @@ export default function AdminTasksPage() {
             </div>
           </div>
         </section>
-      ) : null}
 
-      {isAuthed ? (
-        <section className="glass-panel-accent p-5">
+      <section className="glass-panel-accent p-5">
           <div className="section-header mb-1">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="section-header-icon" aria-hidden>
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -725,19 +689,19 @@ export default function AdminTasksPage() {
             ) : null}
           </div>
         </section>
-      ) : null}
 
-      {isAuthed ? (
-        <section className="glass-panel p-5">
+      <section className="glass-panel p-5">
           <div className="flex items-center justify-between gap-2.5 section-header">
             <span>Tasks</span>
             {loadingTasks ? <Skeleton className="h-3 w-16" /> : null}
           </div>
 
-          <div className="mt-1.5 text-xs text-muted-foreground">
-            Showing {tasks.length} task(s)
-            {selectedTaskSetId ? ` for task_set_id=${selectedTaskSetId}` : ""}
-          </div>
+          {!loadingTasks ? (
+            <div className="mt-1.5 text-xs text-muted-foreground">
+              Showing {tasks.length} task(s)
+              {selectedTaskSetId ? ` for task_set_id=${selectedTaskSetId}` : ""}
+            </div>
+          ) : null}
 
           {tasks.length > 0 ? (
             <table className="mt-2.5 w-full border-collapse">
@@ -916,7 +880,6 @@ export default function AdminTasksPage() {
             </div>
           ) : null}
         </section>
-      ) : null}
     </div>
   );
 }

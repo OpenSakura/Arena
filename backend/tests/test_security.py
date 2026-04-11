@@ -306,19 +306,19 @@ def test_claim_by_path_reads_nested_claims() -> None:
         }
     }
 
-    assert security._claim_by_path(claims, "realm.access.groups") == ["arena_admin"]
-    assert security._claim_by_path(claims, "realm.access.missing") is None
-    assert security._claim_by_path(claims, "realm.access.groups.value") is None
+    assert security.claim_by_path(claims, "realm.access.groups") == ["arena_admin"]
+    assert security.claim_by_path(claims, "realm.access.missing") is None
+    assert security.claim_by_path(claims, "realm.access.groups.value") is None
 
 
 def test_normalize_groups_handles_supported_input_shapes() -> None:
-    assert security._normalize_groups(None) == set()
-    assert security._normalize_groups("arena_admin,ops team") == {
+    assert security.normalize_groups(None) == set()
+    assert security.normalize_groups("arena_admin,ops team") == {
         "arena_admin",
         "ops",
         "team",
     }
-    assert security._normalize_groups(["arena_admin", "", "ops", 123]) == {
+    assert security.normalize_groups(["arena_admin", "", "ops", 123]) == {
         "arena_admin",
         "ops",
     }

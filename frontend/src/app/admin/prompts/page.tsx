@@ -6,13 +6,12 @@
 
 "use client";
 
-import { signIn, useSession } from "next-auth/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
-import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiDelete, apiGet, apiPost } from "@/lib/api";
 import { parseJsonObjectOrNull } from "@/lib/adminParsers";
+import { useAuthHeaders } from "@/hooks/useAuthHeaders";
 
 type PromptTemplateAdmin = {
   id: string;
@@ -27,19 +26,10 @@ type PromptTemplateAdmin = {
 type ListPromptsResponse = { prompt_templates: PromptTemplateAdmin[] };
 
 export default function AdminPromptsPage() {
-  const { data: session, status: authStatus } = useSession();
-  const accessToken = session?.accessToken;
-
-  const accessTokenRef = useRef(accessToken);
-  useEffect(() => { accessTokenRef.current = accessToken; }, [accessToken]);
-
-  const headers = useMemo(() => {
-    return accessTokenRef.current ? { Authorization: `Bearer ${accessTokenRef.current}` } : undefined;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accessToken]);
+  const { headers } = useAuthHeaders();
 
   const [templates, setTemplates] = useState<PromptTemplateAdmin[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [errorText, setErrorText] = useState<string | null>(null);
 
   const [creating, setCreating] = useState(false);
@@ -112,9 +102,6 @@ export default function AdminPromptsPage() {
     }
   }
 
-  const isReady = authStatus !== "loading";
-  const isAuthed = authStatus === "authenticated" && Boolean(accessToken);
-
   return (
     <div className="grid gap-4">
       <div className="flex items-center justify-between gap-2.5">
@@ -122,26 +109,9 @@ export default function AdminPromptsPage() {
         <span className="text-xs text-muted-foreground font-mono">/admin/prompt-templates</span>
       </div>
 
-      {!isReady ? <p className="m-0 text-muted-foreground">Checking login...</p> : null}
-
-      {isReady && !isAuthed ? (
-        <div className="glass-panel-accent p-5">
-          <div className="font-bold">Admin login required</div>
-          <p className="mt-1.5 mb-0 leading-relaxed text-muted-foreground text-sm">
-            This page requires an Authentik login and the configured admin group claim.
-          </p>
-          <div className="mt-3">
-            <Button type="button" onClick={() => void signIn("authentik")}>
-              Login
-            </Button>
-          </div>
-        </div>
-      ) : null}
-
       {errorText ? <p className="m-0 text-sm text-destructive">{errorText}</p> : null}
 
-      {isAuthed ? (
-        <section className="glass-panel-accent p-5">
+      <section className="glass-panel-accent p-5">
           <div className="section-header mb-1">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="section-header-icon" aria-hidden>
               <line x1="12" y1="5" x2="12" y2="19" />
@@ -198,10 +168,8 @@ export default function AdminPromptsPage() {
             </div>
           </div>
         </section>
-      ) : null}
 
-      {isAuthed ? (
-        <section className="glass-panel p-5">
+      <section className="glass-panel p-5">
           <div className="flex items-center justify-between gap-2.5 section-header">
             <span>Prompt templates</span>
             {loading ? <Skeleton className="h-3 w-16" /> : null}
@@ -243,7 +211,6 @@ export default function AdminPromptsPage() {
             </table>
           ) : null}
         </section>
-      ) : null}
     </div>
   );
 }

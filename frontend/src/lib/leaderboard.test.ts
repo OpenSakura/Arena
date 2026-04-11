@@ -43,6 +43,14 @@ describe("buildLeaderboardQuery", () => {
     });
   });
 
+  it("normalizes numeric confidence flags for bt requests", () => {
+    expect(buildLeaderboardQuery({ method: "bt", include_confidence: "1" })).toEqual({
+      selectedMethod: "bt",
+      includeConfidence: true,
+      query: "/leaderboard?method=bt&include_confidence=true",
+    });
+  });
+
   it("supports include_confidence for elo", () => {
     expect(buildLeaderboardQuery({ method: "elo", include_confidence: "true" })).toEqual({
       selectedMethod: "elo",

@@ -18,12 +18,33 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.security import Principal, get_principal_optional
+from app.core.config import get_settings
+from app.core.security import (
+    Principal,
+    claim_by_path,
+    normalize_groups,
+    get_principal_optional,
+)
 from app.db.session import get_db
 from app.models.user import User, UserProfile
 from app.schemas.me import MeResponse, ProfileUpsert
 
 router = APIRouter(tags=["me"])
+
+
+def _check_admin(principal: Principal) -> bool:
+    """Return True when the principal's OIDC claims grant admin membership.
+
+    Uses the same group-claim semantics as ``require_admin()`` in
+    ``app.core.security`` so that ``/me.is_admin`` is always consistent with
+    backend admin endpoint enforcement.
+    """
+    if not principal.is_authenticated or not principal.claims:
+        return False
+    settings = get_settings()
+    claim_value = claim_by_path(principal.claims, settings.oidc_admin_group_claim)
+    groups = normalize_groups(claim_value)
+    return settings.oidc_admin_group_name in groups
 
 
 @router.get("/me")
@@ -32,7 +53,7 @@ def get_me(
     db: Session = Depends(get_db),
 ) -> MeResponse:
     if not principal.is_authenticated or principal.user_id is None:
-        return MeResponse(authenticated=False, user=None, profile=None)
+        return MeResponse(authenticated=False, is_admin=False, user=None, profile=None)
 
     user = db.get(User, uuid.UUID(principal.user_id))
     if user is None:
@@ -52,6 +73,7 @@ def get_me(
     profile = db.get(UserProfile, user.id)
     return MeResponse(
         authenticated=True,
+        is_admin=_check_admin(principal),
         user=_serialize_user(user),
         profile=_serialize_profile(profile),
     )
@@ -68,7 +90,18 @@ def put_profile(
 
     user = db.get(User, uuid.UUID(principal.user_id))
     if user is None:
-        raise HTTPException(status_code=401, detail="Authenticated user not found")
+        # The user row should exist because get_principal_optional upserts it.
+        # A missing row indicates data corruption — not an auth failure.
+        import logging
+
+        logging.getLogger(__name__).error(
+            "Authenticated user %s not found in database (put_profile)",
+            principal.user_id,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Authenticated user record not found",
+        )
 
     profile = db.get(UserProfile, user.id)
     if profile is None:
@@ -101,6 +134,7 @@ def put_profile(
 
     return MeResponse(
         authenticated=True,
+        is_admin=_check_admin(principal),
         user=_serialize_user(user),
         profile=_serialize_profile(profile),
     )

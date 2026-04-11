@@ -57,17 +57,17 @@ function templateRecord(overrides: Record<string, unknown> = {}) {
 }
 
 describe("AdminPromptsPage", () => {
-  it("shows login UI and starts Authentik sign-in when not authenticated", async () => {
+  it("does not make API calls when user is not authenticated and stays in loading state", async () => {
     useSessionMock.mockReturnValue({ data: null, status: "unauthenticated" });
 
     render(<AdminPromptsPage />);
 
-    await screen.findByText("Admin login required");
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Login" }));
-
-    expect(signInMock).toHaveBeenCalledWith("authentik");
+    // Page still renders its UI (middleware handles redirect),
+    // but no admin API calls are made without a token.
+    await screen.findByText("Prompt Templates");
     expect(apiGetMock).not.toHaveBeenCalled();
+
+    expect(screen.queryByText("No prompt templates yet.")).toBeNull();
   });
 
   it("fetches and renders prompt template rows for authenticated users", async () => {

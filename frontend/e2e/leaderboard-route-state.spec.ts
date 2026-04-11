@@ -21,7 +21,7 @@ test("keeps method and confidence toggles in URL across navigation and reload", 
 
   await page.getByRole("link", { name: "Elo (baseline)" }).click();
 
-  await expect(page).toHaveURL(/\/leaderboard\?method=elo$/);
+  await expect(page).toHaveURL(/\/leaderboard\?method=elo&include_confidence=true$/);
   await expect(page.getByText("Method: ELO")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Show 95% CI" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Hide 95% CI" })).toBeVisible();
 });

@@ -1,9 +1,3 @@
-/**
- * frontend/src/app/admin/layout.tsx
- *
- * Shared layout for admin pages with sub-navigation tabs.
- */
-
 "use client";
 
 import Link from "next/link";
@@ -21,19 +15,21 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { data: session, status } = useSession();
   const isAuthed = status === "authenticated" && Boolean(session?.accessToken);
+  const normalizedPathname = (pathname ?? "").replace(/\/+$/, "") || "/";
+  const isAdminIndex = normalizedPathname === "/admin";
 
-  // While auth is loading, show a skeleton to avoid flashing content.
-  if (status === "loading") {
-    return (
-      <div className="grid gap-6">
-        <div className="glass-panel p-6">
-          <div className="h-4 w-40 rounded shimmer bg-muted/60" />
-        </div>
+  const loadingState = (
+    <div className="grid gap-6">
+      <div className="glass-panel p-6">
+        <div className="h-4 w-40 rounded shimmer bg-muted/60" />
       </div>
-    );
-  }
+    </div>
+  );
 
-  // Non-authenticated users see a clear message instead of admin forms.
+  if (isAdminIndex) return <>{loadingState}{children}</>;
+
+  if (status === "loading") return loadingState;
+
   if (!isAuthed) {
     return (
       <div className="grid gap-6">
@@ -48,7 +44,6 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
 
   return (
     <div className="grid gap-6">
-      {/* Admin header with tabs */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-primary/15 bg-primary/[0.08]">
@@ -61,7 +56,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
         </div>
         <nav className="flex items-center gap-1 rounded-xl border border-border/50 bg-background/30 p-1 backdrop-blur">
           {ADMIN_TABS.map((tab) => {
-            const active = pathname.startsWith(tab.href);
+            const active = normalizedPathname.startsWith(tab.href);
             return (
               <Link
                 key={tab.href}
@@ -81,7 +76,6 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
 
       <div className="divider-fade" />
 
-      {/* Page content */}
       {children}
     </div>
   );

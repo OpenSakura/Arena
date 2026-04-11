@@ -37,7 +37,8 @@ class Battle(Base):
             "status IN ('pending', 'running', 'completed', 'failed')",
             name="ck_battles_status",
         ),
-        CheckConstraint("mode IN ('jp2zh_ab')", name="ck_battles_mode"),
+        # Mode validation is enforced at the application layer (schemas) so
+        # new modes can be added without a migration.
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -95,6 +96,9 @@ class Run(Base):
     )
 
     output_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Raw upstream output (kept for audit/export). The UI should render
+    # `output_text`; raw output remains available for audit/export consumers.
+    output_text_raw: Mapped[str | None] = mapped_column(Text, nullable=True)
     stats: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
     error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 

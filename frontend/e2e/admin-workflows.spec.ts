@@ -12,8 +12,7 @@ type AdminModel = {
   temperature: number | null;
   frequency_penalty: number | null;
   presence_penalty: number | null;
-  extra_body: Record<string, unknown> | null;
-  default_params: Record<string, unknown> | null;
+  params: Record<string, unknown> | null;
   prompt_template_id: string | null;
   has_api_key: boolean;
   created_at: string;
@@ -46,7 +45,16 @@ type AdminTask = {
   metadata: Record<string, unknown> | null;
 };
 
-async function mockAuthenticatedSession(page: Page, accessToken = "frontend-admin-access-token"): Promise<void> {
+async function mockAuthenticatedSession(page: Page, accessToken = "frontend-admin-access-token", isAdmin = true): Promise<void> {
+  await page.context().addCookies([
+    {
+      name: "next-auth.session-token",
+      value: "e2e-mock-session-token",
+      domain: "localhost",
+      path: "/",
+    },
+  ]);
+
   await page.route("**/api/auth/session*", async (route) => {
     await route.fulfill({
       status: 200,
@@ -55,6 +63,17 @@ async function mockAuthenticatedSession(page: Page, accessToken = "frontend-admi
         user: { name: "Arena Admin", email: "admin@example.com" },
         expires: "2099-01-01T00:00:00.000Z",
         accessToken,
+      }),
+    });
+  });
+
+  await page.route(/\/api\/v1\/me$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authenticated: true,
+        is_admin: isAdmin,
       }),
     });
   });
@@ -73,8 +92,7 @@ function modelRecord(overrides: Partial<AdminModel> = {}): AdminModel {
     temperature: null,
     frequency_penalty: null,
     presence_penalty: null,
-    extra_body: null,
-    default_params: null,
+    params: null,
     prompt_template_id: null,
     has_api_key: true,
     created_at: "2026-02-19T00:00:00.000Z",
@@ -284,7 +302,9 @@ test("admin prompts increments version for repeated names", async ({ page }) => 
   await page.getByRole("button", { name: "Create" }).click();
 
   await expect(page.getByText("v1")).toBeVisible();
+  await expect(page.locator("#prompt-name")).toHaveValue("");
 
+  await page.locator("#prompt-name").fill("jp2zh_vn_translation");
   await page
     .locator("#prompt-template-text")
     .fill("You are a precise JP->ZH translation assistant. (v2)");
@@ -629,7 +649,7 @@ test("admin tasks supports task-set/task CRUD and jsonl import", async ({ page }
 });
 
 test("admin models surfaces 403 for signed-in non-admin users", async ({ page }) => {
-  await mockAuthenticatedSession(page, "frontend-non-admin-token");
+  await mockAuthenticatedSession(page, "frontend-non-admin-token", false);
 
   await page.route("**/api/v1/admin/models", async (route) => {
     await route.fulfill({
@@ -641,12 +661,12 @@ test("admin models surfaces 403 for signed-in non-admin users", async ({ page })
 
   await page.goto("/admin/models");
 
-  await expect(page.getByText(/GET \/admin\/models failed: 403 - admin access required/)).toBeVisible();
-  await expect(page.getByText("Admin login required")).toHaveCount(0);
+  await expect(page.getByText("not authorized to access the admin area")).toBeVisible();
+  await expect(page.getByText("Model Registry")).toHaveCount(0);
 });
 
 test("admin prompts surfaces 403 for signed-in non-admin users", async ({ page }) => {
-  await mockAuthenticatedSession(page, "frontend-non-admin-token");
+  await mockAuthenticatedSession(page, "frontend-non-admin-token", false);
 
   await page.route("**/api/v1/admin/prompt-templates", async (route) => {
     await route.fulfill({
@@ -658,14 +678,12 @@ test("admin prompts surfaces 403 for signed-in non-admin users", async ({ page }
 
   await page.goto("/admin/prompts");
 
-  await expect(
-    page.getByText(/GET \/admin\/prompt-templates failed: 403 - admin access required/),
-  ).toBeVisible();
-  await expect(page.getByText("Admin login required")).toHaveCount(0);
+  await expect(page.getByText("not authorized to access the admin area")).toBeVisible();
+  await expect(page.getByText("No prompt templates yet")).toHaveCount(0);
 });
 
 test("admin tasks surfaces 403 for signed-in non-admin users", async ({ page }) => {
-  await mockAuthenticatedSession(page, "frontend-non-admin-token");
+  await mockAuthenticatedSession(page, "frontend-non-admin-token", false);
 
   await page.route("**/api/v1/admin/task-sets", async (route) => {
     await route.fulfill({
@@ -685,6 +703,6 @@ test("admin tasks surfaces 403 for signed-in non-admin users", async ({ page }) 
 
   await page.goto("/admin/tasks");
 
-  await expect(page.getByText(/failed: 403 - admin access required/)).toBeVisible();
-  await expect(page.getByText("Admin login required")).toHaveCount(0);
+  await expect(page.getByText("not authorized to access the admin area")).toBeVisible();
+  await expect(page.getByText("Showing 0 task(s)")).toHaveCount(0);
 });

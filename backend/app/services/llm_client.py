@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 import json
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -25,15 +26,21 @@ logger = logging.getLogger(__name__)
 
 # Transient HTTP status codes that are safe to retry before any response
 # body has been consumed.
-_RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503})
+_RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 _RETRYABLE_CONNECTION_ERRORS = (
     httpx.ConnectError,
     httpx.ConnectTimeout,
     httpx.ReadTimeout,
+    httpx.PoolTimeout,
 )
 _MAX_RETRIES = 2
 _RETRY_BASE_DELAY = 1.0
 _RETRY_MAX_DELAY = 5.0
+
+
+class StreamTotalTimeoutError(Exception):
+    """Raised when the overall wall-clock time for a streaming request exceeds
+    the configured limit."""
 
 
 @dataclass(slots=True)
@@ -119,12 +126,17 @@ class LLMClient:
         params: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
         timeout_seconds: float = 120.0,
+        total_timeout_seconds: float | None = None,
         max_sse_event_chars: int = 128_000,
         max_sse_line_bytes: int = 256_000,
     ) -> AsyncIterator[LLMStreamChunk]:
         """Yield OpenAI-compatible streaming chunks.
 
         The caller is responsible for collecting deltas and handling finish states.
+
+        ``total_timeout_seconds`` enforces an overall wall-clock deadline for the
+        entire stream (connect + read + processing).  Defaults to
+        ``timeout_seconds * 3`` when not set explicitly.
         """
 
         url = self._chat_completions_url(base_url)
@@ -154,6 +166,16 @@ class LLMClient:
             pool=min(10.0, timeout_seconds),
         )
 
+        if total_timeout_seconds is None:
+            total_timeout_seconds = timeout_seconds * 3
+        wall_clock_deadline = time.monotonic() + total_timeout_seconds
+
+        # Once we have received *any* response bytes from the upstream, we must
+        # not retry.  Retrying a mid-stream request can duplicate text in the UI
+        # and corrupt persisted outputs.  ``response_bytes_received`` is set as
+        # soon as the HTTP response status line arrives (before SSE parsing).
+        response_bytes_received = False
+
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 client = await self._get_http_client()
@@ -165,6 +187,7 @@ class LLMClient:
                     timeout=timeout,
                 ) as response:
                     response.raise_for_status()
+                    response_bytes_received = True
 
                     request_id = (
                         response.headers.get("x-request-id")
@@ -179,6 +202,12 @@ class LLMClient:
                         ),
                         max_event_chars=max_sse_event_chars,
                     ):
+                        if time.monotonic() > wall_clock_deadline:
+                            raise StreamTotalTimeoutError(
+                                f"Stream exceeded total wall-clock timeout "
+                                f"of {total_timeout_seconds}s"
+                            )
+
                         if data.strip() == "[DONE]":
                             break
 
@@ -224,6 +253,7 @@ class LLMClient:
                 if (
                     exc.response.status_code in _RETRYABLE_STATUS_CODES
                     and attempt < _MAX_RETRIES
+                    and not response_bytes_received
                 ):
                     delay = min(
                         _RETRY_BASE_DELAY * (2**attempt),
@@ -241,7 +271,7 @@ class LLMClient:
                     continue
                 raise
             except _RETRYABLE_CONNECTION_ERRORS as exc:
-                if attempt < _MAX_RETRIES:
+                if attempt < _MAX_RETRIES and not response_bytes_received:
                     delay = min(
                         _RETRY_BASE_DELAY * (2**attempt),
                         _RETRY_MAX_DELAY,

@@ -75,7 +75,7 @@ def _upsert_user(db: Session, *, issuer: str, sub: str) -> User:
     return user
 
 
-def _claim_by_path(claims: dict[str, Any], path: str) -> Any:
+def claim_by_path(claims: dict[str, Any], path: str) -> Any:
     current: Any = claims
     for segment in path.split("."):
         if not isinstance(current, dict):
@@ -84,7 +84,7 @@ def _claim_by_path(claims: dict[str, Any], path: str) -> Any:
     return current
 
 
-def _normalize_groups(value: Any) -> set[str]:
+def normalize_groups(value: Any) -> set[str]:
     if value is None:
         return set()
 
@@ -154,8 +154,8 @@ def require_admin(principal: Principal = Depends(get_principal_optional)) -> Pri
         raise HTTPException(status_code=401, detail="Authentication required")
 
     settings = get_settings()
-    claim_value = _claim_by_path(principal.claims, settings.oidc_admin_group_claim)
-    groups = _normalize_groups(claim_value)
+    claim_value = claim_by_path(principal.claims, settings.oidc_admin_group_claim)
+    groups = normalize_groups(claim_value)
     if settings.oidc_admin_group_name not in groups:
         raise HTTPException(status_code=403, detail="Admin group membership required")
 

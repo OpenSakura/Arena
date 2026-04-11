@@ -82,8 +82,17 @@ async function refreshAccessToken(token: Record<string, unknown>): Promise<Recor
   const clientId = process.env.AUTHENTIK_CLIENT_ID ?? "";
   const clientSecret = process.env.AUTHENTIK_CLIENT_SECRET ?? "";
 
+  function expiredToken(error: string): Record<string, unknown> {
+    return {
+      ...token,
+      accessToken: undefined,
+      accessTokenExpires: 0,
+      error,
+    };
+  }
+
   if (!issuer || !token.refreshToken) {
-    return { ...token, error: "RefreshTokenMissing" };
+    return expiredToken("RefreshTokenMissing");
   }
 
   try {
@@ -93,12 +102,12 @@ async function refreshAccessToken(token: Record<string, unknown>): Promise<Recor
       signal: AbortSignal.timeout(10_000),
     });
     if (!discoveryRes.ok) {
-      return { ...token, error: "RefreshDiscoveryFailed" };
+      return expiredToken("RefreshDiscoveryFailed");
     }
     const discovery = (await discoveryRes.json()) as { token_endpoint?: string };
     const tokenEndpoint = discovery.token_endpoint;
     if (!tokenEndpoint) {
-      return { ...token, error: "RefreshDiscoveryFailed" };
+      return expiredToken("RefreshDiscoveryFailed");
     }
 
     const res = await fetch(tokenEndpoint, {
@@ -121,7 +130,7 @@ async function refreshAccessToken(token: Record<string, unknown>): Promise<Recor
     };
 
     if (!res.ok || refreshed.error || !refreshed.access_token) {
-      return { ...token, error: "RefreshTokenExpired" };
+      return expiredToken("RefreshTokenExpired");
     }
 
     return {
@@ -132,7 +141,7 @@ async function refreshAccessToken(token: Record<string, unknown>): Promise<Recor
       error: undefined,
     };
   } catch {
-    return { ...token, error: "RefreshTokenError" };
+    return expiredToken("RefreshTokenError");
   }
 }
 

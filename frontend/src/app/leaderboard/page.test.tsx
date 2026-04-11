@@ -48,6 +48,12 @@ describe("LeaderboardPage", () => {
     expect(screen.getByText("ELO")).toBeDefined();
     expect(screen.getByText("No ratings yet")).toBeDefined();
     expect(screen.getByText("95% CI")).toBeDefined();
+    expect(screen.getByRole("link", { name: "Elo (baseline)" }).getAttribute("href")).toBe(
+      "/leaderboard?method=elo",
+    );
+    expect(screen.getByRole("link", { name: "Show 95% CI" }).getAttribute("href")).toBe(
+      "/leaderboard?method=elo&include_confidence=true",
+    );
     expect(screen.queryByRole("columnheader", { name: "95% CI" })).toBeNull();
   });
 
@@ -76,6 +82,12 @@ describe("LeaderboardPage", () => {
     expect(apiGetMock).toHaveBeenCalledWith("/leaderboard?method=bt&include_confidence=true");
     expect(screen.getByText("BT")).toBeDefined();
     expect(screen.getByText(/250 bootstrap rounds/)).toBeDefined();
+    expect(screen.getByRole("link", { name: "Elo (baseline)" }).getAttribute("href")).toBe(
+      "/leaderboard?method=elo&include_confidence=true",
+    );
+    expect(screen.getByRole("link", { name: "Hide 95% CI" }).getAttribute("href")).toBe(
+      "/leaderboard?method=bt",
+    );
     expect(screen.getByRole("columnheader", { name: "95% CI" })).toBeDefined();
     expect(screen.getByText("Model A")).toBeDefined();
     expect(screen.getByText("1210.4")).toBeDefined();
@@ -104,6 +116,9 @@ describe("LeaderboardPage", () => {
 
     expect(apiGetMock).toHaveBeenCalledWith("/leaderboard?method=bt");
     expect(screen.getByText("95% CI")).toBeDefined();
+    expect(screen.getByRole("link", { name: "Show 95% CI" }).getAttribute("href")).toBe(
+      "/leaderboard?method=bt&include_confidence=true",
+    );
     expect(screen.queryByRole("columnheader", { name: "95% CI" })).toBeNull();
   });
 
@@ -143,5 +158,36 @@ describe("LeaderboardPage", () => {
 
     expect(screen.getByText("backend unavailable")).toBeDefined();
     expect(screen.queryByText("No ratings yet")).toBeNull();
+  });
+
+  it("requests BT without confidence using correct endpoint without model_ratings", async () => {
+    apiGetMock.mockResolvedValue({
+      method: "bt",
+      ci: false,
+      bootstrap_rounds: null,
+      models: [
+        {
+          model_id: "model-a",
+          display_name: "Model A",
+          rating: 1050,
+          rating_lower: null,
+          rating_upper: null,
+          games_played: 8,
+        },
+      ],
+    });
+
+    const element = await LeaderboardPage({
+      searchParams: Promise.resolve({ method: "bt" }),
+    });
+    render(element);
+
+    expect(apiGetMock).toHaveBeenCalledWith("/leaderboard?method=bt");
+    expect(apiGetMock).not.toHaveBeenCalledWith(
+      expect.stringContaining("include_confidence"),
+    );
+    expect(screen.getByText("BT")).toBeDefined();
+    expect(screen.getByText("Model A")).toBeDefined();
+    expect(screen.queryByRole("columnheader", { name: "95% CI" })).toBeNull();
   });
 });

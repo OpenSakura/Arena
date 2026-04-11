@@ -102,6 +102,7 @@ export default async function LeaderboardPage({
   const confidenceToggleHref = includeConfidence
     ? `/leaderboard?method=${selectedMethod}`
     : `/leaderboard?method=${selectedMethod}&include_confidence=true`;
+  const confidenceToggleLabel = includeConfidence ? "Hide 95% CI" : "Show 95% CI";
 
   const maxRating = models.length > 0 ? Math.max(...models.map((m) => m.rating ?? 0)) : 0;
 
@@ -132,6 +133,7 @@ export default async function LeaderboardPage({
         <div className="flex items-center gap-1.5 rounded-xl border border-border/50 bg-background/30 p-1 backdrop-blur">
           <Link
             href={`/leaderboard?method=elo${includeConfidence ? "&include_confidence=true" : ""}`}
+            aria-label="Elo (baseline)"
             className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition-all ${
               selectedMethod === "elo"
                 ? "bg-primary/10 text-primary shadow-sm"
@@ -153,6 +155,7 @@ export default async function LeaderboardPage({
           <div className="h-4 w-px bg-border/50 mx-0.5" />
           <Link
             href={confidenceToggleHref}
+            aria-label={confidenceToggleLabel}
             className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
               includeConfidence
                 ? "bg-primary/10 text-primary"
@@ -217,8 +220,14 @@ export default async function LeaderboardPage({
                       </div>
                     </div>
                     <div className="flex items-baseline gap-1">
-                      <span className="text-2xl font-bold tabular-nums font-mono text-foreground">{(row.rating ?? 0).toFixed(0)}</span>
-                      <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">rating</span>
+                      {row.games_played === 0 ? (
+                        <span className="text-sm font-medium text-muted-foreground/60 uppercase tracking-wider">Unrated</span>
+                      ) : (
+                        <>
+                          <span className="text-2xl font-bold tabular-nums font-mono text-foreground">{(row.rating ?? 0).toFixed(0)}</span>
+                          <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">rating</span>
+                        </>
+                      )}
                     </div>
                     {hasConfidence && row.rating_lower !== null && row.rating_upper !== null && (
                       <div className="text-[11px] text-muted-foreground/50 tabular-nums font-mono">
@@ -226,7 +235,11 @@ export default async function LeaderboardPage({
                       </div>
                     )}
                     <div className="text-[10px] text-muted-foreground/40">
-                      {row.games_played} games
+                      {row.games_played === 0 ? (
+                        <span className="inline-block rounded-full border border-primary/15 bg-primary/[0.05] px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-primary/60">New</span>
+                      ) : (
+                        `${row.games_played} games`
+                      )}
                     </div>
                   </div>
                 </div>
@@ -270,16 +283,22 @@ export default async function LeaderboardPage({
                     <div className="mt-1.5 h-1.5 w-full max-w-[200px] rounded-full bg-foreground/5 overflow-hidden">
                       <div
                         className={`h-full rounded-full transition-all duration-500 ${
-                          index === 0
-                            ? "bg-gradient-to-r from-amber-500/50 to-amber-400/30"
-                            : "bg-gradient-to-r from-primary/40 to-primary/20"
+                          row.games_played === 0
+                            ? "bg-foreground/[0.06]"
+                            : index === 0
+                              ? "bg-gradient-to-r from-amber-500/50 to-amber-400/30"
+                              : "bg-gradient-to-r from-primary/40 to-primary/20"
                         }`}
-                        style={{ width: `${maxRating > 0 ? (row.rating / maxRating) * 100 : 0}%` }}
+                        style={{ width: row.games_played === 0 ? "100%" : `${maxRating > 0 ? (row.rating / maxRating) * 100 : 0}%` }}
                       />
                     </div>
                   </td>
                   <td className="td-premium text-right tabular-nums font-mono text-sm font-semibold">
-                    {(row.rating ?? 0).toFixed(1)}
+                    {row.games_played === 0 ? (
+                      <span className="text-xs font-medium text-muted-foreground/50 uppercase tracking-wider not-italic">Unrated</span>
+                    ) : (
+                      (row.rating ?? 0).toFixed(1)
+                    )}
                   </td>
                   {hasConfidence ? (
                     <td className="td-premium text-right tabular-nums font-mono text-xs text-muted-foreground">
@@ -289,7 +308,11 @@ export default async function LeaderboardPage({
                     </td>
                   ) : null}
                   <td className="td-premium text-right tabular-nums text-muted-foreground">
-                    {row.games_played}
+                    {row.games_played === 0 ? (
+                      <span className="inline-block rounded-full border border-primary/20 bg-primary/[0.06] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-primary/70">New</span>
+                    ) : (
+                      row.games_played
+                    )}
                   </td>
                 </tr>
               ))}
