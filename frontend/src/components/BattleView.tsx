@@ -148,8 +148,8 @@ export function BattleView({ battleId }: { battleId: string }) {
 
       {/* Translation panels */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <Panel side="A" title="Model A" text={outA} reveal={reveal?.A} delay={0.1} isStreaming={status === "streaming"} langBadge={targetLang} />
-        <Panel side="B" title="Model B" text={outB} reveal={reveal?.B} delay={0.2} isStreaming={status === "streaming"} langBadge={targetLang} />
+        <Panel side="A" title="Model A" text={outA} reveal={reveal?.A} isStreaming={status === "streaming"} langBadge={targetLang} />
+        <Panel side="B" title="Model B" text={outB} reveal={reveal?.B} isStreaming={status === "streaming"} langBadge={targetLang} />
       </div>
 
       {/* Voting section */}
@@ -429,7 +429,6 @@ function Panel({
   title,
   text,
   reveal,
-  delay = 0,
   isStreaming = false,
   langBadge = "ZH",
 }: {
@@ -437,7 +436,6 @@ function Panel({
   title: string;
   text: string;
   reveal?: { model_id: string; display_name: string };
-  delay?: number;
   isStreaming?: boolean;
   langBadge?: string;
 }) {

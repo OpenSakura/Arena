@@ -15,6 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useAuthHeaders } from "@/hooks/useAuthHeaders";
 import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api";
 import { parseJsonObjectOrNull, parseNumberOrNull } from "@/lib/adminParsers";
+import { isRecord } from "@/lib/typeGuards";
 
 type ModelAdmin = {
   id: string;
@@ -208,10 +209,6 @@ function reducer(state: State, action: Action): State {
     default:
       return state;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isModelAdmin(value: unknown): value is ModelAdmin {

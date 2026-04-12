@@ -27,7 +27,7 @@ const EXPERIENCE_ROLES = ["translator", "editor", "qc", "tl"] as const;
 type ExperienceRole = (typeof EXPERIENCE_ROLES)[number];
 
 export default function OnboardingPage() {
-  const { authStatus, accessToken, headers } = useAuthHeaders();
+  const { authStatus, accessToken, headers, headersRef } = useAuthHeaders();
   const canSave = authStatus === "authenticated" && Boolean(accessToken);
 
   const [displayName, setDisplayName] = useState("");
@@ -53,7 +53,7 @@ export default function OnboardingPage() {
       setLoadingProfile(true);
       setErrorText(null);
       try {
-        const me = parseMeResponse(await apiGet("/me", { headers }));
+        const me = parseMeResponse(await apiGet("/me", { headers: headersRef.current }));
         if (cancelled) return;
         const profile = me.profile ?? {};
 
@@ -92,7 +92,7 @@ export default function OnboardingPage() {
     return () => {
       cancelled = true;
     };
-  }, [canSave, headers]);
+  }, [canSave, headersRef]);
 
   function toggleRole(role: ExperienceRole) {
     setExperienceRoles((prev) => (prev.includes(role) ? prev.filter((r) => r !== role) : [...prev, role]));

@@ -25,7 +25,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
-from app.core.security import Principal, get_principal_optional, require_admin
+from app.core.security import (
+    Principal,
+    claim_by_path,
+    get_principal_optional,
+    normalize_groups,
+    require_admin,
+)
 from app.db.session import get_db
 from app.models.battle import Battle, Run
 from app.models.model_registry import Model
@@ -39,7 +45,11 @@ from app.utils.anon import get_or_set_anon_id
 from app.utils.client_ip import get_client_ip
 from app.utils.id import parse_uuid_or_422
 from app.utils.requester_identity import RequesterIdentity
-from app.utils.rate_limit import RollingWindowRateLimiter, build_anon_rate_limit_key
+from app.utils.rate_limit import (
+    RollingWindowRateLimiter,
+    build_anon_rate_limit_key,
+    build_auth_rate_limit_key,
+)
 from app.utils.redis import get_rate_limit_redis_client
 
 router = APIRouter(prefix="/battles", tags=["battles"])
@@ -54,8 +64,8 @@ def create_battle(
     principal: Principal = Depends(get_principal_optional),
     settings: Settings = Depends(get_settings),
 ) -> BattlePublic:
-    # By design: authenticated users are trusted and not rate-limited.
-    # Only anonymous users are subject to anti-abuse throttling and Turnstile.
+    # By design: authenticated users are trusted with higher rate limits.
+    # Only anonymous users are subject to Turnstile verification.
     if not principal.is_authenticated:
         get_or_set_anon_id(
             request=request,
@@ -69,6 +79,11 @@ def create_battle(
         _verify_turnstile_or_raise(
             turnstile_token=payload.turnstile_token,
             request=request,
+            settings=settings,
+        )
+    else:
+        _enforce_auth_battle_rate_limit(
+            principal=principal,
             settings=settings,
         )
 
@@ -85,6 +100,8 @@ def create_battle(
     task = _select_task(db=db, payload=payload)
     model_a_id, model_b_id = _select_model_pair(db, settings=settings)
 
+    anon_id = request.cookies.get("arena_anon_id")
+
     battle = Battle(
         task_id=task.id,
         mode=payload.mode or "jp2zh_ab",
@@ -100,6 +117,7 @@ def create_battle(
                 "models": "fastchat_weighted_v2",
             },
             "requester_user_id": principal.user_id,
+            "requester_anon_id": anon_id,
         },
     )
     db.add(battle)
@@ -190,8 +208,26 @@ async def stream_battle(
 
     # Pre-flight check: return a proper 404 instead of streaming an SSE
     # error event over an HTTP 200 response.
-    if db.get(Battle, battle_uuid) is None:
+    battle = db.get(Battle, battle_uuid)
+    if battle is None:
         raise HTTPException(status_code=404, detail="Battle not found")
+
+    # Only the battle creator (or an admin) may connect to the stream.
+    if not _is_battle_creator(battle, principal=principal, request=request):
+        settings_for_admin = get_settings()
+        claim_value = claim_by_path(
+            principal.claims, settings_for_admin.oidc_admin_group_claim
+        )
+        groups = normalize_groups(claim_value)
+        is_admin = (
+            principal.is_authenticated
+            and settings_for_admin.oidc_admin_group_name in groups
+        )
+        if not is_admin:
+            raise HTTPException(
+                status_code=403,
+                detail="Only the battle creator may connect to this stream",
+            )
 
     # Anonymous stream connections are rate-limited to prevent resource
     # exhaustion via many concurrent SSE connections.
@@ -200,6 +236,12 @@ async def stream_battle(
         await asyncio.to_thread(
             _enforce_anon_battle_stream_rate_limit,
             request=request,
+            settings=settings,
+        )
+    else:
+        await asyncio.to_thread(
+            _enforce_auth_battle_stream_rate_limit,
+            principal=principal,
             settings=settings,
         )
 
@@ -220,8 +262,9 @@ async def stream_battle(
 @router.post("/{battle_id}/retry")
 def retry_battle(
     battle_id: str,
+    request: Request,
     db: Session = Depends(get_db),
-    _admin: Principal = Depends(require_admin),
+    principal: Principal = Depends(get_principal_optional),
 ) -> BattlePublic:
     """Reset a failed, unvoted battle to pending so it can be re-executed.
 
@@ -229,6 +272,8 @@ def retry_battle(
     prompt_rendered) and sets battle status back to ``pending``.  The next
     SSE stream connection will re-execute both runs from scratch under the
     single-owner execution model.
+
+    Allowed for both the battle creator and admins.
     """
     battle_uuid = parse_uuid_or_422(battle_id, "battle_id")
     battle = db.execute(
@@ -236,6 +281,23 @@ def retry_battle(
     ).scalar_one_or_none()
     if battle is None:
         raise HTTPException(status_code=404, detail="Battle not found")
+
+    is_creator = _is_battle_creator(battle, principal=principal, request=request)
+    if not is_creator:
+        settings_for_admin = get_settings()
+        claim_value = claim_by_path(
+            principal.claims, settings_for_admin.oidc_admin_group_claim
+        )
+        groups = normalize_groups(claim_value)
+        is_admin = (
+            principal.is_authenticated
+            and settings_for_admin.oidc_admin_group_name in groups
+        )
+        if not is_admin:
+            raise HTTPException(
+                status_code=403,
+                detail="Only the battle creator or an admin may retry",
+            )
 
     if battle.status != "failed":
         raise HTTPException(
@@ -440,6 +502,45 @@ def _battle_task_snapshot(battle: Battle) -> tuple[str, str, str] | None:
     return source_text, source_lang, target_lang
 
 
+def _is_battle_creator(
+    battle: Battle,
+    *,
+    principal: Principal,
+    request: Request,
+) -> bool:
+    """Check whether the requester is the user who created this battle.
+
+    Matches on ``requester_user_id`` (authenticated) or
+    ``requester_anon_id`` (anonymous cookie) stored at creation time.
+    Returns ``False`` when there is no identifiable creator signal
+    (e.g. legacy battles created before anon_id tracking was added).
+    """
+    metadata = battle.metadata_json
+    if not isinstance(metadata, dict):
+        return False
+
+    # Prefer authenticated identity.
+    creator_user_id = metadata.get("requester_user_id")
+    if (
+        creator_user_id is not None
+        and principal.is_authenticated
+        and principal.user_id == creator_user_id
+    ):
+        return True
+
+    # Fallback to anonymous cookie.
+    creator_anon_id = metadata.get("requester_anon_id")
+    anon_id = request.cookies.get("arena_anon_id")
+    if (
+        creator_anon_id is not None
+        and anon_id is not None
+        and creator_anon_id == anon_id
+    ):
+        return True
+
+    return False
+
+
 @lru_cache(maxsize=1)
 def _get_battle_create_rate_limiter() -> RollingWindowRateLimiter:
     settings = get_settings()
@@ -477,6 +578,42 @@ def _enforce_anon_battle_rate_limit(
 
 
 @lru_cache(maxsize=1)
+def _get_auth_battle_create_rate_limiter() -> RollingWindowRateLimiter:
+    settings = get_settings()
+    return RollingWindowRateLimiter(
+        limit=settings.auth_battle_create_rate_limit,
+        window_seconds=settings.auth_battle_create_rate_limit_window_seconds,
+        bucket_seconds=settings.anon_rate_limit_bucket_seconds,
+        redis_client=get_rate_limit_redis_client(),
+        redis_prefix=settings.rate_limit_redis_key_prefix,
+    )
+
+
+def _enforce_auth_battle_rate_limit(
+    *,
+    principal: Principal,
+    settings: Settings,
+) -> None:
+    if not principal.user_id:
+        return
+    limiter = _get_auth_battle_create_rate_limiter()
+    key = build_auth_rate_limit_key(
+        scope="auth_battle_create",
+        user_id=principal.user_id,
+    )
+    if limiter.is_limited(key):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many battle creation requests",
+            headers={
+                "Retry-After": str(
+                    settings.auth_battle_create_rate_limit_window_seconds
+                )
+            },
+        )
+
+
+@lru_cache(maxsize=1)
 def _get_battle_stream_rate_limiter() -> RollingWindowRateLimiter:
     settings = get_settings()
     return RollingWindowRateLimiter(
@@ -507,6 +644,42 @@ def _enforce_anon_battle_stream_rate_limit(
             headers={
                 "Retry-After": str(
                     settings.anon_battle_stream_rate_limit_window_seconds
+                )
+            },
+        )
+
+
+@lru_cache(maxsize=1)
+def _get_auth_battle_stream_rate_limiter() -> RollingWindowRateLimiter:
+    settings = get_settings()
+    return RollingWindowRateLimiter(
+        limit=settings.auth_battle_stream_rate_limit,
+        window_seconds=settings.auth_battle_stream_rate_limit_window_seconds,
+        bucket_seconds=settings.anon_rate_limit_bucket_seconds,
+        redis_client=get_rate_limit_redis_client(),
+        redis_prefix=settings.rate_limit_redis_key_prefix,
+    )
+
+
+def _enforce_auth_battle_stream_rate_limit(
+    *,
+    principal: Principal,
+    settings: Settings,
+) -> None:
+    if not principal.user_id:
+        return
+    limiter = _get_auth_battle_stream_rate_limiter()
+    key = build_auth_rate_limit_key(
+        scope="auth_battle_stream",
+        user_id=principal.user_id,
+    )
+    if limiter.is_limited(key):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many battle stream requests",
+            headers={
+                "Retry-After": str(
+                    settings.auth_battle_stream_rate_limit_window_seconds
                 )
             },
         )

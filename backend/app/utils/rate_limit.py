@@ -328,6 +328,14 @@ def build_anon_rate_limit_key(
     return f"{scope}:{fingerprint}"
 
 
+def build_auth_rate_limit_key(*, scope: str, user_id: str) -> str:
+    """Build a rate-limit key for an authenticated user.
+
+    Keyed directly on the internal user UUID — stable and unspoofable.
+    """
+    return f"{scope}:user:{user_id}"
+
+
 def _redis_int(value: object) -> int:
     """Coerce a Redis response value to ``int``, returning ``0`` on failure.
 

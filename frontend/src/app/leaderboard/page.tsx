@@ -12,6 +12,7 @@ import {
   hasConfidenceIntervals,
   type LeaderboardSearchParams,
 } from "@/lib/leaderboard";
+import { isRecord } from "@/lib/typeGuards";
 
 type LeaderboardRow = {
   model_id: string;
@@ -32,6 +33,40 @@ type LeaderboardResponse = {
 type LeaderboardPageProps = {
   searchParams?: Promise<LeaderboardSearchParams>;
 };
+
+const LEADERBOARD_METHODS: ReadonlyArray<LeaderboardResponse["method"]> = ["elo", "bt"];
+
+function isLeaderboardRow(value: unknown): value is LeaderboardRow {
+  return (
+    isRecord(value) &&
+    typeof value.model_id === "string" &&
+    typeof value.display_name === "string" &&
+    typeof value.rating === "number" &&
+    (typeof value.rating_lower === "number" || value.rating_lower === null) &&
+    (typeof value.rating_upper === "number" || value.rating_upper === null) &&
+    typeof value.games_played === "number"
+  );
+}
+
+function isLeaderboardResponse(value: unknown): value is LeaderboardResponse {
+  return (
+    isRecord(value) &&
+    typeof value.method === "string" &&
+    LEADERBOARD_METHODS.includes(value.method as LeaderboardResponse["method"]) &&
+    typeof value.ci === "boolean" &&
+    (typeof value.bootstrap_rounds === "number" || value.bootstrap_rounds === null) &&
+    Array.isArray(value.models) &&
+    value.models.every(isLeaderboardRow)
+  );
+}
+
+function parseLeaderboardResponse(value: unknown): LeaderboardResponse {
+  if (!isLeaderboardResponse(value)) {
+    throw new Error("Invalid leaderboard response");
+  }
+
+  return value;
+}
 
 function rankBadge(index: number) {
   if (index === 0) return "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/25 shadow-sm shadow-amber-500/10";
@@ -89,7 +124,7 @@ export default async function LeaderboardPage({
   const query = request.query;
 
   try {
-    const data = (await apiGet(query)) as LeaderboardResponse;
+    const data = parseLeaderboardResponse(await apiGet(query));
     models = data.models;
     selectedMethod = data.method;
     includeConfidence = data.ci;

@@ -29,7 +29,11 @@ from app.schemas.votes import VoteCreate, VoteSubmitResponse
 from app.utils.anon import get_or_set_anon_id
 from app.utils.id import parse_uuid_or_422
 from app.utils.requester_identity import RequesterIdentity, find_existing_battle_vote
-from app.utils.rate_limit import RollingWindowRateLimiter, build_anon_rate_limit_key
+from app.utils.rate_limit import (
+    RollingWindowRateLimiter,
+    build_anon_rate_limit_key,
+    build_auth_rate_limit_key,
+)
 from app.utils.redis import get_rate_limit_redis_client
 
 router = APIRouter(prefix="/battles", tags=["votes"])
@@ -151,11 +155,16 @@ def submit_vote(
             reveal=None,
         )
 
-    # By design: authenticated users are trusted and not rate-limited.
+    # By design: authenticated users have higher rate limits than anonymous.
     # Turnstile verification is enforced at battle creation, not voting.
     if voter_user_id is None:
         _enforce_anon_vote_rate_limit(
             request=request,
+            settings=settings,
+        )
+    else:
+        _enforce_auth_vote_rate_limit(
+            voter_user_id=voter_user_id,
             settings=settings,
         )
 
@@ -431,5 +440,37 @@ def _enforce_anon_vote_rate_limit(
             detail="Too many anonymous vote submissions",
             headers={
                 "Retry-After": str(settings.anon_vote_submit_rate_limit_window_seconds)
+            },
+        )
+
+
+@lru_cache(maxsize=1)
+def _get_auth_vote_submit_rate_limiter() -> RollingWindowRateLimiter:
+    settings = get_settings()
+    return RollingWindowRateLimiter(
+        limit=settings.auth_vote_submit_rate_limit,
+        window_seconds=settings.auth_vote_submit_rate_limit_window_seconds,
+        bucket_seconds=settings.anon_rate_limit_bucket_seconds,
+        redis_client=get_rate_limit_redis_client(),
+        redis_prefix=settings.rate_limit_redis_key_prefix,
+    )
+
+
+def _enforce_auth_vote_rate_limit(
+    *,
+    voter_user_id: uuid.UUID,
+    settings: Settings,
+) -> None:
+    limiter = _get_auth_vote_submit_rate_limiter()
+    key = build_auth_rate_limit_key(
+        scope="auth_vote_submit",
+        user_id=str(voter_user_id),
+    )
+    if limiter.is_limited(key):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many vote submissions",
+            headers={
+                "Retry-After": str(settings.auth_vote_submit_rate_limit_window_seconds)
             },
         )

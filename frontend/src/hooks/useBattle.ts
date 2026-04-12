@@ -11,14 +11,11 @@ import { useEffect, useMemo, useReducer, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { isBattleBootstrapReady } from "@/components/battleAuth";
-import {
-  asRecord,
-  loadOrCreateBattle,
-  mergeBattleDelta,
-} from "@/components/battleViewUtils";
+import { loadOrCreateBattle, mergeBattleDelta } from "@/components/battleViewUtils";
 import { getBackendBaseUrl, apiGet, apiPost } from "@/lib/api";
 import { streamSSE } from "@/lib/sse";
 import { useAuthHeaders } from "@/hooks/useAuthHeaders";
+import { asRecord, isRecord } from "@/lib/typeGuards";
 
 type Side = "A" | "B";
 type ReplayPolicy = "consume" | "ignore";
@@ -96,7 +93,7 @@ type Action =
   | { type: "SET_ERROR"; error: string }
   | { type: "STREAM_DELTA"; side: Side; text: string; replay: boolean; chunkIndex: number | null }
   | { type: "STREAM_RECONNECTING" }
-  | { type: "RUN_ERROR"; error: string | null }
+  | { type: "RUN_ERROR"; error: string | null; side?: Side }
   | { type: "BATTLE_COMPLETED" }
   | { type: "BATTLE_FAILED"; detail?: string | null }
   | { type: "BATTLE_ERROR"; detail: string | null }
@@ -209,13 +206,20 @@ function battleReducer(state: BattleState, action: Action): BattleState {
       };
 
     case "RUN_ERROR":
+      {
+        const prefix = action.side ? `Run error (${action.side})` : "Run error";
+        const fallback = action.side
+          ? `Translation run ${action.side} encountered an error`
+          : "A translation run encountered an error";
+
       return {
         ...state,
         status: "error",
         errorText:
           state.errorText ??
-          (action.error ? `Run error: ${action.error}` : "A translation run encountered an error"),
+            (action.error ? `${prefix}: ${action.error}` : fallback),
       };
+      }
 
     case "BATTLE_COMPLETED":
       return { ...state, status: "done" };
@@ -310,10 +314,6 @@ function battleReducer(state: BattleState, action: Action): BattleState {
     default:
       return state;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isSide(value: unknown): value is Side {
@@ -498,6 +498,7 @@ export function useBattle(battleId: string) {
         }
       } catch (err) {
         if (cancelled) return;
+        dispatch({ type: "SET_TURNSTILE_TOKEN", token: "" });
         dispatch({
           type: "BOOTSTRAP_ERROR",
           error: err instanceof Error ? err.message : "Failed to load battle",
@@ -602,9 +603,11 @@ export function useBattle(battleId: string) {
 
           if (evt.event === "run.error") {
             const errorPayload = asRecord(evt.data);
+            const side = isSide(errorPayload?.side) ? errorPayload.side : undefined;
             dispatch({
               type: "RUN_ERROR",
               error: typeof errorPayload?.error === "string" ? errorPayload.error : null,
+              side,
             });
           }
 

@@ -1,5 +1,7 @@
 import { apiGet, apiPost } from "../lib/api";
 
+export { asRecord } from "@/lib/typeGuards";
+
 export async function loadOrCreateBattle(
   battleId: string,
   accessToken?: string,
@@ -16,11 +18,6 @@ export async function loadOrCreateBattle(
   }
 
   return apiGet(`/battles/${encodeURIComponent(battleId)}`, { headers });
-}
-
-export function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
 }
 
 export function mergeBattleDelta(

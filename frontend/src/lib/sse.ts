@@ -105,8 +105,12 @@ async function* streamSSEOnce(url: string, init?: RequestInit): AsyncGenerator<S
     headers,
   });
 
-  if (!res.ok || !res.body) {
+  if (!res.ok) {
     throw new SSEHttpError(res.status);
+  }
+
+  if (!res.body) {
+    throw new Error("SSE response missing body");
   }
 
   const reader = res.body.getReader();

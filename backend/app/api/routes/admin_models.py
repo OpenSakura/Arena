@@ -10,6 +10,10 @@ Notes:
 
 from __future__ import annotations
 
+import ipaddress
+import socket
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -63,6 +67,8 @@ def create_model(payload: ModelCreate, db: Session = Depends(get_db)) -> ModelAd
     encrypted_api_key: str | None = None
     if payload.api_key is not None:
         encrypted_api_key = _encrypt_api_key(payload.api_key)
+
+    _validate_base_url_not_private(payload.base_url)
 
     model = Model(
         display_name=payload.display_name,
@@ -152,6 +158,8 @@ def update_model(
                 status_code=422,
                 detail=f"{field} cannot be null",
             )
+        if field == "base_url" and isinstance(value, str):
+            _validate_base_url_not_private(value)
         setattr(model, field, value)
 
     db.add(model)
@@ -278,6 +286,37 @@ async def test_model(model_id: str, db: Session = Depends(get_db)) -> dict[str, 
             "model_id": str(model.id),
             "has_api_key": has_api_key,
         }
+
+
+def _validate_base_url_not_private(base_url: str) -> None:
+    """Reject base_url values that resolve to private/loopback IP ranges.
+
+    Prevents SSRF where an admin-supplied URL causes the backend to make
+    requests to internal services (metadata endpoints, databases, etc.).
+    """
+    try:
+        parsed = urlparse(base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid base_url: {exc}") from exc
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise HTTPException(status_code=422, detail="base_url has no hostname")
+
+    try:
+        resolved = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise HTTPException(
+            status_code=422, detail=f"Cannot resolve base_url hostname: {exc}"
+        ) from exc
+
+    for _family, _type, _proto, _canonname, sockaddr in resolved:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            raise HTTPException(
+                status_code=422,
+                detail="base_url must not resolve to a private or reserved IP address",
+            )
 
 
 def _encrypt_api_key(api_key: str) -> str:

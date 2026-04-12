@@ -130,6 +130,9 @@ def create_app() -> FastAPI:
                 "img-src 'self' data:"
             )
         else:
+            response_headers["Content-Security-Policy"] = (
+                "default-src 'none'; frame-ancestors 'none'"
+            )
             response_headers["Strict-Transport-Security"] = (
                 "max-age=31536000; includeSubDomains"
             )

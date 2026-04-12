@@ -65,6 +65,15 @@ class Settings(BaseSettings):
     anon_battle_stream_rate_limit_window_seconds: int = 60
     anon_vote_submit_rate_limit: int = 30
     anon_vote_submit_rate_limit_window_seconds: int = 60
+
+    # Authenticated user rate limits (higher thresholds than anonymous).
+    # Set limit <= 0 to disable that limiter.
+    auth_battle_create_rate_limit: int = 60
+    auth_battle_create_rate_limit_window_seconds: int = 60
+    auth_battle_stream_rate_limit: int = 90
+    auth_battle_stream_rate_limit_window_seconds: int = 60
+    auth_vote_submit_rate_limit: int = 90
+    auth_vote_submit_rate_limit_window_seconds: int = 60
     # Default True so cookies are only sent over HTTPS in production.
     # Set to False explicitly for local HTTP development.
     anon_id_cookie_secure: bool = True

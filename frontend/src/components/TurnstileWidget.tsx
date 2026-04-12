@@ -115,8 +115,11 @@ export function TurnstileWidget({
       "timeout-callback": () => {
         onExpireRef.current?.();
       },
-      "error-callback": () => {
-        onErrorRef.current?.("Turnstile error");
+      "error-callback": (code: unknown) => {
+        console.error("Turnstile error", code);
+        onErrorRef.current?.(
+          code === undefined ? "Turnstile error" : `Turnstile error: ${String(code)}`,
+        );
       },
     });
 
