@@ -192,10 +192,7 @@ export default function HomePage() {
           </motion.div>
         </div>
 
-        <motion.div
-          initial={{ opacity: 0, y: 24 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, ease: "easeOut" }}
+        <div
           className="relative w-full max-w-3xl"
         >
           {/* Hero card */}
@@ -207,32 +204,23 @@ export default function HomePage() {
             <div className="absolute inset-0 bg-gradient-to-b from-primary/[0.02] to-transparent pointer-events-none" />
 
             {/* Sakura icon mark */}
-            <motion.div
-              initial={{ opacity: 0, scale: 0.5, rotate: -30 }}
-              animate={{ opacity: 1, scale: 1, rotate: 0 }}
-              transition={{ duration: 0.6, delay: 0.1, ease: "easeOut" }}
+            <div
               className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-primary/15 bg-primary/[0.08]"
             >
               <SakuraPetal className="h-7 w-7 text-primary" />
-            </motion.div>
+            </div>
 
             {/* Tagline badge */}
-            <motion.div
-              initial={{ opacity: 0, y: 5 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5, delay: 0.15 }}
+            <div
               className="mb-5 flex justify-center"
             >
               <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/[0.06] px-3.5 py-1 text-[11px] font-semibold uppercase tracking-widest text-primary/80">
                 <span className="inline-block h-1.5 w-1.5 rounded-full bg-primary/60 animate-pulse" />
                 Open-source translation arena
               </span>
-            </motion.div>
+            </div>
 
-            <motion.h1
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ duration: 0.8, delay: 0.2, ease: "easeOut" }}
+            <h1
               className="mb-3 text-5xl sm:text-6xl font-extrabold tracking-tight"
             >
               <span className="bg-gradient-to-br from-zinc-950 via-zinc-700 to-zinc-500 dark:from-white dark:via-zinc-200 dark:to-zinc-500 bg-clip-text text-transparent">
@@ -244,29 +232,20 @@ export default function HomePage() {
               <span className="bg-gradient-to-br from-zinc-700 to-zinc-500 dark:from-zinc-300 dark:to-zinc-600 bg-clip-text text-transparent">
                 {" "}Arena
               </span>
-            </motion.h1>
+            </h1>
 
-            <motion.div
-              initial={{ opacity: 0, scaleX: 0.3 }}
-              animate={{ opacity: 1, scaleX: 1 }}
-              transition={{ duration: 0.6, delay: 0.3 }}
+            <div
               className="mx-auto mb-6 h-px w-40 bg-gradient-to-r from-transparent via-primary/40 to-transparent"
             />
 
-            <motion.p
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ duration: 0.8, delay: 0.4 }}
+            <p
               className="mx-auto mb-8 max-w-xl text-base sm:text-lg leading-relaxed text-muted-foreground"
             >
               Pairwise, blind comparisons of JP&gt;ZH light-novel style translations.
               Vote on which output is better and help the community measure and improve translation models.
-            </motion.p>
+            </p>
 
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.8, delay: 0.6 }}
+            <div
               className="flex flex-wrap items-center justify-center gap-4"
             >
               <Link href="/battle/new">
@@ -279,26 +258,20 @@ export default function HomePage() {
                   View Leaderboard
                 </Button>
               </Link>
-            </motion.div>
+            </div>
 
             {/* Mini language badges */}
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ duration: 0.5, delay: 0.8 }}
+            <div
               className="mt-6 flex justify-center gap-2"
             >
               <span className="lang-badge-jp">JP</span>
               <span className="text-muted-foreground/30 text-xs">→</span>
               <span className="lang-badge-zh">ZH</span>
-            </motion.div>
+            </div>
           </div>
 
           {/* Feature cards */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8, delay: 0.8 }}
+          <div
             className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-4"
           >
             {FEATURES.map((feature, i) => (
@@ -310,31 +283,25 @@ export default function HomePage() {
                 delay={0.9 + i * 0.1}
               />
             ))}
-          </motion.div>
-        </motion.div>
+          </div>
+        </div>
       </section>
 
       {/* ======= How it Works Section ======= */}
       <section className="relative w-full max-w-4xl mt-20 mb-8">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 1.2 }}
+        <div
           className="text-center mb-12"
         >
           <h2 className="text-2xl sm:text-3xl font-bold heading-gradient mb-3">How it Works</h2>
           <p className="text-sm text-muted-foreground max-w-md mx-auto">
             Four simple steps from source text to community-driven model rankings.
           </p>
-        </motion.div>
+        </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {STEPS.map((step, i) => (
-            <motion.div
+            <div
               key={step.step}
-              initial={{ opacity: 0, y: 16 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5, delay: 1.3 + i * 0.12 }}
               className="glass-panel p-5 text-center group hover:border-foreground/[0.12] transition-all duration-300 relative overflow-hidden hover-lift"
             >
               {/* Step number */}
@@ -352,16 +319,13 @@ export default function HomePage() {
                 <div className="text-sm font-semibold text-foreground/90 mb-1.5">{step.title}</div>
                 <div className="text-xs leading-relaxed text-muted-foreground">{step.description}</div>
               </div>
-            </motion.div>
+            </div>
           ))}
         </div>
 
         {/* Connecting line (desktop only) */}
         <div className="hidden lg:block absolute top-[calc(50%+12px)] left-[12.5%] w-[75%] pointer-events-none">
-          <motion.div
-            initial={{ scaleX: 0 }}
-            animate={{ scaleX: 1 }}
-            transition={{ duration: 0.8, delay: 1.8 }}
+          <div
             className="h-px bg-gradient-to-r from-primary/5 via-primary/15 to-primary/5 origin-left"
           />
         </div>
@@ -369,10 +333,7 @@ export default function HomePage() {
 
       {/* ======= Community Stats Section ======= */}
       <section className="w-full max-w-3xl mb-8">
-        <motion.div
-          initial={{ opacity: 0, y: 15 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 1.6 }}
+        <div
           className="glass-panel-accent p-8"
         >
           <div className="grid grid-cols-3 gap-6 text-center">
@@ -384,7 +345,7 @@ export default function HomePage() {
           <p className="text-center text-xs text-muted-foreground/60 leading-relaxed max-w-lg mx-auto">
             Join the community in evaluating JP→ZH translation quality. Every vote contributes to more accurate model rankings.
           </p>
-        </motion.div>
+        </div>
       </section>
     </div>
   );
@@ -415,10 +376,7 @@ function FeatureCard({
   delay?: number;
 }) {
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5, delay }}
+    <div
       className="glass-panel p-5 text-left group hover:border-foreground/[0.12] transition-all duration-300 relative overflow-hidden hover-lift"
     >
       {/* Hover glow effect */}
@@ -431,6 +389,6 @@ function FeatureCard({
         <div className="text-sm font-semibold text-foreground/90 mb-1.5">{title}</div>
         <div className="text-xs leading-relaxed text-muted-foreground">{description}</div>
       </div>
-    </motion.div>
+    </div>
   );
 }

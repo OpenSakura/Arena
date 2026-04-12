@@ -81,12 +81,12 @@ async function readSuccessBody(res: Response): Promise<unknown> {
   return text ? text : null;
 }
 
-async function apiRequest(
+async function apiRequest<T = unknown>(
   method: "GET" | "POST" | "PUT" | "DELETE",
   path: string,
   body?: unknown,
   init?: RequestInit,
-): Promise<unknown> {
+): Promise<T> {
   const url = `${getBackendBaseUrl()}${path.startsWith("/") ? path : `/${path}`}`;
   const mergedHeaders = {
     ...toHeaderObject(init?.headers),
@@ -112,29 +112,29 @@ async function apiRequest(
     throw new Error(`${method} ${path} failed: ${res.status}${suffix}`);
   }
 
-  return readSuccessBody(res);
+  return readSuccessBody(res) as Promise<T>;
 }
 
-export async function apiGet(path: string, init?: RequestInit): Promise<unknown> {
-  return apiRequest("GET", path, undefined, init);
+export async function apiGet<T = unknown>(path: string, init?: RequestInit): Promise<T> {
+  return apiRequest<T>("GET", path, undefined, init);
 }
 
-export async function apiPost(
+export async function apiPost<T = unknown>(
   path: string,
   body: unknown,
   init?: RequestInit,
-): Promise<unknown> {
-  return apiRequest("POST", path, body, init);
+): Promise<T> {
+  return apiRequest<T>("POST", path, body, init);
 }
 
-export async function apiPut(
+export async function apiPut<T = unknown>(
   path: string,
   body: unknown,
   init?: RequestInit,
-): Promise<unknown> {
-  return apiRequest("PUT", path, body, init);
+): Promise<T> {
+  return apiRequest<T>("PUT", path, body, init);
 }
 
-export async function apiDelete(path: string, init?: RequestInit): Promise<unknown> {
-  return apiRequest("DELETE", path, undefined, init);
+export async function apiDelete<T = unknown>(path: string, init?: RequestInit): Promise<T> {
+  return apiRequest<T>("DELETE", path, undefined, init);
 }

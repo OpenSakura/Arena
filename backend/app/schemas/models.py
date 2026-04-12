@@ -43,8 +43,7 @@ class ModelAdmin(BaseModel):
     temperature: float | None = None
     frequency_penalty: float | None = None
     presence_penalty: float | None = None
-    extra_body: dict[str, Any] | None = None
-    default_params: dict[str, Any] | None = None
+    params: dict[str, Any] | None = None
     prompt_template_id: str | None = None
     has_api_key: bool
     created_at: datetime
@@ -71,10 +70,7 @@ class ModelCreate(BaseModel):
     frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
     presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
 
-    # Extra JSON merged/sent upstream to the gateway.
-    extra_body: dict[str, Any] | None = None
-
-    default_params: dict[str, Any] | None = None
+    params: dict[str, Any] | None = None
 
     prompt_template_id: str | None = None
     api_key: str | None = None
@@ -84,19 +80,10 @@ class ModelCreate(BaseModel):
     def _validate_tags_size(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
         return _validate_json_dict_size(v, "tags")
 
-    @field_validator("extra_body")
+    @field_validator("params")
     @classmethod
-    def _validate_extra_body_size(
-        cls, v: dict[str, Any] | None
-    ) -> dict[str, Any] | None:
-        return _validate_json_dict_size(v, "extra_body")
-
-    @field_validator("default_params")
-    @classmethod
-    def _validate_default_params_size(
-        cls, v: dict[str, Any] | None
-    ) -> dict[str, Any] | None:
-        return _validate_json_dict_size(v, "default_params")
+    def _validate_params_size(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        return _validate_json_dict_size(v, "params")
 
 
 class ModelUpdate(BaseModel):
@@ -113,8 +100,7 @@ class ModelUpdate(BaseModel):
     frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
     presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
 
-    extra_body: dict[str, Any] | None = None
-    default_params: dict[str, Any] | None = None
+    params: dict[str, Any] | None = None
 
     prompt_template_id: str | None = None
     api_key: str | None = None
@@ -126,16 +112,9 @@ class ModelUpdate(BaseModel):
     ) -> dict[str, Any] | None:
         return _validate_json_dict_size(v, "tags")
 
-    @field_validator("extra_body")
+    @field_validator("params")
     @classmethod
-    def _validate_update_extra_body_size(
+    def _validate_update_params_size(
         cls, v: dict[str, Any] | None
     ) -> dict[str, Any] | None:
-        return _validate_json_dict_size(v, "extra_body")
-
-    @field_validator("default_params")
-    @classmethod
-    def _validate_update_default_params_size(
-        cls, v: dict[str, Any] | None
-    ) -> dict[str, Any] | None:
-        return _validate_json_dict_size(v, "default_params")
+        return _validate_json_dict_size(v, "params")

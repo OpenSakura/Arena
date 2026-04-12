@@ -76,10 +76,7 @@ export function BattleView({ battleId }: { battleId: string }) {
   // ── Turnstile gate: show widget before battle creation ──
   if (status === "waiting_for_turnstile") {
     return (
-      <motion.div
-        initial={{ opacity: 0, y: 15 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5 }}
+      <div
         className="grid gap-6"
       >
         <div className="glass-panel-accent p-8 flex flex-col items-center gap-6">
@@ -114,17 +111,14 @@ export function BattleView({ battleId }: { battleId: string }) {
           ) : null}
           {errorText ? <p className="mt-2 text-center text-sm text-destructive">{errorText}</p> : null}
         </div>
-      </motion.div>
+      </div>
     );
   }
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 15 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5 }}
-      className="grid gap-6"
-    >
+    <div
+        className="grid gap-6"
+      >
       {/* Source text panel */}
       <div className="glass-panel-accent p-6">
         <div className="flex items-center justify-between gap-3 mb-4">
@@ -164,10 +158,7 @@ export function BattleView({ battleId }: { battleId: string }) {
 
       {/* Voting section */}
       {(status === "done" || status === "failed" || status === "error") && (
-        <motion.div
-          initial={{ opacity: 0, y: 15 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.3 }}
+        <div
           className="glass-panel-accent p-8 flex flex-col items-center gap-6"
         >
           {status === "done" && (
@@ -294,7 +285,7 @@ export function BattleView({ battleId }: { battleId: string }) {
 
             {errorText ? <p className="mt-4 text-center text-sm text-destructive">{errorText}</p> : null}
           </div>
-        </motion.div>
+        </div>
       )}
 
       {/* Reveal section */}
@@ -397,7 +388,7 @@ export function BattleView({ battleId }: { battleId: string }) {
           </motion.div>
         )}
       </AnimatePresence>
-    </motion.div>
+    </div>
   );
 }
 
@@ -457,10 +448,7 @@ function Panel({
   const isActivelyStreaming = isStreaming && Boolean(text);
 
   return (
-    <motion.section
-      initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{ duration: 0.5, delay }}
+    <section
       className="flex h-full flex-col glass-panel relative overflow-hidden"
     >
       {/* Side color accent */}
@@ -518,6 +506,6 @@ function Panel({
           )}
         </pre>
       </div>
-    </motion.section>
+    </section>
   );
 }

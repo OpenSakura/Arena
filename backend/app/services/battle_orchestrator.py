@@ -11,6 +11,8 @@ Notes:
 - Use asyncio concurrency; persist incremental state sparingly.
 """
 
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 import asyncio
@@ -45,16 +47,6 @@ DEFAULT_SYSTEM_PROMPT = (
     "Translate the user input from {source_lang} to {target_lang} while preserving tone, nuance, "
     "style, and character voice."
 )
-
-TRANSLATION_ONLY_POLICY = (
-    "Output policy: return only the translated text. "
-    "Do not include analysis, explanations, headings, XML/JSON wrappers, or code fences."
-)
-""".. deprecated::
-    Kept as a constant for reference / migration. No longer auto-appended to
-    system prompts — include the output-policy instruction directly in your
-    prompt template via the admin UI instead.
-"""
 
 logger = logging.getLogger(__name__)
 
@@ -822,8 +814,8 @@ class BattleOrchestrator:
     @staticmethod
     def _build_model_params(model: Model) -> dict[str, object]:
         params: dict[str, object] = {}
-        if model.default_params:
-            params.update(model.default_params)
+        if model.params:
+            params.update(model.params)
 
         if model.temperature is not None:
             params["temperature"] = model.temperature
@@ -831,9 +823,6 @@ class BattleOrchestrator:
             params["frequency_penalty"] = model.frequency_penalty
         if model.presence_penalty is not None:
             params["presence_penalty"] = model.presence_penalty
-
-        if model.extra_body:
-            params.update(model.extra_body)
 
         return params
 

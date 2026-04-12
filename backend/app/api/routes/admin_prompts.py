@@ -21,7 +21,7 @@ from app.db.session import get_db
 from app.models.model_registry import Model
 from app.models.prompt_template import PromptTemplate
 from app.schemas.prompts import PromptTemplateAdmin, PromptTemplateCreate
-from app.utils.id import parse_uuid
+from app.utils.id import parse_uuid_or_422
 
 router = APIRouter(
     prefix="/admin/prompt-templates",
@@ -47,7 +47,7 @@ def list_prompt_templates(
 def get_prompt_template(
     template_id: str, db: Session = Depends(get_db)
 ) -> PromptTemplateAdmin:
-    template = db.get(PromptTemplate, parse_uuid(template_id, "template_id"))
+    template = db.get(PromptTemplate, parse_uuid_or_422(template_id, "template_id"))
     if template is None:
         raise HTTPException(status_code=404, detail="Prompt template not found")
     return _to_admin_prompt(template)
@@ -82,7 +82,7 @@ def create_prompt_template(
 
 @router.delete("/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_prompt_template(template_id: str, db: Session = Depends(get_db)) -> Response:
-    template_uuid = parse_uuid(template_id, "template_id")
+    template_uuid = parse_uuid_or_422(template_id, "template_id")
     template = db.get(PromptTemplate, template_uuid)
     if template is None:
         raise HTTPException(status_code=404, detail="Prompt template not found")

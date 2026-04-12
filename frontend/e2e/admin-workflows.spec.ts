@@ -13,8 +13,7 @@ type AdminModel = {
   temperature: number | null;
   frequency_penalty: number | null;
   presence_penalty: number | null;
-  extra_body: Record<string, unknown> | null;
-  default_params: Record<string, unknown> | null;
+  params: Record<string, unknown> | null;
   prompt_template_id: string | null;
   has_api_key: boolean;
   created_at: string;
@@ -99,8 +98,7 @@ function modelRecord(overrides: Partial<AdminModel> = {}): AdminModel {
     temperature: null,
     frequency_penalty: null,
     presence_penalty: null,
-    extra_body: null,
-    default_params: null,
+    params: null,
     prompt_template_id: null,
     has_api_key: true,
     created_at: "2026-02-19T00:00:00.000Z",

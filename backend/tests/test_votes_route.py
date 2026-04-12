@@ -171,9 +171,11 @@ def _vote_submit_response(
     )
 
 
-def test_parse_uuid_rejects_invalid_values() -> None:
+def test_parse_uuid_or_422_rejects_invalid_values() -> None:
+    from app.utils.id import parse_uuid_or_422
+
     with pytest.raises(HTTPException) as exc_info:
-        votes.parse_uuid("bad-uuid", "battle_id")
+        parse_uuid_or_422("bad-uuid", "battle_id")
 
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail == "Invalid battle_id"

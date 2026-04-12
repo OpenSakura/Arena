@@ -8,6 +8,8 @@ Notes:
 - For security, only trusted admins should be able to create/modify models.
 """
 
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 import uuid
@@ -84,13 +86,7 @@ class Model(Base):
     frequency_penalty: Mapped[float | None] = mapped_column(Float, nullable=True)
     presence_penalty: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    # Extra JSON merged/sent upstream to the gateway (OpenAI-compatible `extra_body`).
-    extra_body: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
-
-    # Additional OpenAI-compatible parameters (top_p, max_tokens, stop, seed, etc.).
-    default_params: Mapped[dict[str, object] | None] = mapped_column(
-        JSONB, nullable=True
-    )
+    params: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
 
     # Prompt binding (nullable for MVP)
     prompt_template_id: Mapped[uuid.UUID | None] = mapped_column(

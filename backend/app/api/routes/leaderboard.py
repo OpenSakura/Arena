@@ -79,14 +79,7 @@ def _confidence_cache_ttl_seconds(settings: Settings) -> int:
     recomputation).
     """
 
-    ttl = int(
-        getattr(
-            settings,
-            "leaderboard_confidence_cache_ttl_seconds",
-            15,
-        )
-    )
-    return max(ttl, 0)
+    return max(int(settings.leaderboard_confidence_cache_ttl_seconds), 0)
 
 
 def _confidence_cache_key(*, method: str, settings: Settings) -> str:

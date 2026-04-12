@@ -10,7 +10,7 @@ import pytest
 from app.api.routes import me
 from app.core.security import Principal
 from app.models.user import User, UserProfile
-from app.schemas.me import ProfileUpsert
+from app.schemas.me import ProfileUpsert, UserPublic, ProfilePublic
 
 
 def _user() -> User:
@@ -108,21 +108,21 @@ def test_get_me_returns_serialized_user_and_profile() -> None:
 
     assert response.authenticated is True
     assert response.is_admin is False
-    assert response.user == {
-        "id": str(user.id),
-        "oidc_issuer": "https://issuer.example",
-        "oidc_sub": "sub-123",
-        "created_at": user.created_at.isoformat(),
-    }
-    assert response.profile == {
-        "display_name": "Alice",
-        "ui_language": "en",
-        "zh_variant": "hans",
-        "jp_proficiency": {"jlpt": "N2"},
-        "translation_experience": {"years": 4},
-        "consents": {"tos": True},
-        "completed_at": profile.completed_at.isoformat(),
-    }
+    assert response.user == UserPublic(
+        id=str(user.id),
+        oidc_issuer="https://issuer.example",
+        oidc_sub="sub-123",
+        created_at=user.created_at.isoformat(),
+    )
+    assert response.profile == ProfilePublic(
+        display_name="Alice",
+        ui_language="en",
+        zh_variant="hans",
+        jp_proficiency={"jlpt": "N2"},
+        translation_experience={"years": 4},
+        consents={"tos": True},
+        completed_at=profile.completed_at.isoformat(),
+    )
 
 
 def test_get_me_returns_is_admin_true_when_claims_contain_admin_group() -> None:
@@ -173,7 +173,7 @@ def test_put_profile_is_admin() -> None:
     assert response.authenticated is True
     assert response.is_admin is True
     assert response.profile is not None
-    assert response.profile["display_name"] == "AdminUser"
+    assert response.profile.display_name == "AdminUser"
 
 
 def test_get_me_returns_is_admin_false_for_nested_group_claim_path() -> None:
@@ -263,7 +263,7 @@ def test_put_profile_creates_profile_and_persists_payload_fields() -> None:
     assert response.authenticated is True
     assert response.user is not None
     assert response.profile is not None
-    assert response.profile["display_name"] == "Aya"
+    assert response.profile.display_name == "Aya"
 
 
 # ── Task 8 regression: backend-verified admin gating edge cases ──

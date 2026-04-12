@@ -15,11 +15,28 @@ from typing import Any
 from pydantic import BaseModel, Field, model_validator
 
 
+class UserPublic(BaseModel):
+    id: str
+    oidc_issuer: str
+    oidc_sub: str
+    created_at: str
+
+
+class ProfilePublic(BaseModel):
+    display_name: str | None = None
+    ui_language: str | None = None
+    zh_variant: str | None = None
+    jp_proficiency: dict[str, Any] | None = None
+    translation_experience: dict[str, Any] | None = None
+    consents: dict[str, Any] | None = None
+    completed_at: str | None = None
+
+
 class MeResponse(BaseModel):
     authenticated: bool
     is_admin: bool = False
-    user: dict[str, Any] | None = None
-    profile: dict[str, Any] | None = None
+    user: UserPublic | None = None
+    profile: ProfilePublic | None = None
 
 
 class ProfileUpsert(BaseModel):

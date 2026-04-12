@@ -35,7 +35,7 @@ def _get_fernet() -> MultiFernet:
 
     # Support key rotation: if an old key is configured, add it as a fallback
     # for decrypting secrets encrypted with the previous key.
-    old_key = getattr(settings, "arena_master_key_old", "") or ""
+    old_key = settings.arena_master_key_old or ""
     if old_key:
         try:
             keys.append(Fernet(old_key))

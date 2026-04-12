@@ -28,8 +28,7 @@ type ModelAdmin = {
   temperature: number | null;
   frequency_penalty: number | null;
   presence_penalty: number | null;
-  extra_body: Record<string, unknown> | null;
-  default_params: Record<string, unknown> | null;
+  params: Record<string, unknown> | null;
   prompt_template_id: string | null;
   has_api_key: boolean;
   created_at: string;
@@ -57,8 +56,7 @@ type EditState = {
   temperatureText: string;
   frequencyPenaltyText: string;
   presencePenaltyText: string;
-  extraBodyText: string;
-  defaultParamsText: string;
+  paramsText: string;
   promptTemplateId: string;
   apiKeyText: string;
   clearApiKey: boolean;
@@ -85,8 +83,7 @@ export default function AdminModelsPage() {
   const [createFrequencyPenalty, setCreateFrequencyPenalty] = useState("");
   const [createPresencePenalty, setCreatePresencePenalty] = useState("");
   const [createTagsText, setCreateTagsText] = useState("");
-  const [createExtraBodyText, setCreateExtraBodyText] = useState("");
-  const [createDefaultParamsText, setCreateDefaultParamsText] = useState("");
+  const [createParamsText, setCreateParamsText] = useState("");
 
   const [edit, setEdit] = useState<EditState | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
@@ -135,8 +132,7 @@ export default function AdminModelsPage() {
       temperatureText: model.temperature === null ? "" : String(model.temperature),
       frequencyPenaltyText: model.frequency_penalty === null ? "" : String(model.frequency_penalty),
       presencePenaltyText: model.presence_penalty === null ? "" : String(model.presence_penalty),
-      extraBodyText: model.extra_body ? JSON.stringify(model.extra_body, null, 2) : "",
-      defaultParamsText: model.default_params ? JSON.stringify(model.default_params, null, 2) : "",
+      paramsText: model.params ? JSON.stringify(model.params, null, 2) : "",
       promptTemplateId: model.prompt_template_id ?? "",
       apiKeyText: "",
       clearApiKey: false,
@@ -174,11 +170,9 @@ export default function AdminModelsPage() {
       if (pp !== null) payload.presence_penalty = pp;
 
       const tags = parseJsonObjectOrNull(createTagsText);
-      const extraBody = parseJsonObjectOrNull(createExtraBodyText);
-      const defaultParams = parseJsonObjectOrNull(createDefaultParamsText);
+      const params = parseJsonObjectOrNull(createParamsText);
       if (tags) payload.tags = tags;
-      if (extraBody) payload.extra_body = extraBody;
-      if (defaultParams) payload.default_params = defaultParams;
+      if (params) payload.params = params;
 
       const created = (await apiPost("/admin/models", payload, { headers })) as ModelAdmin;
       setModels((prev) => [created, ...prev]);
@@ -193,8 +187,7 @@ export default function AdminModelsPage() {
       setCreateFrequencyPenalty("");
       setCreatePresencePenalty("");
       setCreateTagsText("");
-      setCreateExtraBodyText("");
-      setCreateDefaultParamsText("");
+      setCreateParamsText("");
     } catch (err) {
       setErrorText(err instanceof Error ? err.message : "Failed to create model");
     } finally {
@@ -232,8 +225,7 @@ export default function AdminModelsPage() {
       patch.presence_penalty = pp;
 
       patch.tags = parseJsonObjectOrNull(edit.tagsText);
-      patch.extra_body = parseJsonObjectOrNull(edit.extraBodyText);
-      patch.default_params = parseJsonObjectOrNull(edit.defaultParamsText);
+      patch.params = parseJsonObjectOrNull(edit.paramsText);
 
       if (edit.clearApiKey) {
         patch.api_key = null;
@@ -462,29 +454,16 @@ export default function AdminModelsPage() {
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="grid gap-1.5">
-                <label className="label-premium" htmlFor="create-extra-body">
-                  extra_body (JSON object)
+                <label className="label-premium" htmlFor="create-params">
+                  params (JSON object)
                 </label>
                 <textarea
-                  id="create-extra-body"
-                  value={createExtraBodyText}
-                  onChange={(e) => setCreateExtraBodyText(e.target.value)}
+                  id="create-params"
+                  value={createParamsText}
+                  onChange={(e) => setCreateParamsText(e.target.value)}
                   className="textarea-premium"
                   rows={4}
-                  placeholder='{"route":"jp2zh"}'
-                />
-              </div>
-              <div className="grid gap-1.5">
-                <label className="label-premium" htmlFor="create-default-params">
-                  default_params (JSON object)
-                </label>
-                <textarea
-                  id="create-default-params"
-                  value={createDefaultParamsText}
-                  onChange={(e) => setCreateDefaultParamsText(e.target.value)}
-                  className="textarea-premium"
-                  rows={4}
-                  placeholder='{"top_p":0.95,"max_tokens":1024}'
+                  placeholder='{"route":"jp2zh","top_p":0.95,"max_tokens":1024}'
                 />
               </div>
             </div>
@@ -716,28 +695,14 @@ export default function AdminModelsPage() {
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="grid gap-1.5">
-                <label className="label-premium" htmlFor="edit-extra-body">
-                  extra_body (JSON object)
+                <label className="label-premium" htmlFor="edit-params">
+                  params (JSON object)
                 </label>
                 <textarea
-                  id="edit-extra-body"
-                  value={edit.extraBodyText}
+                  id="edit-params"
+                  value={edit.paramsText}
                   onChange={(e) =>
-                    setEdit((prev) => (prev ? { ...prev, extraBodyText: e.target.value } : prev))
-                  }
-                  rows={4}
-                  className="textarea-premium"
-                />
-              </div>
-              <div className="grid gap-1.5">
-                <label className="label-premium" htmlFor="edit-default-params">
-                  default_params (JSON object)
-                </label>
-                <textarea
-                  id="edit-default-params"
-                  value={edit.defaultParamsText}
-                  onChange={(e) =>
-                    setEdit((prev) => (prev ? { ...prev, defaultParamsText: e.target.value } : prev))
+                    setEdit((prev) => (prev ? { ...prev, paramsText: e.target.value } : prev))
                   }
                   rows={4}
                   className="textarea-premium"

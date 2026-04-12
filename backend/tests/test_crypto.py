@@ -7,8 +7,9 @@ from app.core import crypto
 
 
 class _Settings:
-    def __init__(self, arena_master_key: str) -> None:
+    def __init__(self, arena_master_key: str, arena_master_key_old: str = "") -> None:
         self.arena_master_key = arena_master_key
+        self.arena_master_key_old = arena_master_key_old
 
 
 def test_encrypt_secret_requires_master_key(monkeypatch: pytest.MonkeyPatch) -> None:

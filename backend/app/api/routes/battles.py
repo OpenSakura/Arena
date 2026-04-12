@@ -37,7 +37,7 @@ from app.services.battle_orchestrator import BattleOrchestrator, get_battle_orch
 from app.services.sampling import CandidateModel, SamplingPolicy, select_battle_pair
 from app.utils.anon import get_or_set_anon_id
 from app.utils.client_ip import get_client_ip
-from app.utils.id import parse_uuid
+from app.utils.id import parse_uuid_or_422
 from app.utils.requester_identity import RequesterIdentity
 from app.utils.rate_limit import RollingWindowRateLimiter, build_anon_rate_limit_key
 from app.utils.redis import get_rate_limit_redis_client
@@ -133,7 +133,7 @@ def create_battle(
 
 @router.get("/{battle_id}")
 def get_battle(battle_id: str, db: Session = Depends(get_db)) -> BattlePublic:
-    battle_uuid = parse_uuid(battle_id, "battle_id")
+    battle_uuid = parse_uuid_or_422(battle_id, "battle_id")
 
     battle = db.get(Battle, battle_uuid)
     if battle is None:
@@ -186,7 +186,7 @@ async def stream_battle(
     principal: Principal = Depends(get_principal_optional),
     settings: Settings = Depends(get_settings),
 ) -> StreamingResponse:
-    battle_uuid = parse_uuid(battle_id, "battle_id")
+    battle_uuid = parse_uuid_or_422(battle_id, "battle_id")
 
     # Pre-flight check: return a proper 404 instead of streaming an SSE
     # error event over an HTTP 200 response.
@@ -226,7 +226,7 @@ def retry_battle(battle_id: str, db: Session = Depends(get_db)) -> BattlePublic:
     SSE stream connection will re-execute both runs from scratch under the
     single-owner execution model.
     """
-    battle_uuid = parse_uuid(battle_id, "battle_id")
+    battle_uuid = parse_uuid_or_422(battle_id, "battle_id")
     battle = db.execute(
         select(Battle).where(Battle.id == battle_uuid).with_for_update()
     ).scalar_one_or_none()
@@ -301,7 +301,7 @@ def retry_battle(battle_id: str, db: Session = Depends(get_db)) -> BattlePublic:
 
 def _select_task(*, db: Session, payload: BattleCreate) -> Task:
     if payload.task_id is not None:
-        task = db.get(Task, parse_uuid(payload.task_id, "task_id"))
+        task = db.get(Task, parse_uuid_or_422(payload.task_id, "task_id"))
         if task is None:
             raise HTTPException(status_code=404, detail="Task not found")
         return task
@@ -318,7 +318,7 @@ def _select_task(*, db: Session, payload: BattleCreate) -> Task:
 
     stmt = select(Task).outerjoin(battle_count, Task.id == battle_count.c.task_id)
     if payload.task_set_id is not None:
-        task_set_uuid = parse_uuid(payload.task_set_id, "task_set_id")
+        task_set_uuid = parse_uuid_or_422(payload.task_set_id, "task_set_id")
         stmt = stmt.where(Task.task_set_id == task_set_uuid)
 
     stmt = stmt.order_by(

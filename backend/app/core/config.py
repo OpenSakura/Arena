@@ -177,7 +177,7 @@ class Settings(BaseSettings):
         if not self.turnstile_secret_key:
             errors.append(
                 "TURNSTILE_SECRET_KEY is empty — "
-                "Turnstile verification for anonymous votes is disabled"
+                "Turnstile verification for anonymous battle creation is disabled"
             )
 
         if not self.anon_id_cookie_secure:

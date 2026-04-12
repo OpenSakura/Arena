@@ -22,7 +22,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.logging import clear_request_id, configure_logging, set_request_id
 from app.services.leaderboard_refresh import get_leaderboard_refresher
 from app.services.battle_orchestrator import get_battle_orchestrator
@@ -36,11 +36,11 @@ logger = logging.getLogger(__name__)
 _NON_PRODUCTION_ENVS = {"dev", "development", "test", "testing", "local"}
 
 
-def _emit_startup_warnings(settings: object) -> None:
-    env = getattr(settings, "app_env", "dev").lower()
+def _emit_startup_warnings(settings: Settings) -> None:
+    env = settings.app_env.lower()
     is_prod = env not in _NON_PRODUCTION_ENVS
 
-    if is_prod and not getattr(settings, "rate_limit_redis_url", "").strip():
+    if is_prod and not (settings.rate_limit_redis_url or "").strip():
         logger.warning(
             "RATE_LIMIT_REDIS_URL is not configured in production — "
             "anonymous rate limiting and shared confidence caching are disabled. "

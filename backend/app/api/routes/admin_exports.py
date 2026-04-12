@@ -74,7 +74,7 @@ def export_runs(db: Session = Depends(get_db)) -> StreamingResponse:
                 "request_json": run.request_json,
                 "prompt_rendered": run.prompt_rendered,
                 "output_text": run.output_text,
-                "output_text_raw": getattr(run, "output_text_raw", None),
+                "output_text_raw": run.output_text_raw,
                 "stats": run.stats,
                 "error_text": run.error_text,
                 "created_at": run.created_at,

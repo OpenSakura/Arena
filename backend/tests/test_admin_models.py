@@ -1,3 +1,5 @@
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 import asyncio
@@ -93,8 +95,7 @@ def _model_stub(**overrides: object) -> SimpleNamespace:
         "temperature": None,
         "frequency_penalty": None,
         "presence_penalty": None,
-        "extra_body": None,
-        "default_params": None,
+        "params": None,
         "prompt_template_id": None,
         "encrypted_api_key": None,
         "created_at": now,
@@ -221,10 +222,9 @@ def test_test_model_merges_parameters_and_returns_preview(
 ) -> None:
     model = _model_stub(
         encrypted_api_key="ciphertext",
-        default_params={"max_tokens": 64, "temperature": 0.8, "foo": "default"},
+        params={"max_tokens": 64, "temperature": 0.8, "foo": "extra", "top_p": 0.9},
         temperature=0.2,
         frequency_penalty=0.5,
-        extra_body={"foo": "extra", "top_p": 0.9},
     )
     db = _LookupDB(model)
 
@@ -327,7 +327,7 @@ def test_create_model_encrypts_api_key_and_resolves_prompt_template(
         base_url="https://gateway.example/v1",
         prompt_template_id=str(template_id),
         api_key="secret-token",
-        default_params={"max_tokens": 64},
+        params={"max_tokens": 64},
     )
 
     response = admin_models.create_model(payload, db=db)  # type: ignore[arg-type]

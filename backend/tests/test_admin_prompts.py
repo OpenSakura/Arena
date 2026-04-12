@@ -418,13 +418,15 @@ def test_is_prompt_template_version_conflict_matches_expected_signatures(
     assert admin_prompts._is_prompt_template_version_conflict(exc) is expected
 
 
-def test_parse_uuid_returns_uuid_and_rejects_invalid_value() -> None:
+def test_parse_uuid_or_422_returns_uuid_and_rejects_invalid_value() -> None:
+    from app.utils.id import parse_uuid_or_422
+
     value = str(uuid.uuid4())
-    parsed = admin_prompts.parse_uuid(value, "template_id")
+    parsed = parse_uuid_or_422(value, "template_id")
     assert str(parsed) == value
 
     with pytest.raises(HTTPException) as exc_info:
-        admin_prompts.parse_uuid("not-uuid", "template_id")
+        parse_uuid_or_422("not-uuid", "template_id")
 
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail == "Invalid template_id"

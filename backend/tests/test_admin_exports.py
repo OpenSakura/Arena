@@ -143,6 +143,7 @@ def test_export_runs_serializes_ids_stats_and_null_errors() -> None:
         request_json={"model": "model-a"},
         prompt_rendered="prompt",
         output_text="translated",
+        output_text_raw=None,
         stats={"input_tokens": 12, "output_tokens": 18},
         error_text=None,
         created_at=created_at,

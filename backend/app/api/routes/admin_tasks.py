@@ -39,7 +39,7 @@ from app.schemas.tasks import (
     TaskSetUpdate,
     TaskUpdate,
 )
-from app.utils.id import parse_uuid, parse_optional_uuid
+from app.utils.id import parse_optional_uuid_or_422, parse_uuid_or_422
 
 router = APIRouter(
     prefix="/admin",
@@ -82,7 +82,7 @@ def update_task_set(
     payload: TaskSetUpdate,
     db: Session = Depends(get_db),
 ) -> TaskSetPublic:
-    task_set = db.get(TaskSet, parse_uuid(task_set_id, "task_set_id"))
+    task_set = db.get(TaskSet, parse_uuid_or_422(task_set_id, "task_set_id"))
     if task_set is None:
         raise HTTPException(status_code=404, detail="Task set not found")
 
@@ -110,7 +110,7 @@ def update_task_set(
 
 @router.delete("/task-sets/{task_set_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_task_set(task_set_id: str, db: Session = Depends(get_db)) -> Response:
-    task_set = db.get(TaskSet, parse_uuid(task_set_id, "task_set_id"))
+    task_set = db.get(TaskSet, parse_uuid_or_422(task_set_id, "task_set_id"))
     if task_set is None:
         raise HTTPException(status_code=404, detail="Task set not found")
 
@@ -142,14 +142,16 @@ def list_tasks(
 ) -> dict[str, list[TaskPublic]]:
     stmt = select(Task).order_by(Task.created_at.desc())
     if task_set_id is not None:
-        stmt = stmt.where(Task.task_set_id == parse_uuid(task_set_id, "task_set_id"))
+        stmt = stmt.where(
+            Task.task_set_id == parse_uuid_or_422(task_set_id, "task_set_id")
+        )
     tasks = db.execute(stmt).scalars().all()
     return {"tasks": [_to_task(item) for item in tasks]}
 
 
 @router.get("/tasks/{task_id}", response_model=TaskPublic)
 def get_task(task_id: str, db: Session = Depends(get_db)) -> TaskPublic:
-    task = db.get(Task, parse_uuid(task_id, "task_id"))
+    task = db.get(Task, parse_uuid_or_422(task_id, "task_id"))
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return _to_task(task)
@@ -157,7 +159,7 @@ def get_task(task_id: str, db: Session = Depends(get_db)) -> TaskPublic:
 
 @router.post("/tasks", response_model=TaskPublic, status_code=status.HTTP_201_CREATED)
 def create_task(payload: TaskCreate, db: Session = Depends(get_db)) -> TaskPublic:
-    task_set_uuid = parse_optional_uuid(payload.task_set_id, "task_set_id")
+    task_set_uuid = parse_optional_uuid_or_422(payload.task_set_id, "task_set_id")
     if task_set_uuid is not None:
         _require_task_set(db, task_set_uuid)
 
@@ -187,13 +189,15 @@ def update_task(
     payload: TaskUpdate,
     db: Session = Depends(get_db),
 ) -> TaskPublic:
-    task = db.get(Task, parse_uuid(task_id, "task_id"))
+    task = db.get(Task, parse_uuid_or_422(task_id, "task_id"))
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
     patch = payload.model_dump(exclude_unset=True)
     if "task_set_id" in patch:
-        task_set_uuid = parse_optional_uuid(patch.pop("task_set_id"), "task_set_id")
+        task_set_uuid = parse_optional_uuid_or_422(
+            patch.pop("task_set_id"), "task_set_id"
+        )
         if task_set_uuid is not None:
             _require_task_set(db, task_set_uuid)
         task.task_set_id = task_set_uuid
@@ -239,7 +243,7 @@ def update_task(
 
 @router.delete("/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_task(task_id: str, db: Session = Depends(get_db)) -> Response:
-    task = db.get(Task, parse_uuid(task_id, "task_id"))
+    task = db.get(Task, parse_uuid_or_422(task_id, "task_id"))
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
@@ -272,7 +276,7 @@ async def import_tasks_jsonl(
             detail=f"JSONL file exceeds maximum allowed size of {_MAX_JSONL_FILE_SIZE} bytes",
         )
 
-    task_set_uuid = parse_optional_uuid(task_set_id, "task_set_id")
+    task_set_uuid = parse_optional_uuid_or_422(task_set_id, "task_set_id")
     if task_set_uuid is not None:
         _require_task_set(db, task_set_uuid)
 

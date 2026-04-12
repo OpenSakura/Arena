@@ -77,6 +77,30 @@ const handler = NextAuth({
   },
 });
 
+let cachedTokenEndpoint: { url: string; expiresAt: number } | null = null;
+
+async function getTokenEndpoint(issuer: string): Promise<string | null> {
+  if (cachedTokenEndpoint && Date.now() < cachedTokenEndpoint.expiresAt) {
+    return cachedTokenEndpoint.url;
+  }
+
+  const discoveryUrl = `${issuer.replace(/\/$/, "")}/.well-known/openid-configuration`;
+  const discoveryRes = await fetch(discoveryUrl, {
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!discoveryRes.ok) {
+    return null;
+  }
+  const discovery = (await discoveryRes.json()) as { token_endpoint?: string };
+  const endpoint = discovery.token_endpoint;
+  if (!endpoint) {
+    return null;
+  }
+
+  cachedTokenEndpoint = { url: endpoint, expiresAt: Date.now() + 3600_000 };
+  return endpoint;
+}
+
 async function refreshAccessToken(token: Record<string, unknown>): Promise<Record<string, unknown>> {
   const issuer = process.env.AUTHENTIK_ISSUER;
   const clientId = process.env.AUTHENTIK_CLIENT_ID ?? "";
@@ -96,16 +120,7 @@ async function refreshAccessToken(token: Record<string, unknown>): Promise<Recor
   }
 
   try {
-    // Discover the token endpoint from the OIDC issuer.
-    const discoveryUrl = `${issuer.replace(/\/$/, "")}/.well-known/openid-configuration`;
-    const discoveryRes = await fetch(discoveryUrl, {
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!discoveryRes.ok) {
-      return expiredToken("RefreshDiscoveryFailed");
-    }
-    const discovery = (await discoveryRes.json()) as { token_endpoint?: string };
-    const tokenEndpoint = discovery.token_endpoint;
+    const tokenEndpoint = await getTokenEndpoint(issuer);
     if (!tokenEndpoint) {
       return expiredToken("RefreshDiscoveryFailed");
     }

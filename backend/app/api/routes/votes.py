@@ -27,7 +27,7 @@ from app.models.model_registry import Model
 from app.models.vote import Vote
 from app.schemas.votes import VoteCreate, VoteSubmitResponse
 from app.utils.anon import get_or_set_anon_id
-from app.utils.id import parse_uuid
+from app.utils.id import parse_uuid_or_422
 from app.utils.requester_identity import RequesterIdentity, find_existing_battle_vote
 from app.utils.rate_limit import RollingWindowRateLimiter, build_anon_rate_limit_key
 from app.utils.redis import get_rate_limit_redis_client
@@ -45,7 +45,7 @@ def submit_vote(
     principal: Principal = Depends(get_principal_optional),
     settings: Settings = Depends(get_settings),
 ) -> VoteSubmitResponse:
-    battle_uuid = parse_uuid(battle_id, "battle_id")
+    battle_uuid = parse_uuid_or_422(battle_id, "battle_id")
 
     battle = db.get(Battle, battle_uuid)
     if battle is None:
@@ -236,7 +236,7 @@ def reveal_vote(
 
     Once revealed, the vote can no longer be updated.
     """
-    battle_uuid = parse_uuid(battle_id, "battle_id")
+    battle_uuid = parse_uuid_or_422(battle_id, "battle_id")
 
     battle = db.get(Battle, battle_uuid)
     if battle is None:

@@ -8,6 +8,8 @@ Notes:
 - Store provider tokens encrypted at rest in Postgres.
 """
 
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -22,7 +24,12 @@ from app.models.model_registry import Model
 from app.models.prompt_template import PromptTemplate
 from app.schemas.models import ModelAdmin, ModelCreate, ModelUpdate
 from app.services.battle_orchestrator import get_battle_orchestrator
-from app.utils.id import parse_uuid, parse_optional_uuid
+from app.utils.id import (
+    parse_optional_uuid_or_422 as parse_optional_uuid,
+    parse_optional_uuid_or_422,
+    parse_uuid_or_422 as parse_uuid,
+    parse_uuid_or_422,
+)
 
 router = APIRouter(
     prefix="/admin/models",
@@ -40,7 +47,7 @@ def list_models(db: Session = Depends(get_db)) -> dict[str, list[ModelAdmin]]:
 
 @router.get("/{model_id}", response_model=ModelAdmin)
 def get_model(model_id: str, db: Session = Depends(get_db)) -> ModelAdmin:
-    model = db.get(Model, parse_uuid(model_id, "model_id"))
+    model = db.get(Model, parse_uuid_or_422(model_id, "model_id"))
     if model is None:
         raise HTTPException(status_code=404, detail="Model not found")
     return _to_admin_model(model)
@@ -48,7 +55,7 @@ def get_model(model_id: str, db: Session = Depends(get_db)) -> ModelAdmin:
 
 @router.post("", response_model=ModelAdmin, status_code=status.HTTP_201_CREATED)
 def create_model(payload: ModelCreate, db: Session = Depends(get_db)) -> ModelAdmin:
-    prompt_template_uuid = parse_optional_uuid(
+    prompt_template_uuid = parse_optional_uuid_or_422(
         payload.prompt_template_id, "prompt_template_id"
     )
     if prompt_template_uuid is not None:
@@ -71,8 +78,7 @@ def create_model(payload: ModelCreate, db: Session = Depends(get_db)) -> ModelAd
         temperature=payload.temperature,
         frequency_penalty=payload.frequency_penalty,
         presence_penalty=payload.presence_penalty,
-        extra_body=payload.extra_body,
-        default_params=payload.default_params,
+        params=payload.params,
         prompt_template_id=prompt_template_uuid,
         encrypted_api_key=encrypted_api_key,
     )
@@ -96,14 +102,14 @@ def update_model(
     payload: ModelUpdate,
     db: Session = Depends(get_db),
 ) -> ModelAdmin:
-    model = db.get(Model, parse_uuid(model_id, "model_id"))
+    model = db.get(Model, parse_uuid_or_422(model_id, "model_id"))
     if model is None:
         raise HTTPException(status_code=404, detail="Model not found")
 
     patch = payload.model_dump(exclude_unset=True)
 
     if "prompt_template_id" in patch:
-        prompt_template_id = parse_optional_uuid(
+        prompt_template_id = parse_optional_uuid_or_422(
             patch.pop("prompt_template_id"), "prompt_template_id"
         )
         if prompt_template_id is not None:
@@ -130,8 +136,7 @@ def update_model(
         "temperature",
         "frequency_penalty",
         "presence_penalty",
-        "extra_body",
-        "default_params",
+        "params",
     }
     # Fields that must never be set to NULL (NOT NULL in the DB).
     _NON_NULLABLE_FIELDS = {
@@ -168,7 +173,7 @@ def update_model(
 
 @router.delete("/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_model(model_id: str, db: Session = Depends(get_db)) -> Response:
-    model = db.get(Model, parse_uuid(model_id, "model_id"))
+    model = db.get(Model, parse_uuid_or_422(model_id, "model_id"))
     if model is None:
         raise HTTPException(status_code=404, detail="Model not found")
 
@@ -187,7 +192,7 @@ def delete_model(model_id: str, db: Session = Depends(get_db)) -> Response:
 @router.post("/{model_id}/test")
 async def test_model(model_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
     # db.get() is synchronous but acceptable here: admin-only PK lookup (~us).
-    model = db.get(Model, parse_uuid(model_id, "model_id"))
+    model = db.get(Model, parse_uuid_or_422(model_id, "model_id"))
     if model is None:
         raise HTTPException(status_code=404, detail="Model not found")
 
@@ -208,21 +213,19 @@ async def test_model(model_id: str, db: Session = Depends(get_db)) -> dict[str, 
                 "has_api_key": has_api_key,
             }
 
-    # Build a very small request. Include model params so routing/extra_body is exercised.
+    # Build a very small request. Include model params so routing is exercised.
     params: dict[str, object] = {}
-    if model.default_params:
-        params.update(model.default_params)
+    if model.params:
+        params.update(model.params)
     if model.temperature is not None:
         params["temperature"] = model.temperature
     if model.frequency_penalty is not None:
         params["frequency_penalty"] = model.frequency_penalty
     if model.presence_penalty is not None:
         params["presence_penalty"] = model.presence_penalty
-    if model.extra_body:
-        params.update(model.extra_body)
 
-    # Keep the test cheap even if the model defaults are expensive.
-    # Hard override to enforce the cap regardless of default_params/extra_body.
+    # Keep the test cheap even if the model params are expensive.
+    # Hard override to enforce the cap regardless of model params.
     params["max_tokens"] = 12
     params["temperature"] = 0
 
@@ -302,8 +305,7 @@ def _to_admin_model(model: Model) -> ModelAdmin:
         temperature=model.temperature,
         frequency_penalty=model.frequency_penalty,
         presence_penalty=model.presence_penalty,
-        extra_body=model.extra_body,
-        default_params=model.default_params,
+        params=model.params,
         prompt_template_id=(
             str(model.prompt_template_id)
             if model.prompt_template_id is not None

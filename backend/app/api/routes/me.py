@@ -27,7 +27,7 @@ from app.core.security import (
 )
 from app.db.session import get_db
 from app.models.user import User, UserProfile
-from app.schemas.me import MeResponse, ProfileUpsert
+from app.schemas.me import MeResponse, ProfilePublic, ProfileUpsert, UserPublic
 
 router = APIRouter(tags=["me"])
 
@@ -140,29 +140,29 @@ def put_profile(
     )
 
 
-def _serialize_user(user: User) -> dict[str, object]:
-    return {
-        "id": str(user.id),
-        "oidc_issuer": user.oidc_issuer,
-        "oidc_sub": user.oidc_sub,
-        "created_at": user.created_at.isoformat(),
-    }
+def _serialize_user(user: User) -> UserPublic:
+    return UserPublic(
+        id=str(user.id),
+        oidc_issuer=user.oidc_issuer,
+        oidc_sub=user.oidc_sub,
+        created_at=user.created_at.isoformat(),
+    )
 
 
-def _serialize_profile(profile: UserProfile | None) -> dict[str, object] | None:
+def _serialize_profile(profile: UserProfile | None) -> ProfilePublic | None:
     if profile is None:
         return None
 
-    return {
-        "display_name": profile.display_name,
-        "ui_language": profile.ui_language,
-        "zh_variant": profile.zh_variant,
-        "jp_proficiency": profile.jp_proficiency,
-        "translation_experience": profile.translation_experience,
-        "consents": profile.consents,
-        "completed_at": (
+    return ProfilePublic(
+        display_name=profile.display_name,
+        ui_language=profile.ui_language,
+        zh_variant=profile.zh_variant,
+        jp_proficiency=profile.jp_proficiency,
+        translation_experience=profile.translation_experience,
+        consents=profile.consents,
+        completed_at=(
             profile.completed_at.isoformat()
             if profile.completed_at is not None
             else None
         ),
-    }
+    )

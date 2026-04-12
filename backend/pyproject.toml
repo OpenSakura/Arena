@@ -25,7 +25,6 @@ dependencies = [
   "redis>=5.0",
   "python-multipart>=0.0.9",
   "cryptography>=42.0",
-  "tenacity>=8.2",
   "pyjwt[crypto]>=2.8",
 ]
 
