@@ -12,6 +12,7 @@ Notes:
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -28,6 +29,8 @@ from app.core.security import (
 from app.db.session import get_db
 from app.models.user import User, UserProfile
 from app.schemas.me import MeResponse, ProfilePublic, ProfileUpsert, UserPublic
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["me"])
 
@@ -59,9 +62,7 @@ def get_me(
     if user is None:
         # The user row should exist because get_principal_optional upserts it.
         # A missing row indicates data corruption — log and report error.
-        import logging
-
-        logging.getLogger(__name__).error(
+        logger.error(
             "Authenticated user %s not found in database",
             principal.user_id,
         )
@@ -92,9 +93,7 @@ def put_profile(
     if user is None:
         # The user row should exist because get_principal_optional upserts it.
         # A missing row indicates data corruption — not an auth failure.
-        import logging
-
-        logging.getLogger(__name__).error(
+        logger.error(
             "Authenticated user %s not found in database (put_profile)",
             principal.user_id,
         )

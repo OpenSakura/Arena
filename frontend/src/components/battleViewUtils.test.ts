@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { apiGet, apiPost } from "../lib/api";
-import { asRecord, loadOrCreateBattle, mergeBattleDelta } from "./battleView.utils";
+import { asRecord, loadOrCreateBattle, mergeBattleDelta } from "./battleViewUtils";
 
 vi.mock("../lib/api", () => ({
   apiGet: vi.fn(),
@@ -19,7 +19,7 @@ describe("loadOrCreateBattle", () => {
   it("creates a new battle when battleId is new", async () => {
     mockedApiPost.mockResolvedValueOnce({ id: "battle-1" });
 
-    await expect(loadOrCreateBattle<{ id: string }>("new")).resolves.toEqual({ id: "battle-1" });
+    await expect(loadOrCreateBattle("new")).resolves.toEqual({ id: "battle-1" });
     expect(mockedApiPost).toHaveBeenCalledWith("/battles", {}, { headers: undefined });
     expect(mockedApiGet).not.toHaveBeenCalled();
   });
@@ -37,7 +37,7 @@ describe("loadOrCreateBattle", () => {
   it("loads an existing battle using an encoded id", async () => {
     mockedApiGet.mockResolvedValueOnce({ id: "existing" });
 
-    await expect(loadOrCreateBattle<{ id: string }>("battle/alpha beta")).resolves.toEqual({
+    await expect(loadOrCreateBattle("battle/alpha beta")).resolves.toEqual({
       id: "existing",
     });
 

@@ -9,12 +9,12 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useReducer } from "react";
 
 import { Skeleton } from "@/components/ui/skeleton";
+import { useAuthHeaders } from "@/hooks/useAuthHeaders";
 import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api";
 import { parseJsonObjectOrNull, parseNumberOrNull } from "@/lib/adminParsers";
-import { useAuthHeaders } from "@/hooks/useAuthHeaders";
 
 type ModelAdmin = {
   id: string;
@@ -62,53 +62,265 @@ type EditState = {
   clearApiKey: boolean;
 };
 
+type CreateFormState = {
+  displayName: string;
+  providerType: string;
+  modelName: string;
+  baseUrl: string;
+  enabled: boolean;
+  visibility: string;
+  apiKey: string;
+  promptTemplateId: string;
+  temperature: string;
+  frequencyPenalty: string;
+  presencePenalty: string;
+  tagsText: string;
+  paramsText: string;
+};
+
+type State = {
+  models: ModelAdmin[];
+  loading: boolean;
+  errorText: string | null;
+  creating: boolean;
+  create: CreateFormState;
+  edit: EditState | null;
+  savingEdit: boolean;
+  testResult: ModelTestResponse | null;
+};
+
+type Action =
+  | { type: "LOAD_START" }
+  | { type: "LOAD_SUCCESS"; models: ModelAdmin[] }
+  | { type: "LOAD_ERROR"; error: string }
+  | { type: "SET_CREATE_FIELD"; field: keyof CreateFormState; value: string | boolean }
+  | { type: "CREATE_START" }
+  | { type: "CREATE_SUCCESS"; created: ModelAdmin }
+  | { type: "CREATE_ERROR"; error: string }
+  | { type: "START_EDIT"; edit: EditState }
+  | { type: "CLOSE_EDIT" }
+  | { type: "SET_EDIT_FIELD"; field: keyof EditState; value: string | boolean }
+  | { type: "SAVE_EDIT_START" }
+  | { type: "SAVE_EDIT_SUCCESS"; updated: ModelAdmin }
+  | { type: "SAVE_EDIT_ERROR"; error: string }
+  | { type: "DELETE_SUCCESS"; id: string }
+  | { type: "DELETE_ERROR"; error: string }
+  | { type: "TEST_SUCCESS"; result: ModelTestResponse }
+  | { type: "TEST_ERROR"; error: string }
+  | { type: "CLEAR_TEST_RESULT" };
+
+const INITIAL_CREATE_FORM: CreateFormState = {
+  displayName: "",
+  providerType: "openai_compat",
+  modelName: "",
+  baseUrl: "",
+  enabled: true,
+  visibility: "public",
+  apiKey: "",
+  promptTemplateId: "",
+  temperature: "",
+  frequencyPenalty: "",
+  presencePenalty: "",
+  tagsText: "",
+  paramsText: "",
+};
+
+const INITIAL_STATE: State = {
+  models: [],
+  loading: true,
+  errorText: null,
+  creating: false,
+  create: INITIAL_CREATE_FORM,
+  edit: null,
+  savingEdit: false,
+  testResult: null,
+};
+
+function reducer(state: State, action: Action): State {
+  switch (action.type) {
+    case "LOAD_START":
+      return { ...state, loading: true, errorText: null };
+    case "LOAD_SUCCESS":
+      return { ...state, loading: false, models: action.models, errorText: null };
+    case "LOAD_ERROR":
+      return { ...state, loading: false, errorText: action.error };
+    case "SET_CREATE_FIELD":
+      return {
+        ...state,
+        create: { ...state.create, [action.field]: action.value },
+      };
+    case "CREATE_START":
+      return { ...state, creating: true, errorText: null };
+    case "CREATE_SUCCESS":
+      return {
+        ...state,
+        creating: false,
+        models: [action.created, ...state.models],
+        create: {
+          ...INITIAL_CREATE_FORM,
+          providerType: state.create.providerType,
+          enabled: state.create.enabled,
+          visibility: state.create.visibility,
+        },
+      };
+    case "CREATE_ERROR":
+      return { ...state, creating: false, errorText: action.error };
+    case "START_EDIT":
+      return { ...state, edit: action.edit, testResult: null };
+    case "CLOSE_EDIT":
+      return { ...state, edit: null };
+    case "SET_EDIT_FIELD":
+      return state.edit
+        ? {
+            ...state,
+            edit: { ...state.edit, [action.field]: action.value },
+          }
+        : state;
+    case "SAVE_EDIT_START":
+      return { ...state, savingEdit: true, errorText: null, testResult: null };
+    case "SAVE_EDIT_SUCCESS":
+      return {
+        ...state,
+        savingEdit: false,
+        models: state.models.map((model) => (model.id === action.updated.id ? action.updated : model)),
+        edit: state.edit
+          ? { ...state.edit, apiKeyText: "", clearApiKey: false }
+          : state.edit,
+      };
+    case "SAVE_EDIT_ERROR":
+      return { ...state, savingEdit: false, errorText: action.error };
+    case "DELETE_SUCCESS":
+      return {
+        ...state,
+        errorText: null,
+        testResult: null,
+        models: state.models.filter((model) => model.id !== action.id),
+        edit: state.edit?.id === action.id ? null : state.edit,
+      };
+    case "DELETE_ERROR":
+      return { ...state, errorText: action.error };
+    case "TEST_SUCCESS":
+      return { ...state, errorText: null, testResult: action.result };
+    case "TEST_ERROR":
+      return { ...state, errorText: action.error };
+    case "CLEAR_TEST_RESULT":
+      return { ...state, testResult: null };
+    default:
+      return state;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isModelAdmin(value: unknown): value is ModelAdmin {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.display_name === "string" &&
+    typeof value.provider_type === "string" &&
+    typeof value.model_name === "string" &&
+    typeof value.base_url === "string" &&
+    typeof value.enabled === "boolean" &&
+    typeof value.visibility === "string" &&
+    (value.tags === null || isRecord(value.tags)) &&
+    (typeof value.temperature === "number" || value.temperature === null) &&
+    (typeof value.frequency_penalty === "number" || value.frequency_penalty === null) &&
+    (typeof value.presence_penalty === "number" || value.presence_penalty === null) &&
+    (value.params === null || isRecord(value.params)) &&
+    (typeof value.prompt_template_id === "string" || value.prompt_template_id === null) &&
+    typeof value.has_api_key === "boolean" &&
+    typeof value.created_at === "string" &&
+    typeof value.updated_at === "string"
+  );
+}
+
+function isModelTestResponse(value: unknown): value is ModelTestResponse {
+  return (
+    isRecord(value) &&
+    typeof value.ok === "boolean" &&
+    typeof value.model_id === "string" &&
+    typeof value.has_api_key === "boolean" &&
+    (value.note === undefined || typeof value.note === "string")
+  );
+}
+
+function parseListModelsResponse(value: unknown): ListModelsResponse {
+  if (!isRecord(value) || !Array.isArray(value.models)) {
+    throw new Error("Invalid models response");
+  }
+
+  const models = value.models.filter(isModelAdmin);
+  if (models.length !== value.models.length) {
+    throw new Error("Invalid models response");
+  }
+
+  return { models };
+}
+
+function parseModelAdmin(value: unknown): ModelAdmin {
+  if (!isModelAdmin(value)) {
+    throw new Error("Invalid model response");
+  }
+
+  return value;
+}
+
+function parseModelTestResponse(value: unknown): ModelTestResponse {
+  if (!isModelTestResponse(value)) {
+    throw new Error("Invalid model test response");
+  }
+
+  return value;
+}
+
+function toEditState(model: ModelAdmin): EditState {
+  return {
+    id: model.id,
+    display_name: model.display_name,
+    provider_type: model.provider_type,
+    model_name: model.model_name,
+    base_url: model.base_url,
+    enabled: model.enabled,
+    visibility: model.visibility,
+    tagsText: model.tags ? JSON.stringify(model.tags, null, 2) : "",
+    temperatureText: model.temperature === null ? "" : String(model.temperature),
+    frequencyPenaltyText:
+      model.frequency_penalty === null ? "" : String(model.frequency_penalty),
+    presencePenaltyText:
+      model.presence_penalty === null ? "" : String(model.presence_penalty),
+    paramsText: model.params ? JSON.stringify(model.params, null, 2) : "",
+    promptTemplateId: model.prompt_template_id ?? "",
+    apiKeyText: "",
+    clearApiKey: false,
+  };
+}
+
 export default function AdminModelsPage() {
   const { headers } = useAuthHeaders();
-
-  const [models, setModels] = useState<ModelAdmin[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [errorText, setErrorText] = useState<string | null>(null);
-
-  const [creating, setCreating] = useState(false);
-  const [createDisplayName, setCreateDisplayName] = useState("");
-  const [createProviderType, setCreateProviderType] = useState("openai_compat");
-  const [createModelName, setCreateModelName] = useState("");
-  const [createBaseUrl, setCreateBaseUrl] = useState("");
-  const [createEnabled, setCreateEnabled] = useState(true);
-  const [createVisibility, setCreateVisibility] = useState("public");
-  const [createApiKey, setCreateApiKey] = useState("");
-  const [createPromptTemplateId, setCreatePromptTemplateId] = useState("");
-
-  const [createTemperature, setCreateTemperature] = useState("");
-  const [createFrequencyPenalty, setCreateFrequencyPenalty] = useState("");
-  const [createPresencePenalty, setCreatePresencePenalty] = useState("");
-  const [createTagsText, setCreateTagsText] = useState("");
-  const [createParamsText, setCreateParamsText] = useState("");
-
-  const [edit, setEdit] = useState<EditState | null>(null);
-  const [savingEdit, setSavingEdit] = useState(false);
-  const [testResult, setTestResult] = useState<ModelTestResponse | null>(null);
+  const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
 
   useEffect(() => {
     let cancelled = false;
 
     async function load() {
       if (!headers) {
-        setLoading(false);
+        dispatch({ type: "LOAD_SUCCESS", models: [] });
         return;
       }
 
-      setLoading(true);
-      setErrorText(null);
+      dispatch({ type: "LOAD_START" });
       try {
-        const res = (await apiGet("/admin/models", { headers })) as ListModelsResponse;
+        const res = parseListModelsResponse(await apiGet("/admin/models", { headers }));
         if (cancelled) return;
-        setModels(res.models);
+        dispatch({ type: "LOAD_SUCCESS", models: res.models });
       } catch (err) {
         if (cancelled) return;
-        setErrorText(err instanceof Error ? err.message : "Failed to load models");
-      } finally {
-        if (!cancelled) setLoading(false);
+        dispatch({
+          type: "LOAD_ERROR",
+          error: err instanceof Error ? err.message : "Failed to load models",
+        });
       }
     }
 
@@ -118,131 +330,94 @@ export default function AdminModelsPage() {
     };
   }, [headers]);
 
-  function startEdit(model: ModelAdmin) {
-    setTestResult(null);
-    setEdit({
-      id: model.id,
-      display_name: model.display_name,
-      provider_type: model.provider_type,
-      model_name: model.model_name,
-      base_url: model.base_url,
-      enabled: model.enabled,
-      visibility: model.visibility,
-      tagsText: model.tags ? JSON.stringify(model.tags, null, 2) : "",
-      temperatureText: model.temperature === null ? "" : String(model.temperature),
-      frequencyPenaltyText: model.frequency_penalty === null ? "" : String(model.frequency_penalty),
-      presencePenaltyText: model.presence_penalty === null ? "" : String(model.presence_penalty),
-      paramsText: model.params ? JSON.stringify(model.params, null, 2) : "",
-      promptTemplateId: model.prompt_template_id ?? "",
-      apiKeyText: "",
-      clearApiKey: false,
-    });
-  }
-
   async function handleCreate() {
     if (!headers) return;
 
-    setCreating(true);
-    setErrorText(null);
+    dispatch({ type: "CREATE_START" });
     try {
-      if (!createDisplayName.trim()) throw new Error("display_name is required");
-      if (!createProviderType.trim()) throw new Error("provider_type is required");
-      if (!createModelName.trim()) throw new Error("model_name is required");
-      if (!createBaseUrl.trim()) throw new Error("base_url is required");
+      if (!state.create.displayName.trim()) throw new Error("display_name is required");
+      if (!state.create.providerType.trim()) throw new Error("provider_type is required");
+      if (!state.create.modelName.trim()) throw new Error("model_name is required");
+      if (!state.create.baseUrl.trim()) throw new Error("base_url is required");
 
       const payload: Record<string, unknown> = {
-        display_name: createDisplayName.trim(),
-        provider_type: createProviderType.trim(),
-        model_name: createModelName.trim(),
-        base_url: createBaseUrl.trim(),
-        enabled: createEnabled,
-        visibility: createVisibility,
+        display_name: state.create.displayName.trim(),
+        provider_type: state.create.providerType.trim(),
+        model_name: state.create.modelName.trim(),
+        base_url: state.create.baseUrl.trim(),
+        enabled: state.create.enabled,
+        visibility: state.create.visibility,
       };
 
-      if (createApiKey.trim()) payload.api_key = createApiKey.trim();
-      if (createPromptTemplateId.trim()) payload.prompt_template_id = createPromptTemplateId.trim();
+      if (state.create.apiKey.trim()) payload.api_key = state.create.apiKey.trim();
+      if (state.create.promptTemplateId.trim()) {
+        payload.prompt_template_id = state.create.promptTemplateId.trim();
+      }
 
-      const temp = parseNumberOrNull(createTemperature);
-      const fp = parseNumberOrNull(createFrequencyPenalty);
-      const pp = parseNumberOrNull(createPresencePenalty);
+      const temp = parseNumberOrNull(state.create.temperature);
+      const fp = parseNumberOrNull(state.create.frequencyPenalty);
+      const pp = parseNumberOrNull(state.create.presencePenalty);
       if (temp !== null) payload.temperature = temp;
       if (fp !== null) payload.frequency_penalty = fp;
       if (pp !== null) payload.presence_penalty = pp;
 
-      const tags = parseJsonObjectOrNull(createTagsText);
-      const params = parseJsonObjectOrNull(createParamsText);
+      const tags = parseJsonObjectOrNull(state.create.tagsText);
+      const params = parseJsonObjectOrNull(state.create.paramsText);
       if (tags) payload.tags = tags;
       if (params) payload.params = params;
 
-      const created = (await apiPost("/admin/models", payload, { headers })) as ModelAdmin;
-      setModels((prev) => [created, ...prev]);
-
-      // Reset the minimum fields; keep defaults.
-      setCreateDisplayName("");
-      setCreateModelName("");
-      setCreateBaseUrl("");
-      setCreateApiKey("");
-      setCreatePromptTemplateId("");
-      setCreateTemperature("");
-      setCreateFrequencyPenalty("");
-      setCreatePresencePenalty("");
-      setCreateTagsText("");
-      setCreateParamsText("");
+      const created = parseModelAdmin(await apiPost("/admin/models", payload, { headers }));
+      dispatch({ type: "CREATE_SUCCESS", created });
     } catch (err) {
-      setErrorText(err instanceof Error ? err.message : "Failed to create model");
-    } finally {
-      setCreating(false);
+      dispatch({
+        type: "CREATE_ERROR",
+        error: err instanceof Error ? err.message : "Failed to create model",
+      });
     }
   }
 
   async function handleSaveEdit() {
-    if (!headers || !edit) return;
+    if (!headers || !state.edit) return;
 
-    setSavingEdit(true);
-    setErrorText(null);
-    setTestResult(null);
+    dispatch({ type: "SAVE_EDIT_START" });
     try {
-      if (!edit.display_name.trim()) throw new Error("display_name is required");
-      if (!edit.provider_type.trim()) throw new Error("provider_type is required");
-      if (!edit.model_name.trim()) throw new Error("model_name is required");
-      if (!edit.base_url.trim()) throw new Error("base_url is required");
+      if (!state.edit.display_name.trim()) throw new Error("display_name is required");
+      if (!state.edit.provider_type.trim()) throw new Error("provider_type is required");
+      if (!state.edit.model_name.trim()) throw new Error("model_name is required");
+      if (!state.edit.base_url.trim()) throw new Error("base_url is required");
 
       const patch: Record<string, unknown> = {
-        display_name: edit.display_name.trim(),
-        provider_type: edit.provider_type.trim(),
-        model_name: edit.model_name.trim(),
-        base_url: edit.base_url.trim(),
-        enabled: edit.enabled,
-        visibility: edit.visibility,
-        prompt_template_id: edit.promptTemplateId.trim() ? edit.promptTemplateId.trim() : null,
+        display_name: state.edit.display_name.trim(),
+        provider_type: state.edit.provider_type.trim(),
+        model_name: state.edit.model_name.trim(),
+        base_url: state.edit.base_url.trim(),
+        enabled: state.edit.enabled,
+        visibility: state.edit.visibility,
+        prompt_template_id: state.edit.promptTemplateId.trim() ? state.edit.promptTemplateId.trim() : null,
       };
 
-      const temp = parseNumberOrNull(edit.temperatureText);
-      const fp = parseNumberOrNull(edit.frequencyPenaltyText);
-      const pp = parseNumberOrNull(edit.presencePenaltyText);
-      patch.temperature = temp;
-      patch.frequency_penalty = fp;
-      patch.presence_penalty = pp;
+      patch.temperature = parseNumberOrNull(state.edit.temperatureText);
+      patch.frequency_penalty = parseNumberOrNull(state.edit.frequencyPenaltyText);
+      patch.presence_penalty = parseNumberOrNull(state.edit.presencePenaltyText);
+      patch.tags = parseJsonObjectOrNull(state.edit.tagsText);
+      patch.params = parseJsonObjectOrNull(state.edit.paramsText);
 
-      patch.tags = parseJsonObjectOrNull(edit.tagsText);
-      patch.params = parseJsonObjectOrNull(edit.paramsText);
-
-      if (edit.clearApiKey) {
+      if (state.edit.clearApiKey) {
         patch.api_key = null;
-      } else if (edit.apiKeyText.trim()) {
-        patch.api_key = edit.apiKeyText.trim();
+      } else if (state.edit.apiKeyText.trim()) {
+        patch.api_key = state.edit.apiKeyText.trim();
       }
 
-      const updated = (await apiPut(`/admin/models/${encodeURIComponent(edit.id)}`, patch, {
-        headers,
-      })) as ModelAdmin;
+      const updated = parseModelAdmin(
+        await apiPut(`/admin/models/${encodeURIComponent(state.edit.id)}`, patch, { headers }),
+      );
 
-      setModels((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
-      setEdit((prev) => (prev ? { ...prev, apiKeyText: "", clearApiKey: false } : prev));
+      dispatch({ type: "SAVE_EDIT_SUCCESS", updated });
     } catch (err) {
-      setErrorText(err instanceof Error ? err.message : "Failed to save model");
-    } finally {
-      setSavingEdit(false);
+      dispatch({
+        type: "SAVE_EDIT_ERROR",
+        error: err instanceof Error ? err.message : "Failed to save model",
+      });
     }
   }
 
@@ -250,28 +425,36 @@ export default function AdminModelsPage() {
     if (!headers) return;
     if (!confirm("Delete this model?")) return;
 
-    setErrorText(null);
-    setTestResult(null);
+    dispatch({ type: "CLEAR_TEST_RESULT" });
     try {
       await apiDelete(`/admin/models/${encodeURIComponent(id)}`, { headers });
-      setModels((prev) => prev.filter((m) => m.id !== id));
-      setEdit((prev) => (prev?.id === id ? null : prev));
+      dispatch({ type: "DELETE_SUCCESS", id });
     } catch (err) {
-      setErrorText(err instanceof Error ? err.message : "Failed to delete model");
+      dispatch({
+        type: "DELETE_ERROR",
+        error: err instanceof Error ? err.message : "Failed to delete model",
+      });
     }
   }
 
   async function handleTest(id: string) {
     if (!headers) return;
-    setErrorText(null);
-    setTestResult(null);
+
+    dispatch({ type: "CLEAR_TEST_RESULT" });
     try {
-      const res = (await apiPost(`/admin/models/${encodeURIComponent(id)}/test`, {}, { headers })) as ModelTestResponse;
-      setTestResult(res);
+      const result = parseModelTestResponse(
+        await apiPost(`/admin/models/${encodeURIComponent(id)}/test`, {}, { headers }),
+      );
+      dispatch({ type: "TEST_SUCCESS", result });
     } catch (err) {
-      setErrorText(err instanceof Error ? err.message : "Failed to test model");
+      dispatch({
+        type: "TEST_ERROR",
+        error: err instanceof Error ? err.message : "Failed to test model",
+      });
     }
   }
+
+  const { models, loading, errorText, creating, create, edit, savingEdit, testResult } = state;
 
   return (
     <div className="grid gap-4">
@@ -298,8 +481,8 @@ export default function AdminModelsPage() {
                 </label>
                 <input
                   id="create-display-name"
-                  value={createDisplayName}
-                  onChange={(e) => setCreateDisplayName(e.target.value)}
+                  value={create.displayName}
+                  onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "displayName", value: e.target.value })}
                   className="input-premium"
                   placeholder="e.g., gpt-4o-mini (gateway)"
                 />
@@ -310,8 +493,8 @@ export default function AdminModelsPage() {
                 </label>
                 <input
                   id="create-provider-type"
-                  value={createProviderType}
-                  onChange={(e) => setCreateProviderType(e.target.value)}
+                  value={create.providerType}
+                  onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "providerType", value: e.target.value })}
                   className="input-premium"
                   placeholder="openai_compat"
                 />
@@ -325,8 +508,8 @@ export default function AdminModelsPage() {
                 </label>
                 <input
                   id="create-model-name"
-                  value={createModelName}
-                  onChange={(e) => setCreateModelName(e.target.value)}
+                  value={create.modelName}
+                  onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "modelName", value: e.target.value })}
                   className="input-premium"
                   placeholder="e.g., gpt-4o-mini"
                 />
@@ -337,8 +520,8 @@ export default function AdminModelsPage() {
                 </label>
                 <input
                   id="create-base-url"
-                  value={createBaseUrl}
-                  onChange={(e) => setCreateBaseUrl(e.target.value)}
+                  value={create.baseUrl}
+                  onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "baseUrl", value: e.target.value })}
                   className="input-premium"
                   placeholder="https://gateway.example.com (or .../v1)"
                 />
@@ -353,8 +536,8 @@ export default function AdminModelsPage() {
                 <input
                   id="create-api-key"
                   type="password"
-                  value={createApiKey}
-                  onChange={(e) => setCreateApiKey(e.target.value)}
+                  value={create.apiKey}
+                  onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "apiKey", value: e.target.value })}
                   className="input-premium"
                   placeholder="stored encrypted at rest"
                 />
@@ -365,8 +548,8 @@ export default function AdminModelsPage() {
                 </label>
                 <input
                   id="create-prompt-template-id"
-                  value={createPromptTemplateId}
-                  onChange={(e) => setCreatePromptTemplateId(e.target.value)}
+                  value={create.promptTemplateId}
+                  onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "promptTemplateId", value: e.target.value })}
                   className="input-premium"
                   placeholder="uuid"
                 />
@@ -380,8 +563,8 @@ export default function AdminModelsPage() {
                 </label>
                 <input
                   id="create-temp"
-                  value={createTemperature}
-                  onChange={(e) => setCreateTemperature(e.target.value)}
+                  value={create.temperature}
+                  onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "temperature", value: e.target.value })}
                   className="input-premium"
                   placeholder="(optional)"
                 />
@@ -392,8 +575,8 @@ export default function AdminModelsPage() {
                 </label>
                 <input
                   id="create-fp"
-                  value={createFrequencyPenalty}
-                  onChange={(e) => setCreateFrequencyPenalty(e.target.value)}
+                  value={create.frequencyPenalty}
+                  onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "frequencyPenalty", value: e.target.value })}
                   className="input-premium"
                   placeholder="(optional)"
                 />
@@ -404,8 +587,8 @@ export default function AdminModelsPage() {
                 </label>
                 <input
                   id="create-pp"
-                  value={createPresencePenalty}
-                  onChange={(e) => setCreatePresencePenalty(e.target.value)}
+                  value={create.presencePenalty}
+                  onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "presencePenalty", value: e.target.value })}
                   className="input-premium"
                   placeholder="(optional)"
                 />
@@ -419,8 +602,8 @@ export default function AdminModelsPage() {
                 </label>
                 <textarea
                   id="create-tags"
-                  value={createTagsText}
-                  onChange={(e) => setCreateTagsText(e.target.value)}
+                  value={create.tagsText}
+                  onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "tagsText", value: e.target.value })}
                   className="textarea-premium"
                   rows={4}
                   placeholder='{"family":"openai","tier":"cheap"}'
@@ -432,8 +615,8 @@ export default function AdminModelsPage() {
                 </label>
                 <select
                   id="create-visibility"
-                  value={createVisibility}
-                  onChange={(e) => setCreateVisibility(e.target.value)}
+                  value={create.visibility}
+                  onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "visibility", value: e.target.value })}
                   className="input-premium"
                 >
                   <option value="public">public</option>
@@ -443,8 +626,8 @@ export default function AdminModelsPage() {
                 <label className="label-premium mt-2.5 flex items-center">
                   <input
                     type="checkbox"
-                    checked={createEnabled}
-                    onChange={(e) => setCreateEnabled(e.target.checked)}
+                    checked={create.enabled}
+                    onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "enabled", value: e.target.checked })}
                     className="mr-2"
                   />
                   enabled
@@ -459,8 +642,8 @@ export default function AdminModelsPage() {
                 </label>
                 <textarea
                   id="create-params"
-                  value={createParamsText}
-                  onChange={(e) => setCreateParamsText(e.target.value)}
+                  value={create.paramsText}
+                  onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "paramsText", value: e.target.value })}
                   className="textarea-premium"
                   rows={4}
                   placeholder='{"route":"jp2zh","top_p":0.95,"max_tokens":1024}'
@@ -517,7 +700,7 @@ export default function AdminModelsPage() {
                     <td className="td-premium">{m.has_api_key ? "yes" : "no"}</td>
                     <td className="td-premium">
                       <div className="flex flex-wrap gap-2">
-                        <button type="button" className="btn-action" onClick={() => startEdit(m)}>
+                        <button type="button" className="btn-action" onClick={() => dispatch({ type: "START_EDIT", edit: toEditState(m) })}>
                           Edit
                         </button>
                         <button type="button" className="btn-action" onClick={() => void handleTest(m.id)}>
@@ -539,7 +722,7 @@ export default function AdminModelsPage() {
         <section className="glass-panel-accent p-5">
           <div className="flex items-baseline justify-between gap-2.5">
             <div className="section-header">Edit model</div>
-            <button type="button" onClick={() => setEdit(null)} className="btn-action">
+            <button type="button" onClick={() => dispatch({ type: "CLOSE_EDIT" })} className="btn-action">
               Close
             </button>
           </div>
@@ -555,7 +738,7 @@ export default function AdminModelsPage() {
                 <input
                   id="edit-display-name"
                   value={edit.display_name}
-                  onChange={(e) => setEdit((prev) => (prev ? { ...prev, display_name: e.target.value } : prev))}
+                  onChange={(e) => dispatch({ type: "SET_EDIT_FIELD", field: "display_name", value: e.target.value })}
                   className="input-premium"
                 />
               </div>
@@ -566,7 +749,7 @@ export default function AdminModelsPage() {
                 <input
                   id="edit-provider-type"
                   value={edit.provider_type}
-                  onChange={(e) => setEdit((prev) => (prev ? { ...prev, provider_type: e.target.value } : prev))}
+                  onChange={(e) => dispatch({ type: "SET_EDIT_FIELD", field: "provider_type", value: e.target.value })}
                   className="input-premium"
                 />
               </div>
@@ -580,7 +763,7 @@ export default function AdminModelsPage() {
                 <input
                   id="edit-model-name"
                   value={edit.model_name}
-                  onChange={(e) => setEdit((prev) => (prev ? { ...prev, model_name: e.target.value } : prev))}
+                  onChange={(e) => dispatch({ type: "SET_EDIT_FIELD", field: "model_name", value: e.target.value })}
                   className="input-premium"
                 />
               </div>
@@ -591,7 +774,7 @@ export default function AdminModelsPage() {
                 <input
                   id="edit-base-url"
                   value={edit.base_url}
-                  onChange={(e) => setEdit((prev) => (prev ? { ...prev, base_url: e.target.value } : prev))}
+                  onChange={(e) => dispatch({ type: "SET_EDIT_FIELD", field: "base_url", value: e.target.value })}
                   className="input-premium"
                 />
               </div>
@@ -605,7 +788,7 @@ export default function AdminModelsPage() {
                 <select
                   id="edit-visibility"
                   value={edit.visibility}
-                  onChange={(e) => setEdit((prev) => (prev ? { ...prev, visibility: e.target.value } : prev))}
+                  onChange={(e) => dispatch({ type: "SET_EDIT_FIELD", field: "visibility", value: e.target.value })}
                   className="input-premium"
                 >
                   <option value="public">public</option>
@@ -619,9 +802,7 @@ export default function AdminModelsPage() {
                 <input
                   id="edit-prompt-template-id"
                   value={edit.promptTemplateId}
-                  onChange={(e) =>
-                    setEdit((prev) => (prev ? { ...prev, promptTemplateId: e.target.value } : prev))
-                  }
+                  onChange={(e) => dispatch({ type: "SET_EDIT_FIELD", field: "promptTemplateId", value: e.target.value })}
                   className="input-premium"
                   placeholder="uuid or blank"
                 />
@@ -632,7 +813,7 @@ export default function AdminModelsPage() {
               <input
                 type="checkbox"
                 checked={edit.enabled}
-                onChange={(e) => setEdit((prev) => (prev ? { ...prev, enabled: e.target.checked } : prev))}
+                onChange={(e) => dispatch({ type: "SET_EDIT_FIELD", field: "enabled", value: e.target.checked })}
                 className="mr-2"
               />
               enabled
@@ -646,7 +827,7 @@ export default function AdminModelsPage() {
                 <input
                   id="edit-temp"
                   value={edit.temperatureText}
-                  onChange={(e) => setEdit((prev) => (prev ? { ...prev, temperatureText: e.target.value } : prev))}
+                  onChange={(e) => dispatch({ type: "SET_EDIT_FIELD", field: "temperatureText", value: e.target.value })}
                   className="input-premium"
                 />
               </div>
@@ -657,9 +838,7 @@ export default function AdminModelsPage() {
                 <input
                   id="edit-fp"
                   value={edit.frequencyPenaltyText}
-                  onChange={(e) =>
-                    setEdit((prev) => (prev ? { ...prev, frequencyPenaltyText: e.target.value } : prev))
-                  }
+                  onChange={(e) => dispatch({ type: "SET_EDIT_FIELD", field: "frequencyPenaltyText", value: e.target.value })}
                   className="input-premium"
                 />
               </div>
@@ -670,9 +849,7 @@ export default function AdminModelsPage() {
                 <input
                   id="edit-pp"
                   value={edit.presencePenaltyText}
-                  onChange={(e) =>
-                    setEdit((prev) => (prev ? { ...prev, presencePenaltyText: e.target.value } : prev))
-                  }
+                  onChange={(e) => dispatch({ type: "SET_EDIT_FIELD", field: "presencePenaltyText", value: e.target.value })}
                   className="input-premium"
                 />
               </div>
@@ -686,7 +863,7 @@ export default function AdminModelsPage() {
                 <textarea
                   id="edit-tags"
                   value={edit.tagsText}
-                  onChange={(e) => setEdit((prev) => (prev ? { ...prev, tagsText: e.target.value } : prev))}
+                  onChange={(e) => dispatch({ type: "SET_EDIT_FIELD", field: "tagsText", value: e.target.value })}
                   rows={4}
                   className="textarea-premium"
                 />
@@ -701,9 +878,7 @@ export default function AdminModelsPage() {
                 <textarea
                   id="edit-params"
                   value={edit.paramsText}
-                  onChange={(e) =>
-                    setEdit((prev) => (prev ? { ...prev, paramsText: e.target.value } : prev))
-                  }
+                  onChange={(e) => dispatch({ type: "SET_EDIT_FIELD", field: "paramsText", value: e.target.value })}
                   rows={4}
                   className="textarea-premium"
                 />
@@ -719,7 +894,10 @@ export default function AdminModelsPage() {
                   id="edit-api-key"
                   type="password"
                   value={edit.apiKeyText}
-                  onChange={(e) => setEdit((prev) => (prev ? { ...prev, apiKeyText: e.target.value, clearApiKey: false } : prev))}
+                  onChange={(e) => {
+                    dispatch({ type: "SET_EDIT_FIELD", field: "apiKeyText", value: e.target.value });
+                    dispatch({ type: "SET_EDIT_FIELD", field: "clearApiKey", value: false });
+                  }}
                   className="input-premium"
                   placeholder="leave blank to keep"
                   disabled={edit.clearApiKey}
@@ -729,7 +907,12 @@ export default function AdminModelsPage() {
                 <input
                   type="checkbox"
                   checked={edit.clearApiKey}
-                  onChange={(e) => setEdit((prev) => (prev ? { ...prev, clearApiKey: e.target.checked, apiKeyText: e.target.checked ? "" : prev.apiKeyText } : prev))}
+                  onChange={(e) => {
+                    dispatch({ type: "SET_EDIT_FIELD", field: "clearApiKey", value: e.target.checked });
+                    if (e.target.checked) {
+                      dispatch({ type: "SET_EDIT_FIELD", field: "apiKeyText", value: "" });
+                    }
+                  }}
                 />
                 clear api_key
               </label>

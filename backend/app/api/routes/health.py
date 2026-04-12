@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 
 from app.core.config import Settings, get_settings
 
@@ -24,13 +25,22 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["health"])
 
 
-@router.get("/livez")
-def livez() -> dict:
+class HealthResponse(BaseModel):
+    ok: bool
+    checks: dict[str, bool] | None = None
+
+
+class PublicConfigResponse(BaseModel):
+    anon_battle_turnstile_required: bool
+
+
+@router.get("/livez", response_model_exclude_none=True)
+def livez() -> HealthResponse:
     """Liveness probe — always 200 if the process is up.
 
     No dependency checks.  Use ``/readyz`` for readiness.
     """
-    return {"ok": True}
+    return HealthResponse(ok=True)
 
 
 def _check_readiness() -> tuple[dict[str, bool], bool]:
@@ -70,7 +80,7 @@ def _check_readiness() -> tuple[dict[str, bool], bool]:
 
 
 @router.get("/readyz")
-def readyz() -> dict:
+def readyz() -> HealthResponse:
     """Readiness probe — verifies that DB and Redis (if configured) are up.
 
     Returns HTTP 503 when a critical dependency is unreachable so that load
@@ -86,19 +96,21 @@ def readyz() -> dict:
             status_code=503,
         )
 
-    return {"ok": True, "checks": checks}
+    return HealthResponse(ok=True, checks=checks)
 
 
 @router.get("/healthz")
-def healthz() -> dict:
+def healthz() -> HealthResponse:
     """Backward-compatible alias for ``/readyz``."""
     return readyz()
 
 
 @router.get("/public-config")
-def public_config(settings: Settings = Depends(get_settings)) -> dict[str, bool]:
-    return {
-        "anon_battle_turnstile_required": bool(
+def public_config(
+    settings: Settings = Depends(get_settings),
+) -> PublicConfigResponse:
+    return PublicConfigResponse(
+        anon_battle_turnstile_required=bool(
             (settings.turnstile_secret_key or "").strip()
-        ),
-    }
+        )
+    )

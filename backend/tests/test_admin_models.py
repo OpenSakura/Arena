@@ -106,15 +106,19 @@ def _model_stub(**overrides: object) -> SimpleNamespace:
 
 
 def test_parse_uuid_rejects_invalid_values() -> None:
+    from app.utils.id import parse_uuid_or_422
+
     with pytest.raises(HTTPException) as exc_info:
-        admin_models.parse_uuid("not-a-uuid", "model_id")
+        parse_uuid_or_422("not-a-uuid", "model_id")
 
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail == "Invalid model_id"
 
 
 def test_parse_optional_uuid_returns_none_when_unset() -> None:
-    assert admin_models.parse_optional_uuid(None, "prompt_template_id") is None
+    from app.utils.id import parse_optional_uuid_or_422
+
+    assert parse_optional_uuid_or_422(None, "prompt_template_id") is None
 
 
 def test_model_schema_visibility_allows_only_public_or_private() -> None:
@@ -203,7 +207,9 @@ def test_test_model_returns_error_when_api_key_decryption_fails(
             raise AssertionError("chat_completion should not be called")
 
     class _FakeOrchestrator:
-        _llm_client = _UnexpectedClient()
+        @property
+        def llm_client(self):
+            return _UnexpectedClient()
 
     monkeypatch.setattr(
         admin_models, "get_battle_orchestrator", lambda: _FakeOrchestrator()
@@ -240,8 +246,12 @@ def test_test_model_merges_parameters_and_returns_preview(
                 "request_id": "req-42",
             }
 
+    fake_client = _FakeClient()
+
     class _FakeOrchestrator:
-        _llm_client = _FakeClient()
+        @property
+        def llm_client(self):
+            return fake_client
 
     monkeypatch.setattr(
         admin_models, "get_battle_orchestrator", lambda: _FakeOrchestrator()
@@ -281,7 +291,9 @@ def test_test_model_returns_failure_payload_on_client_errors(
             raise RuntimeError("gateway timeout")
 
     class _FakeOrchestrator:
-        _llm_client = _FailingClient()
+        @property
+        def llm_client(self):
+            return _FailingClient()
 
     monkeypatch.setattr(
         admin_models, "get_battle_orchestrator", lambda: _FakeOrchestrator()
@@ -450,7 +462,9 @@ def test_test_model_uses_shared_client(
     shared = _SharedClient()
 
     class _FakeOrchestrator:
-        _llm_client = shared
+        @property
+        def llm_client(self):
+            return shared
 
     monkeypatch.setattr(
         admin_models,

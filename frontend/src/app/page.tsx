@@ -280,7 +280,6 @@ export default function HomePage() {
                 title={feature.title}
                 description={feature.description}
                 Icon={feature.Icon}
-                delay={0.9 + i * 0.1}
               />
             ))}
           </div>
@@ -368,12 +367,10 @@ function FeatureCard({
   title,
   description,
   Icon,
-  delay = 0,
 }: {
   title: string;
   description: string;
   Icon: React.ComponentType<{ className?: string }>;
-  delay?: number;
 }) {
   return (
     <div

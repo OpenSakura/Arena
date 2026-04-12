@@ -8,9 +8,16 @@
 "use client";
 
 import { motion } from "framer-motion";
+import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 
 export default function Template({ children }: { children: ReactNode }) {
+  const pathname = usePathname() ?? "";
+
+  if (pathname.startsWith("/admin")) {
+    return <>{children}</>;
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 8 }}

@@ -13,10 +13,17 @@ on:
       - "frontend/**"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   typecheck-and-test:
     name: typecheck-and-test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:
@@ -40,4 +47,8 @@ jobs:
 
       - name: Test
         run: npm run test
+        working-directory: frontend
+
+      - name: Lint
+        run: npm run lint
         working-directory: frontend

@@ -25,7 +25,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
-from app.core.security import Principal, get_principal_optional
+from app.core.security import Principal, get_principal_optional, require_admin
 from app.db.session import get_db
 from app.models.battle import Battle, Run
 from app.models.model_registry import Model
@@ -218,7 +218,11 @@ async def stream_battle(
 
 
 @router.post("/{battle_id}/retry")
-def retry_battle(battle_id: str, db: Session = Depends(get_db)) -> BattlePublic:
+def retry_battle(
+    battle_id: str,
+    db: Session = Depends(get_db),
+    _admin: Principal = Depends(require_admin),
+) -> BattlePublic:
     """Reset a failed, unvoted battle to pending so it can be re-executed.
 
     Clears all persisted run artifacts (output, error, stats, request_json,

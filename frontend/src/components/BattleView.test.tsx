@@ -44,7 +44,7 @@ vi.mock("@/components/TurnstileWidget", () => ({
   ),
 }));
 
-vi.mock("@/components/battleView.utils", () => ({
+vi.mock("@/components/battleViewUtils", () => ({
   loadOrCreateBattle: (...args: unknown[]) => loadOrCreateBattleMock(...args),
   asRecord: (value: unknown) => {
     if (!value || typeof value !== "object") return null;
@@ -480,7 +480,7 @@ describe("BattleView", () => {
       source_lang: "ja",
       target_lang: "zh",
       mode: "jp2zh_ab",
-      status: "streaming",
+      status: "running",
       run_a: { id: "run-a", side: "A", output_text: null, stats: null, error_text: null },
       run_b: { id: "run-b", side: "B", output_text: null, stats: null, error_text: null },
     });

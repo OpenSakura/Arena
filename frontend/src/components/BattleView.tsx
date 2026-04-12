@@ -11,7 +11,7 @@ import { motion, AnimatePresence } from "framer-motion";
 
 import { TurnstileWidget } from "@/components/TurnstileWidget";
 import { Button } from "@/components/ui/button";
-import { useBattle, type RevealData } from "@/components/useBattle";
+import { useBattle, type RevealData } from "@/hooks/useBattle";
 
 const RUBRIC_TAGS = [
   "accuracy",
@@ -21,13 +21,9 @@ const RUBRIC_TAGS = [
   "naturalness",
 ] as const;
 
-const RUBRIC_ICONS: Record<string, string> = {
-  accuracy: "Accuracy",
-  fluency: "Fluency",
-  style: "Style",
-  consistency: "Consistency",
-  naturalness: "Naturalness",
-};
+function formatRubricTag(tag: string) {
+  return tag.charAt(0).toUpperCase() + tag.slice(1);
+}
 
 export function BattleView({ battleId }: { battleId: string }) {
   const {
@@ -201,7 +197,7 @@ export function BattleView({ battleId }: { battleId: string }) {
                         }
                       `}
                     >
-                      {RUBRIC_ICONS[tag] ?? tag}
+                      {formatRubricTag(tag)}
                     </button>
                   ))}
                 </div>

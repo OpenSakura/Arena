@@ -104,6 +104,9 @@ class LLMClient:
         This avoids the common /v1/v1/chat/completions misconfiguration.
         """
 
+        if not base_url.lower().startswith(("http://", "https://")):
+            raise ValueError("base_url must use http:// or https:// scheme")
+
         normalized = base_url.rstrip("/")
         if normalized.endswith("/chat/completions"):
             return normalized

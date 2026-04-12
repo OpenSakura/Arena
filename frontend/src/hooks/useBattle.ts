@@ -1,5 +1,5 @@
 /**
- * frontend/src/components/useBattle.ts
+ * frontend/src/hooks/useBattle.ts
  *
  * Custom hook encapsulating battle lifecycle state management.
  * Replaces 15+ useState hooks in BattleView with a single useReducer.
@@ -9,18 +9,16 @@
 
 import { useEffect, useMemo, useReducer, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useSession } from "next-auth/react";
 
-import { apiGet, apiPost, getBackendBaseUrl } from "@/lib/api";
-import { streamSSE } from "@/lib/sse";
 import { isBattleBootstrapReady } from "@/components/battleAuth";
 import {
   asRecord,
   loadOrCreateBattle,
   mergeBattleDelta,
-} from "@/components/battleView.utils";
-
-// ── Types ──────────────────────────────────────────────────────────
+} from "@/components/battleViewUtils";
+import { getBackendBaseUrl, apiGet, apiPost } from "@/lib/api";
+import { streamSSE } from "@/lib/sse";
+import { useAuthHeaders } from "@/hooks/useAuthHeaders";
 
 type Side = "A" | "B";
 type ReplayPolicy = "consume" | "ignore";
@@ -35,6 +33,7 @@ type BattleStatus =
   | "running"
   | "waiting_for_turnstile";
 type Winner = "A" | "B" | "tie";
+type BattlePublicStatus = "pending" | "running" | "completed" | "failed";
 
 type RunPublic = {
   id: string;
@@ -51,7 +50,7 @@ type BattlePublic = {
   source_lang: string;
   target_lang: string;
   mode: string;
-  status: string;
+  status: BattlePublicStatus;
   run_a: RunPublic | null;
   run_b: RunPublic | null;
 };
@@ -68,8 +67,6 @@ export type VoteSubmitResponse = {
   reveal: RevealData | null;
 };
 
-// ── State & Actions ────────────────────────────────────────────────
-
 export type BattleState = {
   resolvedBattleId: string | null;
   jpSource: string;
@@ -79,7 +76,6 @@ export type BattleState = {
   outB: string;
   status: BattleStatus;
   errorText: string | null;
-
   winner: Winner | null;
   rubricTags: string[];
   comment: string;
@@ -88,7 +84,6 @@ export type BattleState = {
   voteId: string | null;
   reveal: RevealData | null;
   revealLoading: boolean;
-
   retryCount: number;
   anonBattleTurnstileRequired: boolean;
 };
@@ -142,6 +137,21 @@ const INITIAL_STATE: BattleState = {
   anonBattleTurnstileRequired: false,
 };
 
+const BATTLE_PUBLIC_STATUSES: readonly BattlePublicStatus[] = [
+  "pending",
+  "running",
+  "completed",
+  "failed",
+];
+
+const VOTE_WINNERS: readonly Winner[] = ["A", "B", "tie"];
+const REFRESH_ERRORS = [
+  "RefreshTokenMissing",
+  "RefreshDiscoveryFailed",
+  "RefreshTokenExpired",
+  "RefreshTokenError",
+];
+
 function battleReducer(state: BattleState, action: Action): BattleState {
   switch (action.type) {
     case "RESET_BATTLE":
@@ -152,16 +162,17 @@ function battleReducer(state: BattleState, action: Action): BattleState {
       };
 
     case "BOOTSTRAP_SUCCESS": {
-      const b = action.battle;
+      const battleStatus =
+        action.battle.status === "completed" ? "done" : action.battle.status;
       return {
         ...state,
-        resolvedBattleId: b.id,
-        jpSource: b.source_text,
-        jpSourceLang: (b.source_lang ?? "ja").toUpperCase(),
-        targetLang: (b.target_lang ?? "zh").toUpperCase(),
-        outA: b.run_a?.output_text ?? "",
-        outB: b.run_b?.output_text ?? "",
-        status: b.status === "completed" ? "done" : (b.status as BattleStatus),
+        resolvedBattleId: action.battle.id,
+        jpSource: action.battle.source_text,
+        jpSourceLang: (action.battle.source_lang ?? "ja").toUpperCase(),
+        targetLang: (action.battle.target_lang ?? "zh").toUpperCase(),
+        outA: action.battle.run_a?.output_text ?? "",
+        outB: action.battle.run_b?.output_text ?? "",
+        status: battleStatus,
         errorText: null,
       };
     }
@@ -210,8 +221,8 @@ function battleReducer(state: BattleState, action: Action): BattleState {
       return { ...state, status: "done" };
 
     case "BATTLE_FAILED":
-      return { 
-        ...state, 
+      return {
+        ...state,
         status: "failed",
         errorText: action.detail
           ? `Battle failed: ${action.detail}`
@@ -222,9 +233,7 @@ function battleReducer(state: BattleState, action: Action): BattleState {
       return {
         ...state,
         status: "error",
-        errorText: action.detail
-          ? `Battle error: ${action.detail}`
-          : "Battle stream failed",
+        errorText: action.detail ? `Battle error: ${action.detail}` : "Battle stream failed",
       };
 
     case "STREAM_ENDED_EARLY":
@@ -243,12 +252,13 @@ function battleReducer(state: BattleState, action: Action): BattleState {
     case "SET_WINNER":
       return { ...state, winner: action.winner };
 
-    case "TOGGLE_RUBRIC_TAG": {
-      const tags = state.rubricTags.includes(action.tag)
-        ? state.rubricTags.filter((t) => t !== action.tag)
-        : [...state.rubricTags, action.tag];
-      return { ...state, rubricTags: tags };
-    }
+    case "TOGGLE_RUBRIC_TAG":
+      return {
+        ...state,
+        rubricTags: state.rubricTags.includes(action.tag)
+          ? state.rubricTags.filter((tag) => tag !== action.tag)
+          : [...state.rubricTags, action.tag],
+      };
 
     case "SET_COMMENT":
       return { ...state, comment: action.comment };
@@ -263,11 +273,7 @@ function battleReducer(state: BattleState, action: Action): BattleState {
       return { ...state, submittingVote: false, voteId: action.voteId };
 
     case "VOTE_ERROR":
-      return {
-        ...state,
-        submittingVote: false,
-        errorText: action.error,
-      };
+      return { ...state, submittingVote: false, errorText: action.error };
 
     case "REVEAL_LOADING":
       return { ...state, revealLoading: true, errorText: null };
@@ -279,11 +285,7 @@ function battleReducer(state: BattleState, action: Action): BattleState {
       return { ...state, revealLoading: false, errorText: action.error };
 
     case "RETRY_ERROR":
-      return {
-        ...state,
-        status: action.status,
-        errorText: action.error,
-      };
+      return { ...state, status: action.status, errorText: action.error };
 
     case "SET_TURNSTILE_REQUIRED":
       return { ...state, anonBattleTurnstileRequired: action.required };
@@ -293,7 +295,7 @@ function battleReducer(state: BattleState, action: Action): BattleState {
         ...state,
         outA: "",
         outB: "",
-        status: "loading" as BattleStatus,
+        status: "loading",
         errorText: null,
         winner: null,
         rubricTags: [],
@@ -310,57 +312,122 @@ function battleReducer(state: BattleState, action: Action): BattleState {
   }
 }
 
-// ── Hook ───────────────────────────────────────────────────────────
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isSide(value: unknown): value is Side {
+  return value === "A" || value === "B";
+}
+
+function isWinner(value: unknown): value is Winner {
+  return typeof value === "string" && VOTE_WINNERS.includes(value as Winner);
+}
+
+function isRunPublic(value: unknown): value is RunPublic {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.id === "string" &&
+    isSide(value.side) &&
+    (typeof value.output_text === "string" || value.output_text === null) &&
+    (isRecord(value.stats) || value.stats === null) &&
+    (typeof value.error_text === "string" || value.error_text === null)
+  );
+}
+
+function isBattlePublic(value: unknown): value is BattlePublic {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.id === "string" &&
+    typeof value.task_id === "string" &&
+    typeof value.source_text === "string" &&
+    typeof value.source_lang === "string" &&
+    typeof value.target_lang === "string" &&
+    typeof value.mode === "string" &&
+    typeof value.status === "string" &&
+    BATTLE_PUBLIC_STATUSES.includes(value.status as BattlePublicStatus) &&
+    (value.run_a === null || isRunPublic(value.run_a)) &&
+    (value.run_b === null || isRunPublic(value.run_b))
+  );
+}
+
+function parseBattlePublic(value: unknown): BattlePublic {
+  if (!isBattlePublic(value)) {
+    throw new Error("Invalid battle response");
+  }
+  return value;
+}
+
+function isRevealEntry(value: unknown): value is RevealData["A"] {
+  return isRecord(value) && typeof value.model_id === "string" && typeof value.display_name === "string";
+}
+
+function isRevealData(value: unknown): value is RevealData {
+  return isRecord(value) && isRevealEntry(value.A) && isRevealEntry(value.B);
+}
+
+function isVoteSubmitResponse(value: unknown): value is VoteSubmitResponse {
+  return (
+    isRecord(value) &&
+    typeof value.vote_id === "string" &&
+    typeof value.battle_id === "string" &&
+    isWinner(value.winner) &&
+    (value.reveal === null || isRevealData(value.reveal))
+  );
+}
+
+function parseVoteSubmitResponse(value: unknown): VoteSubmitResponse {
+  if (!isVoteSubmitResponse(value)) {
+    throw new Error("Invalid vote response");
+  }
+  return value;
+}
+
+function parsePublicConfig(value: unknown): { anonBattleTurnstileRequired: boolean } {
+  if (!isRecord(value)) {
+    throw new Error("Invalid public config response");
+  }
+
+  return {
+    anonBattleTurnstileRequired: value.anon_battle_turnstile_required === true,
+  };
+}
 
 export function useBattle(battleId: string) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const restartKey = searchParams.get("r") ?? "";
-
-  const { data: session, status: authStatus } = useSession();
-  const accessToken = session?.accessToken;
-  const sessionErrorString = session?.error;
-  const hasRefreshError = typeof sessionErrorString === "string" && [
-    "RefreshTokenMissing",
-    "RefreshDiscoveryFailed",
-    "RefreshTokenExpired",
-    "RefreshTokenError"
-  ].includes(sessionErrorString);
-  const isAuthed = authStatus === "authenticated" && Boolean(accessToken);
-  const accessTokenRef = useRef(accessToken);
-  useEffect(() => {
-    accessTokenRef.current = accessToken;
-  }, [accessToken]);
-
+  const { headers, headersRef, accessTokenRef, authStatus, accessToken, sessionError } = useAuthHeaders();
   const turnstileSiteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? "";
+  const isAuthed = authStatus === "authenticated" && Boolean(accessToken);
+  const hasRefreshError = sessionError !== null && REFRESH_ERRORS.includes(sessionError);
 
   const [state, dispatch] = useReducer(battleReducer, INITIAL_STATE);
 
-  // Refs that mirror state for use inside async closures (avoids stale captures).
-  const statusRef = useRef<string>(state.status);
+  const statusRef = useRef<BattleStatus>(state.status);
+  const replayPolicyRef = useRef<Record<Side, ReplayPolicy>>({ A: "consume", B: "consume" });
+  const voteSubmitLockRef = useRef(false);
+
   useEffect(() => {
     statusRef.current = state.status;
   }, [state.status]);
 
-  const replayPolicyRef = useRef<Record<Side, ReplayPolicy>>({
-    A: "consume",
-    B: "consume",
-  });
-  const voteSubmitLockRef = useRef(false);
-
-  // ── Effect: load public config ──
   useEffect(() => {
     let cancelled = false;
+
     async function loadPublicConfig() {
       try {
-        const payload = (await apiGet("/public-config")) as Record<
-          string,
-          unknown
-        >;
+        const payload = parsePublicConfig(await apiGet("/public-config"));
         if (cancelled) return;
         dispatch({
           type: "SET_TURNSTILE_REQUIRED",
-          required: payload?.anon_battle_turnstile_required === true,
+          required: payload.anonBattleTurnstileRequired,
         });
       } catch {
         if (cancelled) return;
@@ -370,21 +437,21 @@ export function useBattle(battleId: string) {
         });
       }
     }
+
     void loadPublicConfig();
     return () => {
       cancelled = true;
     };
   }, [turnstileSiteKey]);
 
-  // ── Effect: bootstrap battle ──
   useEffect(() => {
     let cancelled = false;
 
     async function bootstrapBattle() {
-      if (!isBattleBootstrapReady(authStatus)) return;
+      if (!isBattleBootstrapReady(authStatus)) {
+        return;
+      }
 
-      // Gate: anonymous users creating new battles need Turnstile first.
-      // Checked before resolvedBattleId so it activates even on config-driven re-runs.
       if (
         battleId === "new" &&
         !isAuthed &&
@@ -396,41 +463,38 @@ export function useBattle(battleId: string) {
         return;
       }
 
-      if (state.resolvedBattleId && state.resolvedBattleId === battleId) return;
+      if (state.resolvedBattleId && state.resolvedBattleId === battleId) {
+        return;
+      }
 
-      if (battleId === "new" && state.resolvedBattleId) return;
+      if (battleId === "new" && state.resolvedBattleId) {
+        return;
+      }
 
       dispatch({ type: "RESET_BATTLE" });
       replayPolicyRef.current = { A: "consume", B: "consume" };
       voteSubmitLockRef.current = false;
 
       try {
-        const battle = await loadOrCreateBattle<BattlePublic>(
-          battleId,
-          accessTokenRef.current,
-          battleId === "new" ? state.turnstileToken || undefined : undefined,
+        const battle = parseBattlePublic(
+          await loadOrCreateBattle(
+            battleId,
+            accessTokenRef.current,
+            battleId === "new" ? state.turnstileToken || undefined : undefined,
+          ),
         );
         if (cancelled) return;
 
-        const isFinished =
-          battle.status === "completed" || battle.status === "failed";
+        const isFinished = battle.status === "completed" || battle.status === "failed";
         replayPolicyRef.current = {
-          A:
-            isFinished && Boolean(battle.run_a?.output_text)
-              ? "ignore"
-              : "consume",
-          B:
-            isFinished && Boolean(battle.run_b?.output_text)
-              ? "ignore"
-              : "consume",
+          A: isFinished && Boolean(battle.run_a?.output_text) ? "ignore" : "consume",
+          B: isFinished && Boolean(battle.run_b?.output_text) ? "ignore" : "consume",
         };
 
         dispatch({ type: "BOOTSTRAP_SUCCESS", battle });
 
         if (battle.id !== battleId) {
-          router.push(`/battle/${encodeURIComponent(battle.id)}`, {
-            scroll: false,
-          });
+          router.push(`/battle/${encodeURIComponent(battle.id)}`, { scroll: false });
         }
       } catch (err) {
         if (cancelled) return;
@@ -445,46 +509,39 @@ export function useBattle(battleId: string) {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [battleId, authStatus, restartKey, router, state.anonBattleTurnstileRequired]);
+  }, [
+    accessTokenRef,
+    authStatus,
+    battleId,
+    isAuthed,
+    restartKey,
+    router,
+    state.anonBattleTurnstileRequired,
+    state.resolvedBattleId,
+    state.turnstileToken,
+  ]);
 
-  // ── Callback: handle Turnstile token for battle creation ──
   async function handleBattleTurnstileToken(token: string) {
     dispatch({ type: "SET_TURNSTILE_TOKEN", token });
 
-    if (state.status !== "waiting_for_turnstile" || battleId !== "new") return;
-
-    dispatch({ type: "SET_STATUS", status: "loading" });
-
-    try {
-      const battle = await loadOrCreateBattle<BattlePublic>(
-        "new",
-        accessTokenRef.current,
-        token,
-      );
-
-      replayPolicyRef.current = { A: "consume", B: "consume" };
-      dispatch({ type: "BOOTSTRAP_SUCCESS", battle });
-
-      router.push(`/battle/${encodeURIComponent(battle.id)}`, {
-        scroll: false,
-      });
-    } catch (err) {
-      dispatch({
-        type: "BOOTSTRAP_ERROR",
-        error: err instanceof Error ? err.message : "Failed to create battle",
-      });
+    if (battleId === "new") {
+      dispatch({ type: "SET_STATUS", status: "loading" });
     }
   }
 
-  // ── Effect: SSE stream ──
   const streamUrl = useMemo(() => {
-    if (!state.resolvedBattleId) return null;
+    if (!state.resolvedBattleId) {
+      return null;
+    }
+
     return `${getBackendBaseUrl()}/battles/${encodeURIComponent(state.resolvedBattleId)}/stream`;
   }, [state.resolvedBattleId]);
 
   useEffect(() => {
-    if (!streamUrl || !state.resolvedBattleId) return;
+    if (!streamUrl || !state.resolvedBattleId) {
+      return;
+    }
+
     const url = streamUrl;
     const abortController = new AbortController();
     let cancelled = false;
@@ -499,17 +556,17 @@ export function useBattle(battleId: string) {
           type: "SET_STATUS",
           status:
             statusRef.current === "done" || statusRef.current === "failed"
-              ? (statusRef.current as BattleStatus)
+              ? statusRef.current
               : "streaming",
         });
 
         for await (const evt of streamSSE(url, {
-          headers: accessTokenRef.current
-            ? { Authorization: `Bearer ${accessTokenRef.current}` }
-            : undefined,
+          headers: headersRef.current,
           signal: abortController.signal,
         })) {
-          if (cancelled) return;
+          if (cancelled) {
+            return;
+          }
 
           if (evt.event === "sse.retry") {
             dispatch({ type: "STREAM_RECONNECTING" });
@@ -521,9 +578,8 @@ export function useBattle(battleId: string) {
             const side = payload?.side;
             const delta = payload?.text_delta;
             const replay = payload?.replay === true;
-            const chunkIndexRaw = payload?.chunk_index;
             const chunkIndex =
-              typeof chunkIndexRaw === "number" ? chunkIndexRaw : null;
+              typeof payload?.chunk_index === "number" ? payload.chunk_index : null;
 
             if (
               replay &&
@@ -548,10 +604,7 @@ export function useBattle(battleId: string) {
             const errorPayload = asRecord(evt.data);
             dispatch({
               type: "RUN_ERROR",
-              error:
-                typeof errorPayload?.error === "string"
-                  ? errorPayload.error
-                  : null,
+              error: typeof errorPayload?.error === "string" ? errorPayload.error : null,
             });
           }
 
@@ -560,8 +613,7 @@ export function useBattle(battleId: string) {
             const payload = asRecord(evt.data);
             dispatch({
               type: "BATTLE_ERROR",
-              detail:
-                typeof payload?.detail === "string" ? payload.detail : null,
+              detail: typeof payload?.detail === "string" ? payload.detail : null,
             });
             break;
           }
@@ -575,7 +627,7 @@ export function useBattle(battleId: string) {
           if (evt.event === "battle.failed") {
             sawTerminalEvent = true;
             const payload = asRecord(evt.data);
-            dispatch({ 
+            dispatch({
               type: "BATTLE_FAILED",
               detail: typeof payload?.detail === "string" ? payload.detail : null,
             });
@@ -587,14 +639,16 @@ export function useBattle(battleId: string) {
           dispatch({ type: "STREAM_ENDED_EARLY" });
         }
       } catch (err) {
-        console.error("[STREAM ERROR]", err);
-        if (cancelled) return;
-        const msg = err instanceof Error ? err.message : "Battle stream failed";
+        if (cancelled) {
+          return;
+        }
+
+        const message = err instanceof Error ? err.message : "Battle stream failed";
         dispatch({
           type: "STREAM_ERROR",
-          error: msg.includes("401") 
+          error: message.includes("401")
             ? "Session expired or authentication failed. Please reload the page."
-            : msg,
+            : message,
         });
       }
     }
@@ -605,11 +659,7 @@ export function useBattle(battleId: string) {
       cancelled = true;
       abortController.abort();
     };
-    // accessToken intentionally excluded — uses ref to avoid SSE reconnect.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streamUrl, state.resolvedBattleId, state.retryCount]);
-
-  // ── Actions ──
+  }, [headersRef, state.resolvedBattleId, state.retryCount, streamUrl]);
 
   async function handleVoteSubmit() {
     if (
@@ -617,8 +667,9 @@ export function useBattle(battleId: string) {
       !state.resolvedBattleId ||
       !state.winner ||
       state.reveal
-    )
+    ) {
       return;
+    }
 
     voteSubmitLockRef.current = true;
     dispatch({ type: "VOTE_SUBMITTING" });
@@ -629,30 +680,22 @@ export function useBattle(battleId: string) {
         rubric: { tags: state.rubricTags },
         comment: state.comment || null,
       };
-      const result = (await apiPost(
-        `/battles/${encodeURIComponent(state.resolvedBattleId)}/vote`,
-        payload,
-        {
-          headers: accessTokenRef.current
-            ? { Authorization: `Bearer ${accessTokenRef.current}` }
-            : undefined,
-        },
-      )) as VoteSubmitResponse;
+      const result = parseVoteSubmitResponse(
+        await apiPost(`/battles/${encodeURIComponent(state.resolvedBattleId)}/vote`, payload, {
+          headers: headersRef.current,
+        }),
+      );
       dispatch({ type: "VOTE_SUCCESS", voteId: result.vote_id });
 
-      // Immediately reveal after submit to lock the vote and show model identities.
-      // If reveal fails, the vote is still recorded and the user can retry reveal.
       dispatch({ type: "REVEAL_LOADING" });
       try {
-        const revealResult = (await apiPost(
-          `/battles/${encodeURIComponent(state.resolvedBattleId)}/vote/reveal`,
-          {},
-          {
-            headers: accessTokenRef.current
-              ? { Authorization: `Bearer ${accessTokenRef.current}` }
-              : undefined,
-          },
-        )) as VoteSubmitResponse;
+        const revealResult = parseVoteSubmitResponse(
+          await apiPost(
+            `/battles/${encodeURIComponent(state.resolvedBattleId)}/vote/reveal`,
+            {},
+            { headers: headersRef.current },
+          ),
+        );
         if (revealResult.reveal) {
           dispatch({ type: "REVEAL_SUCCESS", reveal: revealResult.reveal });
         } else {
@@ -678,24 +721,25 @@ export function useBattle(battleId: string) {
   }
 
   async function handleReveal() {
-    if (!state.resolvedBattleId || !state.voteId || state.reveal) return;
+    if (!state.resolvedBattleId || !state.voteId || state.reveal) {
+      return;
+    }
 
     dispatch({ type: "REVEAL_LOADING" });
 
     try {
-      const result = (await apiPost(
-        `/battles/${encodeURIComponent(state.resolvedBattleId)}/vote/reveal`,
-        {},
-        {
-          headers: accessTokenRef.current
-            ? { Authorization: `Bearer ${accessTokenRef.current}` }
-            : undefined,
-        },
-      )) as VoteSubmitResponse;
+      const result = parseVoteSubmitResponse(
+        await apiPost(`/battles/${encodeURIComponent(state.resolvedBattleId)}/vote/reveal`, {}, {
+          headers: headersRef.current,
+        }),
+      );
       if (result.reveal) {
         dispatch({ type: "REVEAL_SUCCESS", reveal: result.reveal });
       } else {
-        dispatch({ type: "REVEAL_ERROR", error: "Reveal succeeded but response was missing reveal data" });
+        dispatch({
+          type: "REVEAL_ERROR",
+          error: "Reveal succeeded but response was missing reveal data",
+        });
       }
     } catch (err) {
       dispatch({
@@ -711,20 +755,16 @@ export function useBattle(battleId: string) {
   }
 
   async function handleRetry() {
-    if (!state.resolvedBattleId || state.voteId) return;
+    if (!state.resolvedBattleId || state.voteId) {
+      return;
+    }
 
     const retryFallbackStatus = state.status === "failed" ? "failed" : "error";
 
     try {
-      await apiPost(
-        `/battles/${encodeURIComponent(state.resolvedBattleId)}/retry`,
-        {},
-        {
-          headers: accessTokenRef.current
-            ? { Authorization: `Bearer ${accessTokenRef.current}` }
-            : undefined,
-        },
-      );
+      await apiPost(`/battles/${encodeURIComponent(state.resolvedBattleId)}/retry`, {}, {
+        headers: headersRef.current,
+      });
       replayPolicyRef.current = { A: "consume", B: "consume" };
       voteSubmitLockRef.current = false;
       dispatch({ type: "RETRY_BATTLE" });
@@ -737,12 +777,9 @@ export function useBattle(battleId: string) {
     }
   }
 
-  // ── Derived values ──
-
   const needsTurnstileForBattle =
     authStatus !== "loading" && !isAuthed && state.anonBattleTurnstileRequired;
   const turnstileMisconfigured = needsTurnstileForBattle && !turnstileSiteKey;
-
   const voteSubmitted = state.voteId !== null;
 
   const canVote =
@@ -777,12 +814,12 @@ export function useBattle(battleId: string) {
           : state.status === "failed"
             ? "Failed"
             : state.status === "error"
-             ? "Error"
-             : state.status === "loading"
-               ? "Loading..."
-              : state.status === "waiting_for_turnstile"
-                ? "Verification Required"
-                : state.status.charAt(0).toUpperCase() + state.status.slice(1);
+              ? "Error"
+              : state.status === "loading"
+                ? "Loading..."
+                : state.status === "waiting_for_turnstile"
+                  ? "Verification Required"
+                  : state.status.charAt(0).toUpperCase() + state.status.slice(1);
 
   return {
     state,

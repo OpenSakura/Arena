@@ -97,7 +97,14 @@ def create_app() -> FastAPI:
                 await oidc.aclose()
             with suppress(Exception):
                 orchestrator = get_battle_orchestrator()
-                await orchestrator._llm_client.aclose()
+                await orchestrator.llm_client.aclose()
+
+            with suppress(Exception):
+                from app.api.routes.battles import _get_turnstile_http_client
+
+                client = _get_turnstile_http_client()
+                client.close()
+                _get_turnstile_http_client.cache_clear()
 
             with suppress(Exception):
                 close_all_redis_clients()

@@ -8,12 +8,11 @@ Notes:
 - For security, only trusted admins should be able to create/modify models.
 """
 
-# pyright: reportMissingImports=false
-
 from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     Boolean,
@@ -79,14 +78,14 @@ class Model(Base):
         String(32), nullable=False, default="public", server_default=text("'public'")
     )
 
-    tags: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    tags: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     # Common OpenAI-compatible sampling params (first-class for UI/editing).
     temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
     frequency_penalty: Mapped[float | None] = mapped_column(Float, nullable=True)
     presence_penalty: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    params: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    params: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     # Prompt binding (nullable for MVP)
     prompt_template_id: Mapped[uuid.UUID | None] = mapped_column(

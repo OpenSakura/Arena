@@ -11,8 +11,6 @@ Notes:
 - Use asyncio concurrency; persist incremental state sparingly.
 """
 
-# pyright: reportMissingImports=false
-
 from __future__ import annotations
 
 import asyncio
@@ -158,6 +156,11 @@ class BattleOrchestrator:
         # single API worker/process for active battles.
         self._live_battles: dict[uuid.UUID, _LiveBattleEntry] = {}
         self._live_battles_guard = asyncio.Lock()
+
+    @property
+    def llm_client(self) -> LLMClient:
+        """Public accessor for the LLM client (used during shutdown cleanup)."""
+        return self._llm_client
 
     async def stream_battle(
         self,
@@ -1270,9 +1273,9 @@ def reset_battle_orchestrator() -> None:
 
             loop = _asyncio.get_event_loop()
             if loop.is_running():
-                loop.create_task(orchestrator._llm_client.aclose())
+                loop.create_task(orchestrator.llm_client.aclose())
             else:
-                loop.run_until_complete(orchestrator._llm_client.aclose())
+                loop.run_until_complete(orchestrator.llm_client.aclose())
         except Exception:  # noqa: BLE001
             pass
     get_battle_orchestrator.cache_clear()

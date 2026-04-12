@@ -14,6 +14,7 @@ import { useSession } from "next-auth/react";
 export function useAuthHeaders() {
   const { data: session, status: authStatus } = useSession();
   const accessToken = session?.accessToken;
+  const sessionError = typeof session?.error === "string" ? session.error : null;
 
   const accessTokenRef = useRef(accessToken);
   useEffect(() => {
@@ -26,5 +27,17 @@ export function useAuthHeaders() {
       : undefined;
   }, [accessToken]);
 
-  return { headers, accessTokenRef, authStatus, accessToken };
+  const headersRef = useRef(headers);
+  useEffect(() => {
+    headersRef.current = headers;
+  }, [headers]);
+
+  return {
+    headers,
+    headersRef,
+    accessTokenRef,
+    authStatus,
+    accessToken,
+    sessionError,
+  };
 }

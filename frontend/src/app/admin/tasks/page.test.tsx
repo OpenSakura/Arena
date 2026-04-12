@@ -12,7 +12,6 @@ const apiGetMock = vi.fn();
 const apiPostMock = vi.fn();
 const apiPutMock = vi.fn();
 const apiDeleteMock = vi.fn();
-const getBackendBaseUrlMock = vi.fn();
 
 vi.mock("next-auth/react", () => ({
   signIn: (...args: unknown[]) => signInMock(...args),
@@ -24,7 +23,6 @@ vi.mock("@/lib/api", () => ({
   apiPost: (...args: unknown[]) => apiPostMock(...args),
   apiPut: (...args: unknown[]) => apiPutMock(...args),
   apiDelete: (...args: unknown[]) => apiDeleteMock(...args),
-  getBackendBaseUrl: () => getBackendBaseUrlMock(),
 }));
 
 afterEach(() => {
@@ -39,9 +37,6 @@ beforeEach(() => {
   apiPostMock.mockReset();
   apiPutMock.mockReset();
   apiDeleteMock.mockReset();
-  getBackendBaseUrlMock.mockReset();
-
-  getBackendBaseUrlMock.mockReturnValue("http://backend.test");
 });
 
 function authenticatedSession() {
@@ -356,36 +351,28 @@ describe("AdminTasksPage", () => {
       throw new Error(`unexpected path: ${path}`);
     });
 
-    const fetchMock = vi.fn(
-      async (input: RequestInfo | URL) => {
-        const url = typeof input === "string" ? input : String(input);
-        if (url.startsWith("http://backend.test/admin/tasks/import-jsonl?")) {
-          refreshedTasks = {
-            tasks: [
-              taskRecord({
-                id: "task-imported",
-                source_text: "Imported source",
-              }),
-            ],
-          };
-          return new Response(
-            JSON.stringify({
-              ok: true,
-              imported: 1,
-              task_set_id: null,
-              filename: "batch.jsonl",
+    apiPostMock.mockImplementation((path: string, body: unknown) => {
+      if (path === "/admin/tasks/import-jsonl?source_lang=ja&target_lang=zh") {
+        expect(body).toBeInstanceOf(FormData);
+        refreshedTasks = {
+          tasks: [
+            taskRecord({
+              id: "task-imported",
+              source_text: "Imported source",
             }),
-            {
-              status: 200,
-              headers: { "content-type": "application/json" },
-            },
-          );
-        }
-        return new Response("unexpected", { status: 500 });
-      },
-    );
+          ],
+        };
 
-    vi.stubGlobal("fetch", fetchMock);
+        return Promise.resolve({
+          ok: true,
+          imported: 1,
+          task_set_id: null,
+          filename: "batch.jsonl",
+        });
+      }
+
+      throw new Error(`unexpected post path: ${path}`);
+    });
 
     render(<AdminTasksPage />);
     await screen.findByText("Showing 0 task(s)");
@@ -407,14 +394,12 @@ describe("AdminTasksPage", () => {
     await user.click(within(importSection).getByRole("button", { name: "Import" }));
 
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(
-        "http://backend.test/admin/tasks/import-jsonl?source_lang=ja&target_lang=zh",
-        expect.objectContaining({
-          method: "POST",
-          credentials: "include",
+      expect(apiPostMock).toHaveBeenCalledWith(
+        "/admin/tasks/import-jsonl?source_lang=ja&target_lang=zh",
+        expect.any(FormData),
+        {
           headers: { Authorization: "Bearer admin-token" },
-          body: expect.any(FormData),
-        }),
+        },
       );
     });
 
@@ -436,9 +421,6 @@ describe("AdminTasksPage", () => {
       throw new Error(`unexpected path: ${path}`);
     });
 
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-
     render(<AdminTasksPage />);
     await screen.findByText("Showing 0 task(s)");
 
@@ -448,6 +430,6 @@ describe("AdminTasksPage", () => {
     await user.click(within(importSection).getByRole("button", { name: "Import" }));
 
     await screen.findByText("Select a .jsonl file first");
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(apiPostMock).not.toHaveBeenCalled();
   });
 });

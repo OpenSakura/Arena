@@ -9,12 +9,9 @@
 
 import { useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
-import { apiGet } from "@/lib/api";
 
-type MeResponse = {
-  authenticated: boolean;
-  is_admin: boolean;
-};
+import { apiGet } from "@/lib/api";
+import { parseMeResponse } from "@/types/me";
 
 export function useAdminAccess() {
   const { data: session, status } = useSession();
@@ -43,7 +40,7 @@ export function useAdminAccess() {
     })
       .then((data) => {
         if (cancelled) return;
-        const me = data as MeResponse;
+        const me = parseMeResponse(data);
         setIsAdmin(Boolean(me?.is_admin));
       })
       .catch(() => {

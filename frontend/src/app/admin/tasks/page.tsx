@@ -6,12 +6,12 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useReducer } from "react";
 
 import { Skeleton } from "@/components/ui/skeleton";
-import { apiDelete, apiGet, apiPost, apiPut, getBackendBaseUrl } from "@/lib/api";
-import { parseJsonObjectOrNull } from "@/lib/adminParsers";
 import { useAuthHeaders } from "@/hooks/useAuthHeaders";
+import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api";
+import { parseJsonObjectOrNull } from "@/lib/adminParsers";
 
 type TaskSet = {
   id: string;
@@ -55,61 +55,396 @@ type EditTaskState = {
   metadataText: string;
 };
 
+type State = {
+  taskSets: TaskSet[];
+  tasks: Task[];
+  selectedTaskSetId: string | "";
+  editingSet: EditTaskSetState | null;
+  savingSet: boolean;
+  editingTask: EditTaskState | null;
+  savingTask: boolean;
+  loadingSets: boolean;
+  loadingTasks: boolean;
+  errorText: string | null;
+  creatingSet: boolean;
+  newSetName: string;
+  newSetDescription: string;
+  newSetMetadataText: string;
+  creatingTask: boolean;
+  taskSourceText: string;
+  taskSourceLang: string;
+  taskTargetLang: string;
+  taskMetadataText: string;
+  importing: boolean;
+  importFile: File | null;
+  importSourceLang: string;
+  importTargetLang: string;
+  importResult: ImportResponse | null;
+  visibleCount: number;
+};
+
+type Action =
+  | { type: "LOAD_TASK_SETS_START" }
+  | { type: "LOAD_TASK_SETS_SUCCESS"; taskSets: TaskSet[] }
+  | { type: "LOAD_TASK_SETS_ERROR"; error: string }
+  | { type: "LOAD_TASKS_START" }
+  | { type: "LOAD_TASKS_SUCCESS"; tasks: Task[]; visibleCount: number }
+  | { type: "LOAD_TASKS_ERROR"; error: string }
+  | { type: "SET_SELECTED_TASK_SET_ID"; value: string | "" }
+  | { type: "SYNC_EDITING_SET" }
+  | { type: "SET_NEW_SET_NAME"; value: string }
+  | { type: "SET_NEW_SET_DESCRIPTION"; value: string }
+  | { type: "SET_NEW_SET_METADATA_TEXT"; value: string }
+  | { type: "CREATE_SET_START" }
+  | { type: "CREATE_SET_SUCCESS"; created: TaskSet }
+  | { type: "CREATE_SET_ERROR"; error: string }
+  | { type: "SET_EDITING_SET_FIELD"; field: keyof EditTaskSetState; value: string }
+  | { type: "SAVE_SET_START" }
+  | { type: "SAVE_SET_SUCCESS"; updated: TaskSet }
+  | { type: "SAVE_SET_ERROR"; error: string }
+  | { type: "DELETE_SET_SUCCESS"; id: string }
+  | { type: "DELETE_SET_ERROR"; error: string }
+  | { type: "SET_TASK_SOURCE_TEXT"; value: string }
+  | { type: "SET_TASK_SOURCE_LANG"; value: string }
+  | { type: "SET_TASK_TARGET_LANG"; value: string }
+  | { type: "SET_TASK_METADATA_TEXT"; value: string }
+  | { type: "CREATE_TASK_START" }
+  | { type: "CREATE_TASK_SUCCESS"; created: Task }
+  | { type: "CREATE_TASK_ERROR"; error: string }
+  | { type: "START_EDIT_TASK"; task: EditTaskState }
+  | { type: "CLOSE_EDIT_TASK" }
+  | { type: "SET_EDIT_TASK_FIELD"; field: keyof EditTaskState; value: string }
+  | { type: "SAVE_TASK_START" }
+  | { type: "SAVE_TASK_SUCCESS"; updated: Task }
+  | { type: "SAVE_TASK_ERROR"; error: string }
+  | { type: "DELETE_TASK_SUCCESS"; id: string }
+  | { type: "DELETE_TASK_ERROR"; error: string }
+  | { type: "SET_IMPORT_FILE"; value: File | null }
+  | { type: "SET_IMPORT_SOURCE_LANG"; value: string }
+  | { type: "SET_IMPORT_TARGET_LANG"; value: string }
+  | { type: "IMPORT_START" }
+  | { type: "IMPORT_SUCCESS"; result: ImportResponse; tasks: Task[] }
+  | { type: "IMPORT_ERROR"; error: string }
+  | { type: "SHOW_MORE"; amount: number };
+
+const TASKS_PAGE_SIZE = 50;
+
+const INITIAL_STATE: State = {
+  taskSets: [],
+  tasks: [],
+  selectedTaskSetId: "",
+  editingSet: null,
+  savingSet: false,
+  editingTask: null,
+  savingTask: false,
+  loadingSets: true,
+  loadingTasks: true,
+  errorText: null,
+  creatingSet: false,
+  newSetName: "",
+  newSetDescription: "",
+  newSetMetadataText: "",
+  creatingTask: false,
+  taskSourceText: "",
+  taskSourceLang: "ja",
+  taskTargetLang: "zh",
+  taskMetadataText: "",
+  importing: false,
+  importFile: null,
+  importSourceLang: "ja",
+  importTargetLang: "zh",
+  importResult: null,
+  visibleCount: TASKS_PAGE_SIZE,
+};
+
+function reducer(state: State, action: Action): State {
+  switch (action.type) {
+    case "LOAD_TASK_SETS_START":
+      return { ...state, loadingSets: true, errorText: null };
+    case "LOAD_TASK_SETS_SUCCESS":
+      return { ...state, loadingSets: false, taskSets: action.taskSets, errorText: null };
+    case "LOAD_TASK_SETS_ERROR":
+      return { ...state, loadingSets: false, errorText: action.error };
+    case "LOAD_TASKS_START":
+      return { ...state, loadingTasks: true, errorText: null };
+    case "LOAD_TASKS_SUCCESS":
+      return {
+        ...state,
+        loadingTasks: false,
+        tasks: action.tasks,
+        visibleCount: action.visibleCount,
+        errorText: null,
+      };
+    case "LOAD_TASKS_ERROR":
+      return { ...state, loadingTasks: false, errorText: action.error };
+    case "SET_SELECTED_TASK_SET_ID":
+      return { ...state, selectedTaskSetId: action.value };
+    case "SYNC_EDITING_SET": {
+      if (!state.selectedTaskSetId) {
+        return { ...state, editingSet: null };
+      }
+
+      const found = state.taskSets.find((taskSet) => taskSet.id === state.selectedTaskSetId);
+      if (!found) {
+        return { ...state, editingSet: null };
+      }
+
+      return {
+        ...state,
+        editingSet: {
+          id: found.id,
+          name: found.name,
+          description: found.description ?? "",
+          metadataText: found.metadata ? JSON.stringify(found.metadata, null, 2) : "",
+        },
+      };
+    }
+    case "SET_NEW_SET_NAME":
+      return { ...state, newSetName: action.value };
+    case "SET_NEW_SET_DESCRIPTION":
+      return { ...state, newSetDescription: action.value };
+    case "SET_NEW_SET_METADATA_TEXT":
+      return { ...state, newSetMetadataText: action.value };
+    case "CREATE_SET_START":
+      return { ...state, creatingSet: true, errorText: null };
+    case "CREATE_SET_SUCCESS":
+      return {
+        ...state,
+        creatingSet: false,
+        taskSets: [action.created, ...state.taskSets],
+        newSetName: "",
+        newSetDescription: "",
+        newSetMetadataText: "",
+      };
+    case "CREATE_SET_ERROR":
+      return { ...state, creatingSet: false, errorText: action.error };
+    case "SET_EDITING_SET_FIELD":
+      return state.editingSet
+        ? { ...state, editingSet: { ...state.editingSet, [action.field]: action.value } }
+        : state;
+    case "SAVE_SET_START":
+      return { ...state, savingSet: true, errorText: null };
+    case "SAVE_SET_SUCCESS": {
+      const taskSets = state.taskSets.map((taskSet) =>
+        taskSet.id === action.updated.id ? action.updated : taskSet,
+      );
+      return {
+        ...state,
+        savingSet: false,
+        taskSets,
+        editingSet: {
+          id: action.updated.id,
+          name: action.updated.name,
+          description: action.updated.description ?? "",
+          metadataText: action.updated.metadata ? JSON.stringify(action.updated.metadata, null, 2) : "",
+        },
+      };
+    }
+    case "SAVE_SET_ERROR":
+      return { ...state, savingSet: false, errorText: action.error };
+    case "DELETE_SET_SUCCESS":
+      return {
+        ...state,
+        taskSets: state.taskSets.filter((taskSet) => taskSet.id !== action.id),
+        selectedTaskSetId: state.selectedTaskSetId === action.id ? "" : state.selectedTaskSetId,
+        editingSet: state.editingSet?.id === action.id ? null : state.editingSet,
+        errorText: null,
+      };
+    case "DELETE_SET_ERROR":
+      return { ...state, errorText: action.error };
+    case "SET_TASK_SOURCE_TEXT":
+      return { ...state, taskSourceText: action.value };
+    case "SET_TASK_SOURCE_LANG":
+      return { ...state, taskSourceLang: action.value };
+    case "SET_TASK_TARGET_LANG":
+      return { ...state, taskTargetLang: action.value };
+    case "SET_TASK_METADATA_TEXT":
+      return { ...state, taskMetadataText: action.value };
+    case "CREATE_TASK_START":
+      return { ...state, creatingTask: true, errorText: null };
+    case "CREATE_TASK_SUCCESS":
+      return {
+        ...state,
+        creatingTask: false,
+        tasks: [action.created, ...state.tasks],
+        taskSourceText: "",
+        taskMetadataText: "",
+      };
+    case "CREATE_TASK_ERROR":
+      return { ...state, creatingTask: false, errorText: action.error };
+    case "START_EDIT_TASK":
+      return { ...state, editingTask: action.task };
+    case "CLOSE_EDIT_TASK":
+      return { ...state, editingTask: null };
+    case "SET_EDIT_TASK_FIELD":
+      return state.editingTask
+        ? { ...state, editingTask: { ...state.editingTask, [action.field]: action.value } }
+        : state;
+    case "SAVE_TASK_START":
+      return { ...state, savingTask: true, errorText: null };
+    case "SAVE_TASK_SUCCESS":
+      return {
+        ...state,
+        savingTask: false,
+        tasks: state.tasks.map((task) => (task.id === action.updated.id ? action.updated : task)),
+        editingTask: null,
+      };
+    case "SAVE_TASK_ERROR":
+      return { ...state, savingTask: false, errorText: action.error };
+    case "DELETE_TASK_SUCCESS":
+      return {
+        ...state,
+        tasks: state.tasks.filter((task) => task.id !== action.id),
+        editingTask: state.editingTask?.id === action.id ? null : state.editingTask,
+        errorText: null,
+      };
+    case "DELETE_TASK_ERROR":
+      return { ...state, errorText: action.error };
+    case "SET_IMPORT_FILE":
+      return { ...state, importFile: action.value };
+    case "SET_IMPORT_SOURCE_LANG":
+      return { ...state, importSourceLang: action.value };
+    case "SET_IMPORT_TARGET_LANG":
+      return { ...state, importTargetLang: action.value };
+    case "IMPORT_START":
+      return { ...state, importing: true, errorText: null, importResult: null };
+    case "IMPORT_SUCCESS":
+      return {
+        ...state,
+        importing: false,
+        importResult: action.result,
+        tasks: action.tasks,
+      };
+    case "IMPORT_ERROR":
+      return { ...state, importing: false, errorText: action.error };
+    case "SHOW_MORE":
+      return { ...state, visibleCount: state.visibleCount + action.amount };
+    default:
+      return state;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isTaskSet(value: unknown): value is TaskSet {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.name === "string" &&
+    (typeof value.description === "string" || value.description === null) &&
+    (value.metadata === null || isRecord(value.metadata))
+  );
+}
+
+function isTask(value: unknown): value is Task {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    (typeof value.task_set_id === "string" || value.task_set_id === null) &&
+    typeof value.source_lang === "string" &&
+    typeof value.target_lang === "string" &&
+    typeof value.source_text === "string" &&
+    (value.metadata === null || isRecord(value.metadata))
+  );
+}
+
+function isImportResponse(value: unknown): value is ImportResponse {
+  return (
+    isRecord(value) &&
+    typeof value.ok === "boolean" &&
+    typeof value.imported === "number" &&
+    (typeof value.task_set_id === "string" || value.task_set_id === null) &&
+    typeof value.filename === "string"
+  );
+}
+
+function parseTaskSetsResponse(value: unknown): ListTaskSetsResponse {
+  if (!isRecord(value) || !Array.isArray(value.task_sets)) {
+    throw new Error("Invalid task sets response");
+  }
+
+  const taskSets = value.task_sets.filter(isTaskSet);
+  if (taskSets.length !== value.task_sets.length) {
+    throw new Error("Invalid task sets response");
+  }
+
+  return { task_sets: taskSets };
+}
+
+function parseTasksResponse(value: unknown): ListTasksResponse {
+  if (!isRecord(value) || !Array.isArray(value.tasks)) {
+    throw new Error("Invalid tasks response");
+  }
+
+  const tasks = value.tasks.filter(isTask);
+  if (tasks.length !== value.tasks.length) {
+    throw new Error("Invalid tasks response");
+  }
+
+  return { tasks };
+}
+
+function parseTaskSet(value: unknown): TaskSet {
+  if (!isTaskSet(value)) {
+    throw new Error("Invalid task set response");
+  }
+
+  return value;
+}
+
+function parseTask(value: unknown): Task {
+  if (!isTask(value)) {
+    throw new Error("Invalid task response");
+  }
+
+  return value;
+}
+
+function parseImportResponse(value: unknown): ImportResponse {
+  if (!isImportResponse(value)) {
+    throw new Error("Invalid import response");
+  }
+
+  return value;
+}
+
+function toEditTaskState(task: Task): EditTaskState {
+  return {
+    id: task.id,
+    task_set_id: task.task_set_id ?? "",
+    source_lang: task.source_lang,
+    target_lang: task.target_lang,
+    source_text: task.source_text,
+    metadataText: task.metadata ? JSON.stringify(task.metadata, null, 2) : "",
+  };
+}
+
 export default function AdminTasksPage() {
   const { headers } = useAuthHeaders();
-
-  const [taskSets, setTaskSets] = useState<TaskSet[]>([]);
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [selectedTaskSetId, setSelectedTaskSetId] = useState<string | "">("");
-
-  const [editingSet, setEditingSet] = useState<EditTaskSetState | null>(null);
-  const [savingSet, setSavingSet] = useState(false);
-  const [editingTask, setEditingTask] = useState<EditTaskState | null>(null);
-  const [savingTask, setSavingTask] = useState(false);
-
-  const [loadingSets, setLoadingSets] = useState(true);
-  const [loadingTasks, setLoadingTasks] = useState(true);
-  const [errorText, setErrorText] = useState<string | null>(null);
-
-  const [creatingSet, setCreatingSet] = useState(false);
-  const [newSetName, setNewSetName] = useState("");
-  const [newSetDescription, setNewSetDescription] = useState("");
-  const [newSetMetadataText, setNewSetMetadataText] = useState("");
-
-  const [creatingTask, setCreatingTask] = useState(false);
-  const [taskSourceText, setTaskSourceText] = useState("");
-  const [taskSourceLang, setTaskSourceLang] = useState("ja");
-  const [taskTargetLang, setTaskTargetLang] = useState("zh");
-  const [taskMetadataText, setTaskMetadataText] = useState("");
-
-  const [importing, setImporting] = useState(false);
-  const [importFile, setImportFile] = useState<File | null>(null);
-  const [importSourceLang, setImportSourceLang] = useState("ja");
-  const [importTargetLang, setImportTargetLang] = useState("zh");
-  const [importResult, setImportResult] = useState<ImportResponse | null>(null);
-
-  const [visibleCount, setVisibleCount] = useState(50);
-  const TASKS_PAGE_SIZE = 50;
+  const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadTaskSets() {
       if (!headers) {
-        setLoadingSets(false);
+        dispatch({ type: "LOAD_TASK_SETS_SUCCESS", taskSets: [] });
         return;
       }
-      setLoadingSets(true);
-      setErrorText(null);
+
+      dispatch({ type: "LOAD_TASK_SETS_START" });
       try {
-        const res = (await apiGet("/admin/task-sets", { headers })) as ListTaskSetsResponse;
+        const res = parseTaskSetsResponse(await apiGet("/admin/task-sets", { headers }));
         if (cancelled) return;
-        setTaskSets(res.task_sets);
+        dispatch({ type: "LOAD_TASK_SETS_SUCCESS", taskSets: res.task_sets });
       } catch (err) {
         if (cancelled) return;
-        setErrorText(err instanceof Error ? err.message : "Failed to load task sets");
-      } finally {
-        if (!cancelled) setLoadingSets(false);
+        dispatch({
+          type: "LOAD_TASK_SETS_ERROR",
+          error: err instanceof Error ? err.message : "Failed to load task sets",
+        });
       }
     }
 
@@ -124,22 +459,28 @@ export default function AdminTasksPage() {
 
     async function loadTasks() {
       if (!headers) {
-        setLoadingTasks(false);
+        dispatch({ type: "LOAD_TASKS_SUCCESS", tasks: [], visibleCount: TASKS_PAGE_SIZE });
         return;
       }
-      setLoadingTasks(true);
-      setErrorText(null);
+
+      dispatch({ type: "LOAD_TASKS_START" });
       try {
-        const qs = selectedTaskSetId ? `?task_set_id=${encodeURIComponent(selectedTaskSetId)}` : "";
-        const res = (await apiGet(`/admin/tasks${qs}`, { headers })) as ListTasksResponse;
+        const qs = state.selectedTaskSetId
+          ? `?task_set_id=${encodeURIComponent(state.selectedTaskSetId)}`
+          : "";
+        const res = parseTasksResponse(await apiGet(`/admin/tasks${qs}`, { headers }));
         if (cancelled) return;
-        setTasks(res.tasks);
-        setVisibleCount(TASKS_PAGE_SIZE);
+        dispatch({
+          type: "LOAD_TASKS_SUCCESS",
+          tasks: res.tasks,
+          visibleCount: TASKS_PAGE_SIZE,
+        });
       } catch (err) {
         if (cancelled) return;
-        setErrorText(err instanceof Error ? err.message : "Failed to load tasks");
-      } finally {
-        if (!cancelled) setLoadingTasks(false);
+        dispatch({
+          type: "LOAD_TASKS_ERROR",
+          error: err instanceof Error ? err.message : "Failed to load tasks",
+        });
       }
     }
 
@@ -147,170 +488,130 @@ export default function AdminTasksPage() {
     return () => {
       cancelled = true;
     };
-  }, [headers, selectedTaskSetId]);
+  }, [headers, state.selectedTaskSetId]);
 
   useEffect(() => {
-    if (!selectedTaskSetId) {
-      setEditingSet(null);
-      return;
-    }
-
-    const found = taskSets.find((s) => s.id === selectedTaskSetId);
-    if (!found) {
-      setEditingSet(null);
-      return;
-    }
-
-    setEditingSet({
-      id: found.id,
-      name: found.name,
-      description: found.description ?? "",
-      metadataText: found.metadata ? JSON.stringify(found.metadata, null, 2) : "",
-    });
-  }, [selectedTaskSetId, taskSets]);
+    dispatch({ type: "SYNC_EDITING_SET" });
+  }, [state.selectedTaskSetId, state.taskSets]);
 
   async function handleCreateTaskSet() {
     if (!headers) return;
 
-    setCreatingSet(true);
-    setErrorText(null);
+    dispatch({ type: "CREATE_SET_START" });
     try {
-      if (!newSetName.trim()) throw new Error("name is required");
+      if (!state.newSetName.trim()) throw new Error("name is required");
 
       const payload: Record<string, unknown> = {
-        name: newSetName.trim(),
-        description: newSetDescription.trim() ? newSetDescription.trim() : null,
-        metadata: parseJsonObjectOrNull(newSetMetadataText),
+        name: state.newSetName.trim(),
+        description: state.newSetDescription.trim() ? state.newSetDescription.trim() : null,
+        metadata: parseJsonObjectOrNull(state.newSetMetadataText),
       };
 
-      const created = (await apiPost("/admin/task-sets", payload, { headers })) as TaskSet;
-      setTaskSets((prev) => [created, ...prev]);
-      setNewSetName("");
-      setNewSetDescription("");
-      setNewSetMetadataText("");
+      const created = parseTaskSet(await apiPost("/admin/task-sets", payload, { headers }));
+      dispatch({ type: "CREATE_SET_SUCCESS", created });
     } catch (err) {
-      setErrorText(err instanceof Error ? err.message : "Failed to create task set");
-    } finally {
-      setCreatingSet(false);
+      dispatch({
+        type: "CREATE_SET_ERROR",
+        error: err instanceof Error ? err.message : "Failed to create task set",
+      });
     }
   }
 
   async function handleSaveSelectedTaskSet() {
-    if (!headers || !editingSet) return;
-    setSavingSet(true);
-    setErrorText(null);
+    if (!headers || !state.editingSet) return;
+
+    dispatch({ type: "SAVE_SET_START" });
     try {
-      if (!editingSet.name.trim()) throw new Error("name is required");
+      if (!state.editingSet.name.trim()) throw new Error("name is required");
 
       const payload: Record<string, unknown> = {
-        name: editingSet.name.trim(),
-        description: editingSet.description.trim() ? editingSet.description.trim() : null,
-        metadata: parseJsonObjectOrNull(editingSet.metadataText),
+        name: state.editingSet.name.trim(),
+        description: state.editingSet.description.trim() ? state.editingSet.description.trim() : null,
+        metadata: parseJsonObjectOrNull(state.editingSet.metadataText),
       };
 
-      const updated = (await apiPut(
-        `/admin/task-sets/${encodeURIComponent(editingSet.id)}`,
-        payload,
-        { headers },
-      )) as TaskSet;
-
-      setTaskSets((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
-      setEditingSet({
-        id: updated.id,
-        name: updated.name,
-        description: updated.description ?? "",
-        metadataText: updated.metadata ? JSON.stringify(updated.metadata, null, 2) : "",
-      });
+      const updated = parseTaskSet(
+        await apiPut(`/admin/task-sets/${encodeURIComponent(state.editingSet.id)}`, payload, {
+          headers,
+        }),
+      );
+      dispatch({ type: "SAVE_SET_SUCCESS", updated });
     } catch (err) {
-      setErrorText(err instanceof Error ? err.message : "Failed to update task set");
-    } finally {
-      setSavingSet(false);
+      dispatch({
+        type: "SAVE_SET_ERROR",
+        error: err instanceof Error ? err.message : "Failed to update task set",
+      });
     }
   }
 
   async function handleDeleteSelectedTaskSet() {
-    if (!headers || !editingSet) return;
+    if (!headers || !state.editingSet) return;
     if (!confirm("Delete this task set? (must be empty)")) return;
 
-    setErrorText(null);
     try {
-      await apiDelete(`/admin/task-sets/${encodeURIComponent(editingSet.id)}`, { headers });
-
-      setTaskSets((prev) => prev.filter((s) => s.id !== editingSet.id));
-      setSelectedTaskSetId("");
-      setEditingSet(null);
+      await apiDelete(`/admin/task-sets/${encodeURIComponent(state.editingSet.id)}`, { headers });
+      dispatch({ type: "DELETE_SET_SUCCESS", id: state.editingSet.id });
     } catch (err) {
-      setErrorText(err instanceof Error ? err.message : "Failed to delete task set");
+      dispatch({
+        type: "DELETE_SET_ERROR",
+        error: err instanceof Error ? err.message : "Failed to delete task set",
+      });
     }
   }
 
   async function handleCreateTask() {
     if (!headers) return;
 
-    setCreatingTask(true);
-    setErrorText(null);
+    dispatch({ type: "CREATE_TASK_START" });
     try {
-      if (!taskSourceText.trim()) throw new Error("source_text is required");
+      if (!state.taskSourceText.trim()) throw new Error("source_text is required");
+
       const payload: Record<string, unknown> = {
-        task_set_id: selectedTaskSetId ? selectedTaskSetId : null,
-        source_lang: taskSourceLang.trim() ? taskSourceLang.trim() : "ja",
-        target_lang: taskTargetLang.trim() ? taskTargetLang.trim() : "zh",
-        source_text: taskSourceText,
-        metadata: parseJsonObjectOrNull(taskMetadataText),
+        task_set_id: state.selectedTaskSetId ? state.selectedTaskSetId : null,
+        source_lang: state.taskSourceLang.trim() ? state.taskSourceLang.trim() : "ja",
+        target_lang: state.taskTargetLang.trim() ? state.taskTargetLang.trim() : "zh",
+        source_text: state.taskSourceText,
+        metadata: parseJsonObjectOrNull(state.taskMetadataText),
       };
 
-      const created = (await apiPost("/admin/tasks", payload, { headers })) as Task;
-      setTasks((prev) => [created, ...prev]);
-      setTaskSourceText("");
-      setTaskMetadataText("");
+      const created = parseTask(await apiPost("/admin/tasks", payload, { headers }));
+      dispatch({ type: "CREATE_TASK_SUCCESS", created });
     } catch (err) {
-      setErrorText(err instanceof Error ? err.message : "Failed to create task");
-    } finally {
-      setCreatingTask(false);
+      dispatch({
+        type: "CREATE_TASK_ERROR",
+        error: err instanceof Error ? err.message : "Failed to create task",
+      });
     }
   }
 
-  function startEditTask(task: Task) {
-    setEditingTask({
-      id: task.id,
-      task_set_id: task.task_set_id ?? "",
-      source_lang: task.source_lang,
-      target_lang: task.target_lang,
-      source_text: task.source_text,
-      metadataText: task.metadata ? JSON.stringify(task.metadata, null, 2) : "",
-    });
-  }
-
   async function handleSaveTaskEdit() {
-    if (!headers || !editingTask) return;
+    if (!headers || !state.editingTask) return;
 
-    setSavingTask(true);
-    setErrorText(null);
+    dispatch({ type: "SAVE_TASK_START" });
     try {
-      if (!editingTask.source_text.trim()) throw new Error("source_text is required");
-      if (!editingTask.source_lang.trim()) throw new Error("source_lang is required");
-      if (!editingTask.target_lang.trim()) throw new Error("target_lang is required");
+      if (!state.editingTask.source_text.trim()) throw new Error("source_text is required");
+      if (!state.editingTask.source_lang.trim()) throw new Error("source_lang is required");
+      if (!state.editingTask.target_lang.trim()) throw new Error("target_lang is required");
 
       const payload: Record<string, unknown> = {
-        task_set_id: editingTask.task_set_id ? editingTask.task_set_id : null,
-        source_lang: editingTask.source_lang.trim(),
-        target_lang: editingTask.target_lang.trim(),
-        source_text: editingTask.source_text,
-        metadata: parseJsonObjectOrNull(editingTask.metadataText),
+        task_set_id: state.editingTask.task_set_id ? state.editingTask.task_set_id : null,
+        source_lang: state.editingTask.source_lang.trim(),
+        target_lang: state.editingTask.target_lang.trim(),
+        source_text: state.editingTask.source_text,
+        metadata: parseJsonObjectOrNull(state.editingTask.metadataText),
       };
 
-      const updated = (await apiPut(
-        `/admin/tasks/${encodeURIComponent(editingTask.id)}`,
-        payload,
-        { headers },
-      )) as Task;
-
-      setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
-      setEditingTask(null);
+      const updated = parseTask(
+        await apiPut(`/admin/tasks/${encodeURIComponent(state.editingTask.id)}`, payload, {
+          headers,
+        }),
+      );
+      dispatch({ type: "SAVE_TASK_SUCCESS", updated });
     } catch (err) {
-      setErrorText(err instanceof Error ? err.message : "Failed to update task");
-    } finally {
-      setSavingTask(false);
+      dispatch({
+        type: "SAVE_TASK_ERROR",
+        error: err instanceof Error ? err.message : "Failed to update task",
+      });
     }
   }
 
@@ -318,72 +619,82 @@ export default function AdminTasksPage() {
     if (!headers) return;
     if (!confirm("Delete this task?")) return;
 
-    setErrorText(null);
     try {
       await apiDelete(`/admin/tasks/${encodeURIComponent(id)}`, { headers });
-      setTasks((prev) => prev.filter((t) => t.id !== id));
-      setEditingTask((prev) => (prev?.id === id ? null : prev));
+      dispatch({ type: "DELETE_TASK_SUCCESS", id });
     } catch (err) {
-      setErrorText(err instanceof Error ? err.message : "Failed to delete task");
+      dispatch({
+        type: "DELETE_TASK_ERROR",
+        error: err instanceof Error ? err.message : "Failed to delete task",
+      });
     }
   }
 
   async function handleImportJsonl() {
     if (!headers) return;
-    if (!importFile) {
-      setErrorText("Select a .jsonl file first");
+    if (!state.importFile) {
+      dispatch({ type: "IMPORT_ERROR", error: "Select a .jsonl file first" });
       return;
     }
 
-    setImporting(true);
-    setErrorText(null);
-    setImportResult(null);
+    dispatch({ type: "IMPORT_START" });
     try {
       const form = new FormData();
-      form.append("file", importFile);
+      form.append("file", state.importFile);
 
       const qs = new URLSearchParams();
-      if (selectedTaskSetId) qs.set("task_set_id", selectedTaskSetId);
-      if (importSourceLang.trim()) qs.set("source_lang", importSourceLang.trim());
-      if (importTargetLang.trim()) qs.set("target_lang", importTargetLang.trim());
+      if (state.selectedTaskSetId) qs.set("task_set_id", state.selectedTaskSetId);
+      if (state.importSourceLang.trim()) qs.set("source_lang", state.importSourceLang.trim());
+      if (state.importTargetLang.trim()) qs.set("target_lang", state.importTargetLang.trim());
 
       const path = `/admin/tasks/import-jsonl?${qs.toString()}`;
-      const res = await fetch(`${getBackendBaseUrl()}${path}`, {
-        method: "POST",
-        credentials: "include",
-        headers,
-        body: form,
-      });
+      const body = parseImportResponse(await apiPost(path, form, { headers }));
 
-      if (!res.ok) {
-        let detail: string | null = null;
-        const ct = res.headers.get("content-type") ?? "";
-        try {
-          if (ct.includes("application/json")) {
-            const data = await res.json() as Record<string, unknown>;
-            detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data);
-          } else {
-            detail = await res.text();
-          }
-        } catch { /* ignore parse errors */ }
-        throw new Error(`POST ${path} failed: ${res.status}${detail ? ` - ${detail}` : ""}`);
-      }
-
-      const body = (await res.json()) as ImportResponse;
-      setImportResult(body);
-
-      // Refresh task list after import.
-      const refreshed = (await apiGet(
-        `/admin/tasks${selectedTaskSetId ? `?task_set_id=${encodeURIComponent(selectedTaskSetId)}` : ""}`,
-        { headers },
-      )) as ListTasksResponse;
-      setTasks(refreshed.tasks);
+      const refreshed = parseTasksResponse(
+        await apiGet(
+          `/admin/tasks${
+            state.selectedTaskSetId
+              ? `?task_set_id=${encodeURIComponent(state.selectedTaskSetId)}`
+              : ""
+          }`,
+          { headers },
+        ),
+      );
+      dispatch({ type: "IMPORT_SUCCESS", result: body, tasks: refreshed.tasks });
     } catch (err) {
-      setErrorText(err instanceof Error ? err.message : "Failed to import tasks");
-    } finally {
-      setImporting(false);
+      dispatch({
+        type: "IMPORT_ERROR",
+        error: err instanceof Error ? err.message : "Failed to import tasks",
+      });
     }
   }
+
+  const {
+    taskSets,
+    tasks,
+    selectedTaskSetId,
+    editingSet,
+    savingSet,
+    editingTask,
+    savingTask,
+    loadingSets,
+    loadingTasks,
+    errorText,
+    creatingSet,
+    newSetName,
+    newSetDescription,
+    newSetMetadataText,
+    creatingTask,
+    taskSourceText,
+    taskSourceLang,
+    taskTargetLang,
+    taskMetadataText,
+    importing,
+    importSourceLang,
+    importTargetLang,
+    importResult,
+    visibleCount,
+  } = state;
 
   return (
     <div className="grid gap-4">
@@ -411,7 +722,7 @@ export default function AdminTasksPage() {
                 <input
                   id="new-set-name"
                   value={newSetName}
-                  onChange={(e) => setNewSetName(e.target.value)}
+                  onChange={(e) => dispatch({ type: "SET_NEW_SET_NAME", value: e.target.value })}
                   className="input-premium"
                   placeholder="e.g., public_jp_ln_samples"
                 />
@@ -423,7 +734,7 @@ export default function AdminTasksPage() {
                 <input
                   id="new-set-desc"
                   value={newSetDescription}
-                  onChange={(e) => setNewSetDescription(e.target.value)}
+                  onChange={(e) => dispatch({ type: "SET_NEW_SET_DESCRIPTION", value: e.target.value })}
                   className="input-premium"
                   placeholder="optional"
                 />
@@ -436,7 +747,7 @@ export default function AdminTasksPage() {
               <textarea
                 id="new-set-metadata"
                 value={newSetMetadataText}
-                onChange={(e) => setNewSetMetadataText(e.target.value)}
+                onChange={(e) => dispatch({ type: "SET_NEW_SET_METADATA_TEXT", value: e.target.value })}
                 className="textarea-premium"
                 rows={4}
                 placeholder='{"license":"public","source":"curated"}'
@@ -466,7 +777,7 @@ export default function AdminTasksPage() {
               <input
                 type="radio"
                 checked={selectedTaskSetId === ""}
-                onChange={() => setSelectedTaskSetId("")}
+                onChange={() => dispatch({ type: "SET_SELECTED_TASK_SET_ID", value: "" })}
               />
               <span>All tasks</span>
             </label>
@@ -476,7 +787,7 @@ export default function AdminTasksPage() {
                 <input
                   type="radio"
                   checked={selectedTaskSetId === s.id}
-                  onChange={() => setSelectedTaskSetId(s.id)}
+                  onChange={() => dispatch({ type: "SET_SELECTED_TASK_SET_ID", value: s.id })}
                 />
                 <span className="font-semibold text-foreground">{s.name}</span>
                 <span className="text-xs text-muted-foreground">{s.id}</span>
@@ -497,9 +808,7 @@ export default function AdminTasksPage() {
                   <input
                     id="edit-set-name"
                     value={editingSet.name}
-                    onChange={(e) =>
-                      setEditingSet((prev) => (prev ? { ...prev, name: e.target.value } : prev))
-                    }
+                    onChange={(e) => dispatch({ type: "SET_EDITING_SET_FIELD", field: "name", value: e.target.value })}
                     className="input-premium"
                   />
                 </div>
@@ -510,9 +819,7 @@ export default function AdminTasksPage() {
                   <input
                     id="edit-set-desc"
                     value={editingSet.description}
-                    onChange={(e) =>
-                      setEditingSet((prev) => (prev ? { ...prev, description: e.target.value } : prev))
-                    }
+                    onChange={(e) => dispatch({ type: "SET_EDITING_SET_FIELD", field: "description", value: e.target.value })}
                     className="input-premium"
                   />
                 </div>
@@ -525,9 +832,7 @@ export default function AdminTasksPage() {
                 <textarea
                   id="edit-set-meta"
                   value={editingSet.metadataText}
-                  onChange={(e) =>
-                    setEditingSet((prev) => (prev ? { ...prev, metadataText: e.target.value } : prev))
-                  }
+                  onChange={(e) => dispatch({ type: "SET_EDITING_SET_FIELD", field: "metadataText", value: e.target.value })}
                   rows={4}
                   className="textarea-premium"
                 />
@@ -571,7 +876,7 @@ export default function AdminTasksPage() {
                 <input
                   id="task-source-lang"
                   value={taskSourceLang}
-                  onChange={(e) => setTaskSourceLang(e.target.value)}
+                  onChange={(e) => dispatch({ type: "SET_TASK_SOURCE_LANG", value: e.target.value })}
                   className="input-premium"
                 />
               </div>
@@ -582,7 +887,7 @@ export default function AdminTasksPage() {
                 <input
                   id="task-target-lang"
                   value={taskTargetLang}
-                  onChange={(e) => setTaskTargetLang(e.target.value)}
+                  onChange={(e) => dispatch({ type: "SET_TASK_TARGET_LANG", value: e.target.value })}
                   className="input-premium"
                 />
               </div>
@@ -595,7 +900,7 @@ export default function AdminTasksPage() {
               <textarea
                 id="task-source-text"
                 value={taskSourceText}
-                onChange={(e) => setTaskSourceText(e.target.value)}
+                onChange={(e) => dispatch({ type: "SET_TASK_SOURCE_TEXT", value: e.target.value })}
                 className="textarea-premium"
                 rows={6}
                 placeholder="Japanese source text"
@@ -609,7 +914,7 @@ export default function AdminTasksPage() {
               <textarea
                 id="task-metadata"
                 value={taskMetadataText}
-                onChange={(e) => setTaskMetadataText(e.target.value)}
+                onChange={(e) => dispatch({ type: "SET_TASK_METADATA_TEXT", value: e.target.value })}
                 className="textarea-premium"
                 rows={4}
                 placeholder='{"work":"...","chapter":"..."}'
@@ -645,7 +950,8 @@ export default function AdminTasksPage() {
             <input
               type="file"
               accept=".jsonl"
-              onChange={(e) => setImportFile(e.target.files?.[0] ?? null)}
+              aria-label="Select JSONL file to import"
+              onChange={(e) => dispatch({ type: "SET_IMPORT_FILE", value: e.target.files?.[0] ?? null })}
               className="text-muted-foreground"
             />
 
@@ -657,7 +963,7 @@ export default function AdminTasksPage() {
                 <input
                   id="import-source-lang"
                   value={importSourceLang}
-                  onChange={(e) => setImportSourceLang(e.target.value)}
+                  onChange={(e) => dispatch({ type: "SET_IMPORT_SOURCE_LANG", value: e.target.value })}
                   className="input-premium"
                 />
               </div>
@@ -668,7 +974,7 @@ export default function AdminTasksPage() {
                 <input
                   id="import-target-lang"
                   value={importTargetLang}
-                  onChange={(e) => setImportTargetLang(e.target.value)}
+                  onChange={(e) => dispatch({ type: "SET_IMPORT_TARGET_LANG", value: e.target.value })}
                   className="input-premium"
                 />
               </div>
@@ -741,7 +1047,7 @@ export default function AdminTasksPage() {
 
                     <td className="td-premium">
                       <div className="flex flex-wrap gap-2">
-                        <button type="button" className="btn-action" onClick={() => startEditTask(t)}>
+                        <button type="button" className="btn-action" onClick={() => dispatch({ type: "START_EDIT_TASK", task: toEditTaskState(t) })}>
                           Edit
                         </button>
                         <button
@@ -763,7 +1069,7 @@ export default function AdminTasksPage() {
             <div className="mt-3.5 grid gap-2.5 border-t border-border pt-3.5">
               <div className="flex items-baseline justify-between gap-2.5">
                 <div className="section-header">Edit task</div>
-                <button type="button" onClick={() => setEditingTask(null)} className="btn-action">
+                <button type="button" onClick={() => dispatch({ type: "CLOSE_EDIT_TASK" })} className="btn-action">
                   Close
                 </button>
               </div>
@@ -778,9 +1084,7 @@ export default function AdminTasksPage() {
                   <select
                     id="edit-task-set-id"
                     value={editingTask.task_set_id}
-                    onChange={(e) =>
-                      setEditingTask((prev) => (prev ? { ...prev, task_set_id: e.target.value } : prev))
-                    }
+                    onChange={(e) => dispatch({ type: "SET_EDIT_TASK_FIELD", field: "task_set_id", value: e.target.value })}
                     className="input-premium"
                   >
                     <option value="">(none)</option>
@@ -799,9 +1103,7 @@ export default function AdminTasksPage() {
                     <input
                       id="edit-task-source-lang"
                       value={editingTask.source_lang}
-                      onChange={(e) =>
-                        setEditingTask((prev) => (prev ? { ...prev, source_lang: e.target.value } : prev))
-                      }
+                      onChange={(e) => dispatch({ type: "SET_EDIT_TASK_FIELD", field: "source_lang", value: e.target.value })}
                       className="input-premium"
                     />
                   </div>
@@ -812,9 +1114,7 @@ export default function AdminTasksPage() {
                     <input
                       id="edit-task-target-lang"
                       value={editingTask.target_lang}
-                      onChange={(e) =>
-                        setEditingTask((prev) => (prev ? { ...prev, target_lang: e.target.value } : prev))
-                      }
+                      onChange={(e) => dispatch({ type: "SET_EDIT_TASK_FIELD", field: "target_lang", value: e.target.value })}
                       className="input-premium"
                     />
                   </div>
@@ -828,9 +1128,7 @@ export default function AdminTasksPage() {
                 <textarea
                   id="edit-task-source-text"
                   value={editingTask.source_text}
-                  onChange={(e) =>
-                    setEditingTask((prev) => (prev ? { ...prev, source_text: e.target.value } : prev))
-                  }
+                  onChange={(e) => dispatch({ type: "SET_EDIT_TASK_FIELD", field: "source_text", value: e.target.value })}
                   className="textarea-premium"
                   rows={6}
                 />
@@ -843,9 +1141,7 @@ export default function AdminTasksPage() {
                 <textarea
                   id="edit-task-metadata"
                   value={editingTask.metadataText}
-                  onChange={(e) =>
-                    setEditingTask((prev) => (prev ? { ...prev, metadataText: e.target.value } : prev))
-                  }
+                  onChange={(e) => dispatch({ type: "SET_EDIT_TASK_FIELD", field: "metadataText", value: e.target.value })}
                   className="textarea-premium"
                   rows={4}
                 />
@@ -875,7 +1171,7 @@ export default function AdminTasksPage() {
             <div className="mt-2.5 flex items-center gap-3">
               <button
                 type="button"
-                onClick={() => setVisibleCount((prev) => prev + TASKS_PAGE_SIZE)}
+                onClick={() => dispatch({ type: "SHOW_MORE", amount: TASKS_PAGE_SIZE })}
                 className="btn-action"
               >
                 Show more

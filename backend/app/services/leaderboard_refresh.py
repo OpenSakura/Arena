@@ -7,6 +7,11 @@ Notes:
 - Applies optional per-judge daily vote caps (FastChat-inspired anti-abuse signal).
 """
 
+# NOTE: This module creates DB sessions via get_sessionmaker() directly
+# (not via the FastAPI get_db() dependency) because it runs as a background
+# asyncio task outside the request/response lifecycle. Each refresh cycle
+# opens and closes its own session to avoid long-lived transactions.
+
 from __future__ import annotations
 
 import asyncio
@@ -20,8 +25,8 @@ import threading
 from typing import Any, TypeAlias, cast
 import uuid
 
-from sqlalchemy import and_, func, select, text  # pyright: ignore[reportMissingImports]
-from sqlalchemy.orm import Session, aliased  # pyright: ignore[reportMissingImports]
+from sqlalchemy import and_, func, select, text
+from sqlalchemy.orm import Session, aliased
 
 from app.core.config import get_settings
 from app.db.session import get_sessionmaker

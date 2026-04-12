@@ -110,7 +110,7 @@ def test_list_prompt_templates_returns_serialized_admin_rows() -> None:
     second = _template_stub(name="alpha", version=2)
     db = _QueueDB(result_queue=[_Result(rows=[first, second])])
 
-    response = admin_prompts.list_prompt_templates(db=db)  # type: ignore[arg-type]
+    response = admin_prompts.list_prompt_templates(limit=100, offset=0, db=db)  # type: ignore[arg-type]
 
     templates = response["prompt_templates"]
     assert len(templates) == 2

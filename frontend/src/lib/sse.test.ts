@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { streamSSE, type SSEEvent } from "./sse";
+import { SSEHttpError, streamSSE, type SSEEvent } from "./sse";
 
 function buildSSEBody(chunks: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -16,7 +16,7 @@ function buildSSEBody(chunks: string[]): ReadableStream<Uint8Array> {
 
 async function collectFromStream(
   url = "http://example.test/sse",
-  init?: RequestInit,
+  init?: RequestInit & { maxRetries?: number },
 ): Promise<SSEEvent[]> {
   const events: SSEEvent[] = [];
   for await (const event of streamSSE(url, init)) {
@@ -27,6 +27,11 @@ async function collectFromStream(
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+
+beforeEach(() => {
+  vi.useRealTimers();
 });
 
 describe("streamSSE", () => {
@@ -136,6 +141,55 @@ describe("streamSSE", () => {
     await expect(collectFromStream()).rejects.toThrow("SSE failed: 404");
   });
 
+  it("retries retryable connection failures and resumes event parsing", async () => {
+    vi.useFakeTimers();
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(
+        new Response(buildSSEBody(['event: done\ndata: {"ok":true}\n\n']), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      );
+
+    const promise = collectFromStream("http://example.test/sse", { maxRetries: 1 });
+    await vi.advanceTimersByTimeAsync(1000);
+
+    await expect(promise).resolves.toEqual([
+      { event: "sse.retry", data: { attempt: 1 } },
+      { event: "done", data: { ok: true } },
+    ]);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws after exhausting max retries", async () => {
+    vi.useFakeTimers();
+
+    const error = new SSEHttpError(503);
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(error);
+
+    const promise = collectFromStream("http://example.test/sse", { maxRetries: 2 });
+    const handledPromise = promise.catch((caught) => {
+      expect(caught).toBe(error);
+      return caught;
+    });
+
+    await vi.advanceTimersByTimeAsync(3000);
+    await handledPromise;
+  });
+
+  it("stops retrying immediately for aborted connections", async () => {
+    const controller = new AbortController();
+    const abortError = new DOMException("Aborted", "AbortError");
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(abortError);
+    controller.abort();
+
+    await expect(
+      collectFromStream("http://example.test/sse", { signal: controller.signal }),
+    ).rejects.toBe(abortError);
+  });
+
   it("drops oversized events and keeps parsing later events", async () => {
     const oversized = "x".repeat(140_000);
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -153,5 +207,29 @@ describe("streamSSE", () => {
 
     const events = await collectFromStream();
     expect(events).toEqual([{ event: "note", data: { ok: true } }]);
+  });
+
+  it("treats malformed JSON payloads as raw strings", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(buildSSEBody(['event: note\ndata: {"bad":\n\n']), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      }),
+    );
+
+    const events = await collectFromStream();
+    expect(events).toEqual([{ event: "note", data: '{"bad":' }]);
+  });
+
+  it("ignores unknown fields while preserving subsequent data lines", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(buildSSEBody(["id: 1\nretry: 5000\ndata: ok\n\n"]), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      }),
+    );
+
+    const events = await collectFromStream();
+    expect(events).toEqual([{ event: "message", data: "ok" }]);
   });
 });

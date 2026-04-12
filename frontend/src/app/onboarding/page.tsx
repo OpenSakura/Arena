@@ -15,11 +15,7 @@ import { useEffect, useState } from "react";
 import { apiGet, apiPut } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { useAuthHeaders } from "@/hooks/useAuthHeaders";
-
-type MeResponse = {
-  authenticated: boolean;
-  profile: Record<string, unknown> | null;
-};
+import { parseMeResponse } from "@/types/me";
 
 const JLPT_LEVELS = ["unknown", "N1", "N2", "N3", "N4", "N5"] as const;
 type JlptLevel = (typeof JLPT_LEVELS)[number];
@@ -57,7 +53,7 @@ export default function OnboardingPage() {
       setLoadingProfile(true);
       setErrorText(null);
       try {
-        const me = (await apiGet("/me", { headers })) as MeResponse;
+        const me = parseMeResponse(await apiGet("/me", { headers }));
         if (cancelled) return;
         const profile = me.profile ?? {};
 
@@ -125,7 +121,7 @@ export default function OnboardingPage() {
         consents: { research_use: consentResearch },
       };
 
-      const res = (await apiPut("/me/profile", payload, { headers })) as MeResponse;
+      const res = parseMeResponse(await apiPut("/me/profile", payload, { headers }));
       setSavedAt((res.profile?.completed_at as string) ?? new Date().toISOString());
     } catch (err) {
       setErrorText(err instanceof Error ? err.message : "Failed to save profile");

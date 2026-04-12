@@ -29,7 +29,7 @@ async function readErrorDetail(res: Response): Promise<string | null> {
   const ct = res.headers.get("content-type") ?? "";
   try {
     if (ct.includes("application/json")) {
-      const data = (await res.json()) as unknown;
+      const data: unknown = await res.json();
       if (data && typeof data === "object") {
         const detail = (data as Record<string, unknown>).detail;
         if (typeof detail === "string") return detail;
@@ -55,6 +55,10 @@ async function readErrorDetail(res: Response): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+function isFormDataBody(body: unknown): body is FormData {
+  return typeof FormData !== "undefined" && body instanceof FormData;
 }
 
 async function readSuccessBody(res: Response): Promise<unknown> {
@@ -88,10 +92,12 @@ async function apiRequest<T = unknown>(
   init?: RequestInit,
 ): Promise<T> {
   const url = `${getBackendBaseUrl()}${path.startsWith("/") ? path : `/${path}`}`;
+  const hasJsonBody =
+    method !== "GET" && method !== "DELETE" && body !== undefined && !isFormDataBody(body);
   const mergedHeaders = {
     ...toHeaderObject(init?.headers),
     Accept: "application/json",
-    ...((method === "GET" || method === "DELETE") ? {} : { "Content-Type": "application/json" }),
+    ...(hasJsonBody ? { "Content-Type": "application/json" } : {}),
   };
 
   // Spread `init` first so our explicit properties always win.
@@ -102,7 +108,14 @@ async function apiRequest<T = unknown>(
     method,
     credentials: init?.credentials ?? "include",
     headers: mergedHeaders,
-    body: method === "GET" || method === "DELETE" ? undefined : body !== undefined ? JSON.stringify(body) : undefined,
+    body:
+      method === "GET" || method === "DELETE"
+        ? undefined
+        : body === undefined
+          ? undefined
+          : isFormDataBody(body)
+            ? body
+            : JSON.stringify(body),
     cache: "no-store",
   });
 

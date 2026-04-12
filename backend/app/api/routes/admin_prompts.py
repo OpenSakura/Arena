@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -34,10 +34,15 @@ _MAX_CREATE_VERSION_RETRIES = 3
 
 @router.get("")
 def list_prompt_templates(
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ) -> dict[str, list[PromptTemplateAdmin]]:
-    stmt = select(PromptTemplate).order_by(
-        PromptTemplate.name.asc(), PromptTemplate.version.desc()
+    stmt = (
+        select(PromptTemplate)
+        .order_by(PromptTemplate.name.asc(), PromptTemplate.version.desc())
+        .limit(limit)
+        .offset(offset)
     )
     templates = db.execute(stmt).scalars().all()
     return {"prompt_templates": [_to_admin_prompt(item) for item in templates]}

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     CheckConstraint,
@@ -55,9 +56,7 @@ class Battle(Base):
         String(32), nullable=False, default="pending", server_default="pending"
     )
 
-    metadata_json: Mapped[dict[str, object] | None] = mapped_column(
-        "metadata", JSONB, nullable=True
-    )
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -90,18 +89,22 @@ class Run(Base):
         UUID(as_uuid=True), ForeignKey("models.id", ondelete="RESTRICT"), nullable=False
     )
 
-    request_json: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
-    prompt_rendered: Mapped[dict[str, object] | None] = mapped_column(
-        JSONB, nullable=True
-    )
+    request_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    prompt_rendered: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     output_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Raw upstream output (kept for audit/export). The UI should render
     # `output_text`; raw output remains available for audit/export consumers.
     output_text_raw: Mapped[str | None] = mapped_column(Text, nullable=True)
-    stats: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    stats: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )

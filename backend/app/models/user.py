@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -54,13 +55,11 @@ class UserProfile(Base):
     ui_language: Mapped[str | None] = mapped_column(String(32), nullable=True)
     zh_variant: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
-    jp_proficiency: Mapped[dict[str, object] | None] = mapped_column(
+    jp_proficiency: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    translation_experience: Mapped[dict[str, Any] | None] = mapped_column(
         JSONB, nullable=True
     )
-    translation_experience: Mapped[dict[str, object] | None] = mapped_column(
-        JSONB, nullable=True
-    )
-    consents: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    consents: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

@@ -11,7 +11,7 @@ Notes:
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal, cast
+from typing import Any, Literal, cast
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -111,7 +111,7 @@ def submit_vote(
     )
     if existing_vote is not None:
         response.status_code = 200
-        changed = _upgrade_vote_identity(
+        _upgrade_vote_identity(
             existing_vote,
             voter_user_id=voter_user_id,
             requester_identity=requester_identity,
@@ -124,8 +124,6 @@ def submit_vote(
                     status_code=409,
                     detail="Vote already revealed and cannot be changed",
                 )
-            if changed:
-                db.commit()
             return VoteSubmitResponse(
                 vote_id=str(existing_vote.id),
                 battle_id=str(battle_uuid),
@@ -145,10 +143,6 @@ def submit_vote(
                 payload.rubric.model_dump() if payload.rubric else None
             )
             existing_vote.comment = payload.comment
-            changed = True
-
-        if changed:
-            db.commit()
 
         return VoteSubmitResponse(
             vote_id=str(existing_vote.id),
@@ -268,7 +262,7 @@ def reveal_vote(
     if existing_vote is None:
         raise HTTPException(status_code=404, detail="No vote found for this battle")
 
-    changed = _upgrade_vote_identity(
+    _upgrade_vote_identity(
         existing_vote,
         voter_user_id=voter_user_id,
         requester_identity=requester_identity,
@@ -277,10 +271,6 @@ def reveal_vote(
     # Mark as revealed (locks the vote).
     if not existing_vote.revealed:
         existing_vote.revealed = True
-        changed = True
-
-    if changed:
-        db.commit()
 
     runs = (
         db.execute(
@@ -340,7 +330,7 @@ def _resolve_duplicate_vote_conflict(
     response: Response,
     battle_id: uuid.UUID,
     winner: str,
-    rubric: dict[str, object] | None = None,
+    rubric: dict[str, Any] | None = None,
     comment: str | None = None,
     voter_user_id: uuid.UUID | None,
     requester_identity: RequesterIdentity,
@@ -356,7 +346,7 @@ def _resolve_duplicate_vote_conflict(
         raise HTTPException(status_code=500, detail="Failed to persist vote")
 
     response.status_code = 200
-    changed = _upgrade_vote_identity(
+    _upgrade_vote_identity(
         existing_vote,
         voter_user_id=voter_user_id,
         requester_identity=requester_identity,
@@ -373,16 +363,10 @@ def _resolve_duplicate_vote_conflict(
     if not existing_vote.revealed:
         if existing_vote.winner != winner:
             existing_vote.winner = winner
-            changed = True
         if existing_vote.rubric != rubric:
             existing_vote.rubric = rubric
-            changed = True
         if existing_vote.comment != comment:
             existing_vote.comment = comment
-            changed = True
-
-    if changed:
-        db.commit()
 
     return VoteSubmitResponse(
         vote_id=str(existing_vote.id),

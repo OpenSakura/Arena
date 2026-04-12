@@ -1,16 +1,17 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
+
 import AdminIndexPage from "./page";
 import AdminLayout from "./layout";
 
 const usePathnameMock = vi.fn();
-const useRouterMock = vi.fn();
+const redirectMock = vi.fn();
 const useSessionMock = vi.fn();
 const apiGetMock = vi.fn();
 
 vi.mock("next/navigation", () => ({
   usePathname: () => usePathnameMock(),
-  useRouter: () => useRouterMock(),
+  redirect: (...args: unknown[]) => redirectMock(...args),
 }));
 
 vi.mock("next-auth/react", () => ({
@@ -23,21 +24,15 @@ vi.mock("@/lib/api", () => ({
 
 beforeEach(() => {
   usePathnameMock.mockReset();
-  useRouterMock.mockReset();
+  redirectMock.mockReset();
   useSessionMock.mockReset();
   apiGetMock.mockReset();
 });
 
 describe("AdminIndexPage", () => {
-  it("replaces /admin with /admin/models", async () => {
-    const replaceMock = vi.fn();
-    useRouterMock.mockReturnValue({ replace: replaceMock });
-
-    render(<AdminIndexPage />);
-
-    await waitFor(() => {
-      expect(replaceMock).toHaveBeenCalledWith("/admin/models");
-    });
+  it("redirects /admin to /admin/models on the server", () => {
+    AdminIndexPage();
+    expect(redirectMock).toHaveBeenCalledWith("/admin/models");
   });
 });
 

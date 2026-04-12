@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     CheckConstraint,
@@ -44,7 +45,7 @@ class PromptTemplate(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False)
 
     template_text: Mapped[str] = mapped_column(Text, nullable=False)
-    input_schema: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    input_schema: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(

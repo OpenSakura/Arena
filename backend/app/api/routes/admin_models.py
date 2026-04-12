@@ -8,11 +8,9 @@ Notes:
 - Store provider tokens encrypted at rest in Postgres.
 """
 
-# pyright: reportMissingImports=false
-
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -24,12 +22,7 @@ from app.models.model_registry import Model
 from app.models.prompt_template import PromptTemplate
 from app.schemas.models import ModelAdmin, ModelCreate, ModelUpdate
 from app.services.battle_orchestrator import get_battle_orchestrator
-from app.utils.id import (
-    parse_optional_uuid_or_422 as parse_optional_uuid,
-    parse_optional_uuid_or_422,
-    parse_uuid_or_422 as parse_uuid,
-    parse_uuid_or_422,
-)
+from app.utils.id import parse_optional_uuid_or_422, parse_uuid_or_422
 
 router = APIRouter(
     prefix="/admin/models",
@@ -39,8 +32,12 @@ router = APIRouter(
 
 
 @router.get("")
-def list_models(db: Session = Depends(get_db)) -> dict[str, list[ModelAdmin]]:
-    stmt = select(Model).order_by(Model.created_at.desc())
+def list_models(
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> dict[str, list[ModelAdmin]]:
+    stmt = select(Model).order_by(Model.created_at.desc()).limit(limit).offset(offset)
     models = db.execute(stmt).scalars().all()
     return {"models": [_to_admin_model(item) for item in models]}
 
@@ -229,7 +226,7 @@ async def test_model(model_id: str, db: Session = Depends(get_db)) -> dict[str, 
     params["max_tokens"] = 12
     params["temperature"] = 0
 
-    client = get_battle_orchestrator()._llm_client
+    client = get_battle_orchestrator().llm_client
     try:
         import time
 

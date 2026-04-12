@@ -1,10 +1,10 @@
 import { apiGet, apiPost } from "../lib/api";
 
-export async function loadOrCreateBattle<TBattle>(
+export async function loadOrCreateBattle(
   battleId: string,
   accessToken?: string,
   turnstileToken?: string,
-): Promise<TBattle> {
+): Promise<unknown> {
   const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined;
 
   if (battleId === "new") {
@@ -12,10 +12,10 @@ export async function loadOrCreateBattle<TBattle>(
     if (turnstileToken) {
       body.turnstile_token = turnstileToken;
     }
-    return (await apiPost("/battles", body, { headers })) as TBattle;
+    return apiPost("/battles", body, { headers });
   }
 
-  return (await apiGet(`/battles/${encodeURIComponent(battleId)}`, { headers })) as TBattle;
+  return apiGet(`/battles/${encodeURIComponent(battleId)}`, { headers });
 }
 
 export function asRecord(value: unknown): Record<string, unknown> | null {

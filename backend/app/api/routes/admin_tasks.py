@@ -53,8 +53,14 @@ _MAX_JSONL_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 
 
 @router.get("/task-sets")
-def list_task_sets(db: Session = Depends(get_db)) -> dict[str, list[TaskSetPublic]]:
-    stmt = select(TaskSet).order_by(TaskSet.created_at.desc())
+def list_task_sets(
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> dict[str, list[TaskSetPublic]]:
+    stmt = (
+        select(TaskSet).order_by(TaskSet.created_at.desc()).limit(limit).offset(offset)
+    )
     task_sets = db.execute(stmt).scalars().all()
     return {"task_sets": [_to_task_set(item) for item in task_sets]}
 
@@ -138,6 +144,8 @@ def delete_task_set(task_set_id: str, db: Session = Depends(get_db)) -> Response
 @router.get("/tasks")
 def list_tasks(
     task_set_id: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ) -> dict[str, list[TaskPublic]]:
     stmt = select(Task).order_by(Task.created_at.desc())
@@ -145,6 +153,7 @@ def list_tasks(
         stmt = stmt.where(
             Task.task_set_id == parse_uuid_or_422(task_set_id, "task_set_id")
         )
+    stmt = stmt.limit(limit).offset(offset)
     tasks = db.execute(stmt).scalars().all()
     return {"tasks": [_to_task(item) for item in tasks]}
 

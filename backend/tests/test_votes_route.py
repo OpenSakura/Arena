@@ -750,7 +750,8 @@ def test_submit_vote_upgrades_existing_anonymous_vote_when_user_logs_in(
 
     assert response.vote_id == str(existing_vote.id)
     assert existing_vote.voter_user_id == uuid.UUID(principal.user_id)
-    assert db.commit_calls == 1
+    # Identity-upgrade path relies on get_db() auto-commit; no explicit commit.
+    assert db.commit_calls == 0
 
 
 def test_reveal_vote_upgrades_existing_anonymous_vote_when_user_logs_in(
@@ -799,7 +800,7 @@ def test_reveal_vote_upgrades_existing_anonymous_vote_when_user_logs_in(
     assert response.vote_id == str(existing_vote.id)
     assert existing_vote.revealed is True
     assert existing_vote.voter_user_id == uuid.UUID(principal.user_id)
-    assert db.commit_calls == 1
+    assert db.commit_calls == 0
 
 
 def test_submit_vote_resolves_duplicate_conflict_after_flush_error(
@@ -1084,7 +1085,7 @@ def test_submit_vote_anon_first_then_auth_backfills_identity(
     assert existing_vote.voter_user_id == user_id
     assert existing_vote.ip_hash is not None
     assert existing_vote.user_agent_hash is not None
-    assert db.commit_calls == 1
+    assert db.commit_calls == 0
 
 
 def test_submit_vote_auth_first_found_via_shared_lookup(
@@ -1181,7 +1182,7 @@ def test_reveal_after_identity_upgrade(
     assert existing_vote.revealed is True
     assert existing_vote.voter_user_id == user_id
     assert response.reveal is not None
-    assert db.commit_calls == 1
+    assert db.commit_calls == 0
 
 
 def test_reveal_upgrades_anonymous_vote_identity_fields(
@@ -1232,7 +1233,7 @@ def test_reveal_upgrades_anonymous_vote_identity_fields(
     assert existing_vote.revealed is True
     assert existing_vote.ip_hash is not None
     assert existing_vote.user_agent_hash is not None
-    assert db.commit_calls == 1
+    assert db.commit_calls == 0
 
 
 def test_duplicate_conflict_recovery_applies_identity_upgrade(
@@ -1329,7 +1330,7 @@ def test_mid_flow_identity_switch_finds_existing_vote(
     assert anon_vote.winner == "B"
     assert db.added == []
     assert db.flush_calls == 0
-    assert db.commit_calls == 1
+    assert db.commit_calls == 0
 
 
 # ── Cross-cutting regression: anonymous→authenticated vote upgrade (Task 2) ──
