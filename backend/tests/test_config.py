@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import logging
 
-import pytest
-
 from app.core.config import Settings
 
 
@@ -48,14 +46,14 @@ def _production_settings(**overrides) -> dict:
 
 def test_production_warns_when_redis_url_missing(caplog) -> None:
     with caplog.at_level(logging.WARNING, logger="app.core.config"):
-        settings = Settings(**_production_settings(rate_limit_redis_url=""))
+        Settings(**_production_settings(rate_limit_redis_url=""))
 
     assert any("RATE_LIMIT_REDIS_URL" in r.message for r in caplog.records)
 
 
 def test_production_no_redis_warning_when_configured(caplog) -> None:
     with caplog.at_level(logging.WARNING, logger="app.core.config"):
-        settings = Settings(
+        Settings(
             **_production_settings(rate_limit_redis_url="redis://localhost:6379/0")
         )
 

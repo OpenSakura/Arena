@@ -10,11 +10,11 @@
 
 "use client";
 
-import { useSession } from "next-auth/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { apiGet, apiPut } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { useAuthHeaders } from "@/hooks/useAuthHeaders";
 
 type MeResponse = {
   authenticated: boolean;
@@ -31,8 +31,7 @@ const EXPERIENCE_ROLES = ["translator", "editor", "qc", "tl"] as const;
 type ExperienceRole = (typeof EXPERIENCE_ROLES)[number];
 
 export default function OnboardingPage() {
-  const { data: session, status: authStatus } = useSession();
-  const accessToken = session?.accessToken;
+  const { authStatus, accessToken, headers } = useAuthHeaders();
   const canSave = authStatus === "authenticated" && Boolean(accessToken);
 
   const [displayName, setDisplayName] = useState("");
@@ -48,10 +47,6 @@ export default function OnboardingPage() {
   const [saving, setSaving] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
-
-  const headers = useMemo(() => {
-    return accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined;
-  }, [accessToken]);
 
   useEffect(() => {
     let cancelled = false;
@@ -89,8 +84,6 @@ export default function OnboardingPage() {
 
         const consents = (profile.consents as Record<string, unknown>) ?? null;
         setConsentResearch(Boolean(consents?.research_use));
-
-        setSavedAt((profile.completed_at as string) ?? null);
       } catch (err) {
         if (cancelled) return;
         setErrorText(err instanceof Error ? err.message : "Failed to load profile");

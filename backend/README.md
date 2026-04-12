@@ -28,4 +28,5 @@ Local quickstart (dev):
 1. Start local infra (Postgres + Redis): `docker compose -f ../infra/compose.yaml up -d`
 2. Copy env: `cp .env.example .env` and edit as needed.
 3. Install deps: `uv sync`
-4. Run: `uv run uvicorn app.main:app --reload --port 8000`
+4. Bootstrap schema: `uv run python -m app.db.bootstrap` (creates tables from ORM models, idempotent)
+5. Run: `uv run uvicorn app.main:app --reload --port 8000`

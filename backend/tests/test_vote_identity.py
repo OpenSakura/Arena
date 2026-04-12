@@ -140,6 +140,7 @@ def test_find_existing_vote_falls_back_to_ip_after_missing_fingerprint_match() -
     assert "votes.user_agent_hash =" in str(db.stmts[0])
     assert "votes.user_agent_hash =" not in str(db.stmts[1])
     assert "votes.ip_hash =" in str(db.stmts[1])
+    assert "votes.user_agent_hash IS NULL" in str(db.stmts[1])
     assert "votes.voter_anon_id =" not in str(db.stmts[1])
 
 
@@ -163,6 +164,7 @@ def test_find_existing_vote_falls_back_to_anon_cookie_after_missing_stronger_mat
     assert db.execute_calls == 3
     assert "votes.user_agent_hash =" in str(db.stmts[0])
     assert "votes.user_agent_hash =" not in str(db.stmts[1])
+    assert "votes.user_agent_hash IS NULL" in str(db.stmts[1])
     assert "votes.ip_hash =" in str(db.stmts[1])
     assert "votes.voter_anon_id =" in str(db.stmts[2])
     assert "votes.ip_hash =" not in str(db.stmts[2])
@@ -184,3 +186,38 @@ def test_find_existing_vote_skips_query_without_identity() -> None:
 
     assert vote is None
     assert db.execute_calls == 0
+
+
+def test_find_existing_vote_ip_fallback_requires_missing_user_agent_hash() -> None:
+    """Regression: IP-only fallback must NOT match rows that still carry a
+    non-null user_agent_hash.  A same-IP row with a fingerprint (different
+    browser) must be invisible to the weaker IP tier so it doesn't cause a
+    false duplicate-vote conflict."""
+
+    # Fingerprint tier misses, IP tier misses (because the only same-IP row
+    # has a user_agent_hash), anon tier hits.
+    db = _CaptureDB(results=[None, None, object()])
+
+    vote = find_existing_battle_vote(
+        db,  # type: ignore[arg-type]
+        battle_id=uuid.uuid4(),
+        requester_identity=RequesterIdentity(
+            voter_user_id=None,
+            voter_anon_id="anon-1",
+            ip_hash="ip-hash",
+            user_agent_hash="ua-hash",
+        ),
+    )
+
+    assert vote is not None
+    assert db.execute_calls == 3
+
+    # The IP-only query (stmts[1]) must require user_agent_hash IS NULL.
+    ip_sql = str(db.stmts[1])
+    assert "votes.ip_hash =" in ip_sql
+    assert "votes.user_agent_hash IS NULL" in ip_sql
+    assert "votes.user_agent_hash =" not in ip_sql
+
+    # Confirm the anon tier was what actually matched.
+    anon_sql = str(db.stmts[2])
+    assert "votes.voter_anon_id =" in anon_sql

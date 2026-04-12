@@ -86,7 +86,7 @@ describe("OnboardingPage", () => {
 
       const translatorRole = screen.getByRole("button", { name: /translator/i });
       expect(translatorRole.className).toContain("primary");
-      expect(screen.getByText("Saved successfully")).toBeDefined();
+      expect(screen.queryByText("Saved successfully")).toBeNull();
     });
   });
 

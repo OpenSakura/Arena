@@ -26,13 +26,17 @@ High-level steps (names vary slightly by Authentik version):
 4. Ensure the provider issues a **JWT access token** (the backend validates the
    bearer token via the issuer JWKS).
 
-## Group Claim For Admin Gating
+## Admin Gating (Backend OIDC Groups → Frontend `/me.is_admin`)
 
-Backend admin routes are protected by a group claim in the access token.
-Defaults:
+Admin access is determined entirely on the backend:
 
-- Claim name: `groups` (`OIDC_ADMIN_GROUP_CLAIM`)
-- Required group: `arena_admin` (`OIDC_ADMIN_GROUP_NAME`)
+1. The backend reads the user's OIDC access token and looks for a group claim
+   (default claim name: `groups`, configured by `OIDC_ADMIN_GROUP_CLAIM`).
+2. If the claim contains the required group (default: `arena_admin`, configured
+   by `OIDC_ADMIN_GROUP_NAME`), the user is considered an admin.
+3. The `/me` endpoint exposes this result as `is_admin: true | false`.
+4. The frontend fetches `/me` and uses the `is_admin` boolean to show or hide
+   admin UI. It never parses group claims itself.
 
 In Authentik, add a Property Mapping that includes group membership in the
 access token, using the same claim name you configure in the backend.
@@ -47,6 +51,9 @@ Frontend (`frontend/.env.local`):
 - `AUTHENTIK_ISSUER=...` (must support OIDC discovery)
 - `AUTHENTIK_CLIENT_ID=...`
 - `AUTHENTIK_CLIENT_SECRET=...`
+
+No admin-specific frontend env vars are needed. The frontend determines admin
+status from the `/me` endpoint's `is_admin` field (see above).
 
 Backend (`backend/.env`):
 

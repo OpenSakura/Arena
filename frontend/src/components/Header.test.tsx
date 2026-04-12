@@ -18,6 +18,7 @@ function renderHeader() {
 
 const useSessionMock = vi.fn();
 const usePathnameMock = vi.fn();
+const useAdminAccessMock = vi.fn();
 const signInMock = vi.fn();
 const signOutMock = vi.fn();
 
@@ -47,13 +48,19 @@ vi.mock("next-auth/react", () => ({
   signOut: (...args: unknown[]) => signOutMock(...args),
 }));
 
+vi.mock("@/hooks/useAdminAccess", () => ({
+  useAdminAccess: () => useAdminAccessMock(),
+}));
+
 beforeEach(() => {
   useSessionMock.mockReset();
   usePathnameMock.mockReset();
+  useAdminAccessMock.mockReset();
   signInMock.mockReset();
   signOutMock.mockReset();
 
   usePathnameMock.mockReturnValue("/");
+  useAdminAccessMock.mockReturnValue({ isAuthenticated: false, isAdmin: false, loading: false });
   window.history.replaceState({}, "", "/");
 });
 
@@ -64,7 +71,7 @@ describe("Header", () => {
     const { container } = renderHeader();
 
     // Loading state renders a pulse animation div, not text
-    expect(container.querySelector(".animate-pulse")).toBeDefined();
+    expect(container.querySelector(".shimmer")).toBeDefined();
     expect(screen.queryByRole("button", { name: "Login" })).toBeNull();
   });
 
@@ -89,6 +96,7 @@ describe("Header", () => {
       },
       status: "authenticated",
     });
+    useAdminAccessMock.mockReturnValue({ isAuthenticated: true, isAdmin: false, loading: false });
 
     renderHeader();
 
@@ -108,11 +116,12 @@ describe("Header", () => {
     expect(screen.getAllByText("Battle").length).toBeGreaterThanOrEqual(1);
   });
 
-  it("shows Admin nav link for authenticated users", () => {
+  it("shows Admin nav link for authenticated admin users", () => {
     useSessionMock.mockReturnValue({
       data: { accessToken: "admin-token", user: { email: "admin@example.com" } },
       status: "authenticated",
     });
+    useAdminAccessMock.mockReturnValue({ isAuthenticated: true, isAdmin: true, loading: false });
 
     renderHeader();
 
@@ -126,6 +135,19 @@ describe("Header", () => {
 
   it("hides Admin nav link for anonymous users", () => {
     useSessionMock.mockReturnValue({ data: null, status: "unauthenticated" });
+    useAdminAccessMock.mockReturnValue({ isAuthenticated: false, isAdmin: false, loading: false });
+
+    renderHeader();
+
+    expect(screen.queryByText("Admin")).toBeNull();
+  });
+
+  it("hides Admin nav link for authenticated non-admin users", () => {
+    useSessionMock.mockReturnValue({
+      data: { accessToken: "normal-token", user: { email: "normal@example.com" } },
+      status: "authenticated",
+    });
+    useAdminAccessMock.mockReturnValue({ isAuthenticated: true, isAdmin: false, loading: false });
 
     renderHeader();
 

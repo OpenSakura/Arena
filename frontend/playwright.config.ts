@@ -45,7 +45,7 @@ const liveStackServers = [
   {
     command:
       `docker compose -f tests/e2e/docker-compose.yaml -p arena-frontend-e2e up -d --wait && ` +
-      `uv run alembic upgrade head && ` +
+      `uv run python -m app.db.bootstrap && ` +
       `uv run python tests/e2e/seed_frontend_playwright.py && ` +
       `uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port ${BACKEND_PORT}`,
     cwd: BACKEND_DIR,

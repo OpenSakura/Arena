@@ -59,6 +59,8 @@ const nextConfig = {
               "font-src 'self'",
               "connect-src " + connectSrcParts.join(" "),
               "frame-src https://challenges.cloudflare.com",
+              "base-uri 'self'",
+              "worker-src 'self'",
             ].join("; "),
           },
         ],

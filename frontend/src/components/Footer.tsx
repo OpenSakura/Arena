@@ -68,7 +68,7 @@ export function Footer() {
             <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/40 mb-3">
               Navigation
             </div>
-            <nav className="grid gap-2 text-sm text-muted-foreground">
+            <nav aria-label="Footer navigation" className="grid gap-2 text-sm text-muted-foreground">
               <Link href="/battle/new" className="transition-colors hover:text-foreground w-fit">
                 Battle
               </Link>
@@ -86,7 +86,7 @@ export function Footer() {
             <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/40 mb-3">
               Project
             </div>
-            <nav className="grid gap-2 text-sm text-muted-foreground">
+            <nav aria-label="Project links" className="grid gap-2 text-sm text-muted-foreground">
               <a
                 href="https://github.com/OpenSakura"
                 target="_blank"

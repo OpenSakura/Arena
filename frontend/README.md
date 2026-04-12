@@ -37,7 +37,7 @@ PW_ENABLE_LIVE_STACK=1 npm run test:e2e -- e2e/live-contract.spec.ts
 
 When enabled, Playwright additionally:
 - Starts the backend e2e Docker dependencies (Postgres, Redis, Authentik).
-- Runs backend migrations and seeds deterministic models/tasks.
+- Bootstraps the database schema from ORM models and seeds deterministic models/tasks.
 - Starts a local OpenAI-compatible mock gateway used by battle streaming.
 
 If `PW_ENABLE_LIVE_STACK` is not set, `e2e/live-contract.spec.ts` is skipped by default.

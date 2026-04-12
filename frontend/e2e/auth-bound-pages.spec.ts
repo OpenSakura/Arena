@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { encode } from "next-auth/jwt";
 
 test("onboarding shows anonymous guard", async ({ page }) => {
   await page.route("**/api/auth/session*", async (route) => {
@@ -110,10 +111,15 @@ test("admin routes redirect unauthenticated users to home page", async ({ page }
 test("admin models page performs a basic authenticated create flow", async ({ page }) => {
   const createCalls: Array<{ authHeader: string | undefined; payload: Record<string, unknown> }> = [];
 
+  const sessionToken = await encode({
+    token: { name: "Admin Arena", email: "admin@example.com" },
+    secret: "arena-frontend-e2e-nextauth-secret",
+  });
+
   await page.context().addCookies([
     {
       name: "next-auth.session-token",
-      value: "e2e-mock-session-token",
+      value: sessionToken,
       domain: "localhost",
       path: "/",
     },
@@ -174,7 +180,8 @@ test("admin models page performs a basic authenticated create flow", async ({ pa
           temperature: null,
           frequency_penalty: null,
           presence_penalty: null,
-          params: null,
+          extra_body: null,
+          default_params: null,
           prompt_template_id: null,
           has_api_key: false,
           created_at: "2026-02-19T00:00:00.000Z",

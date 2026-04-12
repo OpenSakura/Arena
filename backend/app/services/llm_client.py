@@ -32,6 +32,9 @@ _RETRYABLE_CONNECTION_ERRORS = (
     httpx.ConnectTimeout,
     httpx.ReadTimeout,
     httpx.PoolTimeout,
+    httpx.ReadError,
+    httpx.RemoteProtocolError,
+    httpx.WriteTimeout,
 )
 _MAX_RETRIES = 2
 _RETRY_BASE_DELAY = 1.0

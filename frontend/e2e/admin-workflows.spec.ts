@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { encode } from "next-auth/jwt";
 
 type AdminModel = {
   id: string;
@@ -12,7 +13,8 @@ type AdminModel = {
   temperature: number | null;
   frequency_penalty: number | null;
   presence_penalty: number | null;
-  params: Record<string, unknown> | null;
+  extra_body: Record<string, unknown> | null;
+  default_params: Record<string, unknown> | null;
   prompt_template_id: string | null;
   has_api_key: boolean;
   created_at: string;
@@ -46,10 +48,15 @@ type AdminTask = {
 };
 
 async function mockAuthenticatedSession(page: Page, accessToken = "frontend-admin-access-token", isAdmin = true): Promise<void> {
+  const sessionToken = await encode({
+    token: { name: "Arena Admin", email: "admin@example.com" },
+    secret: "arena-frontend-e2e-nextauth-secret",
+  });
+
   await page.context().addCookies([
     {
       name: "next-auth.session-token",
-      value: "e2e-mock-session-token",
+      value: sessionToken,
       domain: "localhost",
       path: "/",
     },
@@ -92,7 +99,8 @@ function modelRecord(overrides: Partial<AdminModel> = {}): AdminModel {
     temperature: null,
     frequency_penalty: null,
     presence_penalty: null,
-    params: null,
+    extra_body: null,
+    default_params: null,
     prompt_template_id: null,
     has_api_key: true,
     created_at: "2026-02-19T00:00:00.000Z",

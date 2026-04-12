@@ -70,7 +70,7 @@ function modelRecord(overrides: Record<string, unknown> = {}) {
 }
 
 describe("AdminModelsPage", () => {
-  it("does not load models when unauthenticated and stays in loading state", async () => {
+  it("does not load models when unauthenticated and shows empty state", async () => {
     useSessionMock.mockReturnValue({ data: null, status: "unauthenticated" });
 
     render(<AdminModelsPage />);
@@ -80,7 +80,7 @@ describe("AdminModelsPage", () => {
     await screen.findByText("Model Registry");
     expect(apiGetMock).not.toHaveBeenCalled();
 
-    expect(screen.queryByText("No models yet.")).toBeNull();
+    await screen.findByText("No models yet.");
   });
 
   it("loads and renders model rows when authenticated", async () => {
@@ -231,6 +231,36 @@ describe("AdminModelsPage", () => {
     await waitFor(() => {
       expect(screen.queryByText("Model One")).toBeNull();
     });
+  });
+
+  it("enforces mutual exclusivity between clear api_key and new api_key inputs", async () => {
+    authenticatedSession();
+    apiGetMock.mockResolvedValue({ models: [modelRecord()] });
+
+    render(<AdminModelsPage />);
+    await screen.findByText("Model One");
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+
+    const apiKeyInput = screen.getByLabelText("new api_key (optional)") as HTMLInputElement;
+    const clearApiKeyCheckbox = screen.getByLabelText("clear api_key") as HTMLInputElement;
+
+    await user.click(clearApiKeyCheckbox);
+    expect(clearApiKeyCheckbox.checked).toBe(true);
+    expect(apiKeyInput.disabled).toBe(true);
+
+    await user.click(clearApiKeyCheckbox);
+    expect(clearApiKeyCheckbox.checked).toBe(false);
+    expect(apiKeyInput.disabled).toBe(false);
+    
+    await user.type(apiKeyInput, "new-secret-key");
+    expect(apiKeyInput.value).toBe("new-secret-key");
+
+    await user.click(clearApiKeyCheckbox);
+    expect(clearApiKeyCheckbox.checked).toBe(true);
+    expect(apiKeyInput.value).toBe("");
+    expect(apiKeyInput.disabled).toBe(true);
   });
 
   it("calls the model test endpoint from table action", async () => {

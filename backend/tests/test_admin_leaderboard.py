@@ -31,6 +31,7 @@ class _Refresher:
 
     def refresh_once(self) -> None:
         self.refresh_calls += 1
+        self._status.total_refreshes += 1
 
 
 def test_get_refresh_status_returns_current_refresher_state(
@@ -93,7 +94,7 @@ def test_run_refresh_now_returns_success_when_last_error_is_empty(
         "ok": True,
         "last_succeeded_at": now,
         "last_error": None,
-        "total_refreshes": 13,
+        "total_refreshes": 14,
     }
 
 
@@ -158,3 +159,45 @@ def test_refresh_runs_via_asyncio_to_thread(
 
     assert refresher.refresh_calls == 1
     assert "refresh_once" in to_thread_funcs
+
+
+class _SkipRefresher:
+    """Simulates advisory-lock-busy: refresh_once does not increment total_refreshes."""
+
+    def __init__(self, status: _Status) -> None:
+        self._status = status
+        self.refresh_calls = 0
+
+    def get_status(self) -> _Status:
+        return self._status
+
+    def refresh_once(self) -> None:
+        self.refresh_calls += 1
+
+
+def test_run_refresh_now_returns_409_when_advisory_lock_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 2, 18, 10, 20, tzinfo=timezone.utc)
+    status = _Status(
+        enabled=True,
+        interval_seconds=300,
+        daily_vote_cap=40,
+        last_attempted_at=now,
+        last_succeeded_at=now,
+        last_error=None,
+        total_refreshes=16,
+    )
+    refresher = _SkipRefresher(status)
+    monkeypatch.setattr(
+        admin_leaderboard,
+        "get_leaderboard_refresher",
+        lambda: refresher,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(admin_leaderboard.run_refresh_now())
+
+    assert refresher.refresh_calls == 1
+    assert exc_info.value.status_code == 409
+    assert "advisory lock busy" in exc_info.value.detail

@@ -3,8 +3,10 @@
 SQLAlchemy ORM models.
 
 Notes:
-- Import models here so Alembic can discover them for autogeneration.
-- Keep model fields stable; changes require migrations.
+- All model classes are imported here so they register with
+  ``Base.metadata`` before ``create_all`` runs.
+- ``python -m app.db.bootstrap`` creates tables from this metadata
+  on first run (idempotent, Postgres only).
 """
 
 from app.models.battle import Battle, Run

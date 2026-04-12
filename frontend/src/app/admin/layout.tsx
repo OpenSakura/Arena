@@ -2,60 +2,20 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useSession } from "next-auth/react";
-import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
-import { apiGet } from "@/lib/api";
+import { useAdminAccess } from "@/hooks/useAdminAccess";
 
 const ADMIN_TABS = [
-  { href: "/admin/models", label: "Models", icon: "M" },
-  { href: "/admin/prompts", label: "Prompts", icon: "P" },
-  { href: "/admin/tasks", label: "Tasks", icon: "T" },
+  { href: "/admin/models", label: "Models" },
+  { href: "/admin/prompts", label: "Prompts" },
+  { href: "/admin/tasks", label: "Tasks" },
 ] as const;
-
-type MeResponse = {
-  authenticated: boolean;
-  is_admin: boolean;
-};
 
 export default function AdminLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname();
-  const { data: session, status } = useSession();
-  const isAuthed = status === "authenticated" && Boolean(session?.accessToken);
+  const { isAuthenticated, isAdmin, loading } = useAdminAccess();
   const normalizedPathname = (pathname ?? "").replace(/\/+$/, "") || "/";
-
-  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
-  const [meLoading, setMeLoading] = useState(false);
-
-  useEffect(() => {
-    if (!isAuthed) {
-      setIsAdmin(null);
-      return;
-    }
-
-    let cancelled = false;
-    setMeLoading(true);
-
-    apiGet("/me", {
-      headers: { Authorization: `Bearer ${session.accessToken!}` },
-    })
-      .then((data) => {
-        if (cancelled) return;
-        const me = data as MeResponse;
-        setIsAdmin(Boolean(me?.is_admin));
-      })
-      .catch(() => {
-        if (!cancelled) setIsAdmin(false);
-      })
-      .finally(() => {
-        if (!cancelled) setMeLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isAuthed, session?.accessToken]);
 
   const loadingState = (
     <div className="grid gap-6">
@@ -65,9 +25,9 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
     </div>
   );
 
-  if (status === "loading" || (isAuthed && meLoading)) return loadingState;
+  if (loading) return loadingState;
 
-  if (!isAuthed) {
+  if (!isAuthenticated) {
     return (
       <div className="grid gap-6">
         <div className="glass-panel-accent p-6 text-center">

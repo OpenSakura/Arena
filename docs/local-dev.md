@@ -41,7 +41,7 @@ Default local Redis:
 cd backend
 cp .env.example .env
 uv sync
-uv run alembic upgrade head
+uv run python -m app.db.bootstrap
 uv run uvicorn app.main:app --reload --port 8000
 ```
 

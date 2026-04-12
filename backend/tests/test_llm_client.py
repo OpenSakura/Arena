@@ -12,7 +12,6 @@ from app.services.llm_client import (
     _extract_upstream_error,
     _iter_lines_from_bytes,
     _iter_sse_data_events,
-    _MAX_RETRIES,
 )
 
 
@@ -311,6 +310,124 @@ def test_does_not_retry_after_receiving_bytes() -> None:
 
     asyncio.run(_run())
     assert call_count == 1
+
+
+def test_readerror_is_retried_pre_stream() -> None:
+    call_count = 0
+
+    async def _run():
+        nonlocal call_count
+        client = LLMClient()
+        body = _make_sse_body(
+            ['{"choices":[{"delta":{"content":"read-ok"},"finish_reason":null}]}']
+        )
+
+        def _fake_stream(method, url, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 1:
+                raise httpx.ReadError("read error")
+            return _FakeResponse(200, body)
+
+        mock_http = AsyncMock()
+        mock_http.is_closed = False
+        mock_http.stream = _fake_stream
+        client._http_client = mock_http
+
+        with patch("app.services.llm_client.asyncio.sleep", new_callable=AsyncMock):
+            result = await _collect_stream(client, timeout_seconds=5.0)
+        return result
+
+    result = asyncio.run(_run())
+    assert result == ["read-ok"]
+    assert call_count == 2
+
+
+def test_remoteprotocolerror_is_retried_pre_stream() -> None:
+    call_count = 0
+
+    async def _run():
+        nonlocal call_count
+        client = LLMClient()
+        body = _make_sse_body(
+            ['{"choices":[{"delta":{"content":"proto-ok"},"finish_reason":null}]}']
+        )
+
+        def _fake_stream(method, url, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 1:
+                raise httpx.RemoteProtocolError("remote protocol error")
+            return _FakeResponse(200, body)
+
+        mock_http = AsyncMock()
+        mock_http.is_closed = False
+        mock_http.stream = _fake_stream
+        client._http_client = mock_http
+
+        with patch("app.services.llm_client.asyncio.sleep", new_callable=AsyncMock):
+            result = await _collect_stream(client, timeout_seconds=5.0)
+        return result
+
+    result = asyncio.run(_run())
+    assert result == ["proto-ok"]
+    assert call_count == 2
+
+
+def test_writetimeout_is_retried_pre_stream() -> None:
+    call_count = 0
+
+    async def _run():
+        nonlocal call_count
+        client = LLMClient()
+        body = _make_sse_body(
+            ['{"choices":[{"delta":{"content":"write-ok"},"finish_reason":null}]}']
+        )
+
+        def _fake_stream(method, url, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 1:
+                raise httpx.WriteTimeout("write timed out")
+            return _FakeResponse(200, body)
+
+        mock_http = AsyncMock()
+        mock_http.is_closed = False
+        mock_http.stream = _fake_stream
+        client._http_client = mock_http
+
+        with patch("app.services.llm_client.asyncio.sleep", new_callable=AsyncMock):
+            result = await _collect_stream(client, timeout_seconds=5.0)
+        return result
+
+    result = asyncio.run(_run())
+    assert result == ["write-ok"]
+    assert call_count == 2
+
+
+def test_propagates_after_retry_budget_exhausted() -> None:
+    call_count = 0
+
+    async def _run():
+        nonlocal call_count
+        client = LLMClient()
+
+        def _fake_stream(method, url, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise httpx.ReadError("always fails")
+
+        mock_http = AsyncMock()
+        mock_http.is_closed = False
+        mock_http.stream = _fake_stream
+        client._http_client = mock_http
+
+        with patch("app.services.llm_client.asyncio.sleep", new_callable=AsyncMock):
+            with pytest.raises(httpx.ReadError):
+                await _collect_stream(client, timeout_seconds=5.0)
+
+    asyncio.run(_run())
+    assert call_count == 3
 
 
 def test_total_timeout_raises_stream_total_timeout_error() -> None:

@@ -1558,3 +1558,46 @@ def test_rejects_vote_for_missing_side(
         "Side B" in exc_info.value.detail
         or "translation runs failed" in exc_info.value.detail
     )
+
+
+def test_submit_vote_ip_fallback_does_not_overmatch_fingerprinted_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same-IP vote with a non-null user_agent_hash must NOT be found by the
+    IP-only fallback tier — the narrowed filter requires user_agent_hash IS NULL."""
+    battle, runs, model_a_id, model_b_id = _battle_and_runs()
+    db = _VoteDB(battle=battle, runs=runs)
+
+    captured_identity: list[RequesterIdentity] = []
+
+    def fake_find(
+        _db: object, *, battle_id: uuid.UUID, requester_identity: RequesterIdentity
+    ) -> None:
+        captured_identity.append(requester_identity)
+        return None
+
+    monkeypatch.setattr(votes, "get_or_set_anon_id", lambda **_kwargs: "anon-1")
+    monkeypatch.setattr(votes, "find_existing_battle_vote", fake_find)
+    monkeypatch.setattr(votes, "_enforce_anon_vote_rate_limit", lambda **_kwargs: None)
+
+    votes.submit_vote(
+        battle_id=str(battle.id),
+        payload=VoteCreate(winner="A"),
+        request=_request(ip="10.0.0.1", user_agent="browser-X"),
+        response=Response(),
+        db=db,  # type: ignore[arg-type]
+        principal=Principal(is_authenticated=False),
+        settings=_settings(),  # type: ignore[arg-type]
+    )
+
+    assert len(captured_identity) == 1
+    identity = captured_identity[0]
+
+    ip_filters = [
+        (kind, clause)
+        for kind, clause in identity.battle_lookup_filters()
+        if kind == "ip"
+    ]
+    assert len(ip_filters) == 1
+    ip_sql = str(ip_filters[0][1])
+    assert "user_agent_hash IS NULL" in ip_sql

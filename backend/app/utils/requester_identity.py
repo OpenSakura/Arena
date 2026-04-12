@@ -120,7 +120,15 @@ class RequesterIdentity:
             )
 
         if self.ip_hash:
-            filters.append(("ip", Vote.ip_hash == self.ip_hash))
+            filters.append(
+                (
+                    "ip",
+                    and_(
+                        Vote.ip_hash == self.ip_hash,
+                        Vote.user_agent_hash.is_(None),
+                    ),
+                )
+            )
 
         if self.voter_anon_id:
             filters.append(("anon", Vote.voter_anon_id == self.voter_anon_id))

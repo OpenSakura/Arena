@@ -17,14 +17,14 @@ import hashlib
 import logging
 import random
 import threading
-from typing import Any, cast
+from typing import Any, TypeAlias, cast
 import uuid
 
 from sqlalchemy import and_, func, select, text  # pyright: ignore[reportMissingImports]
 from sqlalchemy.orm import Session, aliased  # pyright: ignore[reportMissingImports]
 
 from app.core.config import get_settings
-from app.db.session import get_engine
+from app.db.session import get_sessionmaker
 from app.models.battle import Run
 from app.models.model_registry import Model
 from app.models.rating import ModelRating
@@ -114,10 +114,14 @@ class LeaderboardRefresher:
             self._last_attempted_at = started_at
             self._last_error = None
 
-        engine = get_engine()
         lock_key = _advisory_lock_key("arena_leaderboard_refresh")
+        SessionLocal = get_sessionmaker()
+        db = SessionLocal()
 
-        with engine.connect() as conn:
+        try:
+            # Acquire the advisory lock on the session's underlying connection
+            # so all ORM work shares the same connection that holds the lock.
+            conn = db.connection()
             locked = bool(
                 conn.execute(
                     text("SELECT pg_try_advisory_lock(:key)"),
@@ -126,9 +130,9 @@ class LeaderboardRefresher:
             )
             if not locked:
                 logger.debug("Leaderboard refresh skipped (lock busy)")
+                db.close()
                 return
 
-            db = Session(bind=conn)
             try:
                 model_count, vote_count = self._refresh_locked(db)
 
@@ -147,28 +151,27 @@ class LeaderboardRefresher:
                 with self._status_lock:
                     self._last_error = str(exc)
             finally:
+                # Always release the advisory lock, even if the refresh
+                # raises, to prevent the lock from leaking on the pooled
+                # connection.
                 try:
-                    db.close()
-                finally:
-                    # Always release the advisory lock, even if db.close()
-                    # raises, to prevent the lock from leaking on the pooled
-                    # connection.
-                    try:
-                        conn.execute(
-                            text("SELECT pg_advisory_unlock(:key)"),
-                            {"key": lock_key},
-                        )
-                    except Exception:  # noqa: BLE001
-                        # If unlock itself fails (e.g. broken connection), log
-                        # and discard the connection from the pool so the
-                        # leaked advisory lock does not affect future callers
-                        # that receive this same pooled connection.
-                        logger.exception(
-                            "Failed to release advisory lock %s; "
-                            "invalidating connection to prevent lock leak",
-                            lock_key,
-                        )
-                        conn.invalidate()
+                    conn.execute(
+                        text("SELECT pg_advisory_unlock(:key)"),
+                        {"key": lock_key},
+                    )
+                except Exception:  # noqa: BLE001
+                    # If unlock itself fails (e.g. broken connection), log
+                    # and discard the connection from the pool so the
+                    # leaked advisory lock does not affect future callers
+                    # that receive this same pooled connection.
+                    logger.exception(
+                        "Failed to release advisory lock %s; "
+                        "invalidating connection to prevent lock leak",
+                        lock_key,
+                    )
+                    conn.invalidate()
+        finally:
+            db.close()
 
     def get_status(self) -> RefreshStatus:
         with self._status_lock:
@@ -258,13 +261,15 @@ class LeaderboardRefresher:
             row.games_played = games_played
             db.add(row)
 
-        # Remove ratings for models that no longer exist.
-        stale_stmt = select(ModelRating).order_by(ModelRating.model_id.asc())
         if model_id_set:
-            stale_stmt = stale_stmt.where(~ModelRating.model_id.in_(model_id_set))
-        stale_rows = db.execute(stale_stmt.with_for_update()).scalars().all()
-        for row in stale_rows:
-            db.delete(row)
+            stale_stmt = (
+                select(ModelRating)
+                .where(~ModelRating.model_id.in_(model_id_set))
+                .order_by(ModelRating.model_id.asc())
+                .with_for_update()
+            )
+            for row in db.execute(stale_stmt).scalars().all():
+                db.delete(row)
 
         db.commit()
 
@@ -384,7 +389,7 @@ def _vote_sample_bounds_stmt():
     )
 
 
-type _VoteSampleRow = tuple[
+_VoteSampleRow: TypeAlias = tuple[
     uuid.UUID,
     datetime,
     str,

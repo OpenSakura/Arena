@@ -96,7 +96,10 @@ export default function AdminModelsPage() {
     let cancelled = false;
 
     async function load() {
-      if (!headers) return;
+      if (!headers) {
+        setLoading(false);
+        return;
+      }
 
       setLoading(true);
       setErrorText(null);
@@ -751,16 +754,17 @@ export default function AdminModelsPage() {
                   id="edit-api-key"
                   type="password"
                   value={edit.apiKeyText}
-                  onChange={(e) => setEdit((prev) => (prev ? { ...prev, apiKeyText: e.target.value } : prev))}
+                  onChange={(e) => setEdit((prev) => (prev ? { ...prev, apiKeyText: e.target.value, clearApiKey: false } : prev))}
                   className="input-premium"
                   placeholder="leave blank to keep"
+                  disabled={edit.clearApiKey}
                 />
               </div>
               <label className="label-premium flex items-center gap-2.5">
                 <input
                   type="checkbox"
                   checked={edit.clearApiKey}
-                  onChange={(e) => setEdit((prev) => (prev ? { ...prev, clearApiKey: e.target.checked } : prev))}
+                  onChange={(e) => setEdit((prev) => (prev ? { ...prev, clearApiKey: e.target.checked, apiKeyText: e.target.checked ? "" : prev.apiKeyText } : prev))}
                 />
                 clear api_key
               </label>

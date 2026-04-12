@@ -57,7 +57,7 @@ function templateRecord(overrides: Record<string, unknown> = {}) {
 }
 
 describe("AdminPromptsPage", () => {
-  it("does not make API calls when user is not authenticated and stays in loading state", async () => {
+  it("does not make API calls when user is not authenticated and shows empty state", async () => {
     useSessionMock.mockReturnValue({ data: null, status: "unauthenticated" });
 
     render(<AdminPromptsPage />);
@@ -67,7 +67,7 @@ describe("AdminPromptsPage", () => {
     await screen.findByText("Prompt Templates");
     expect(apiGetMock).not.toHaveBeenCalled();
 
-    expect(screen.queryByText("No prompt templates yet.")).toBeNull();
+    await screen.findByText("No prompt templates yet.");
   });
 
   it("fetches and renders prompt template rows for authenticated users", async () => {

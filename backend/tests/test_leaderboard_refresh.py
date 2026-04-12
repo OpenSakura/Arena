@@ -905,3 +905,64 @@ def test_revealed_votes_only_are_loaded_for_rating_pipeline() -> None:
         or "is not false" in sql
         or "revealed" in sql
     ), "Expected a truthiness check on 'revealed' column"
+
+
+# --- Regression: _persist_ratings with empty model_ids ----------------------
+
+
+def test_persist_ratings_empty_model_ids_does_not_delete_existing_rows() -> None:
+    """When model_ids is empty (no models registered), _persist_ratings must
+    not issue a stale-delete that wipes all existing ModelRating rows."""
+
+    deleted_ids: list[object] = []
+    committed = {"count": 0}
+
+    class _FakeRow:
+        def __init__(self, model_id: uuid.UUID) -> None:
+            self.model_id = model_id
+
+    class _FakeScalars:
+        def __init__(self, rows: list[object]) -> None:
+            self._rows = rows
+
+        def all(self) -> list[object]:
+            return self._rows
+
+    class _FakeResult:
+        def __init__(self, row: object = None) -> None:
+            self._row = row
+
+        def scalar_one_or_none(self) -> object:
+            return self._row
+
+        def scalars(self) -> _FakeScalars:
+            return _FakeScalars([])
+
+    class _FakeSession:
+        def execute(self, stmt: object) -> _FakeResult:
+            return _FakeResult()
+
+        def add(self, obj: object) -> None:
+            pass
+
+        def delete(self, obj: object) -> None:
+            deleted_ids.append(getattr(obj, "model_id", obj))
+
+        def commit(self) -> None:
+            committed["count"] += 1
+
+    refresher = LeaderboardRefresher(
+        enabled=True,
+        interval_seconds=60,
+        daily_vote_cap=0,
+        elo_k=32.0,
+    )
+
+    refresher._persist_ratings(
+        _FakeSession(),  # type: ignore[arg-type]
+        model_ids=[],
+        ratings={},
+    )
+
+    assert deleted_ids == [], "Empty model_ids must not trigger stale-row deletion"
+    assert committed["count"] == 1

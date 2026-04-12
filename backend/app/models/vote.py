@@ -56,6 +56,7 @@ class Vote(Base):
         Index("ix_votes_voter_user_id", "voter_user_id"),
         Index("ix_votes_voter_anon_id", "voter_anon_id"),
         Index("ix_votes_ip_hash", "ip_hash"),
+        Index("ix_votes_user_agent_hash", "user_agent_hash"),
         Index("ix_votes_created_at", "created_at"),
         # Composite index for leaderboard refresh: WHERE revealed IS TRUE ORDER BY created_at
         # (queries in leaderboard_refresh.py filter on revealed then sort by created_at).

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Generator
 import os
 import subprocess
 from dataclasses import dataclass
@@ -8,7 +9,7 @@ from textwrap import dedent
 
 import httpx
 import pytest
-import redis
+import redis  # pyright: ignore[reportMissingImports]
 
 
 E2E_DIR = Path(__file__).resolve().parent
@@ -169,7 +170,7 @@ def _run_backend_migrations() -> None:
     env = os.environ.copy()
     env["DATABASE_URL"] = POSTGRES_URL
     _run(
-        ["uv", "run", "alembic", "upgrade", "head"],
+        ["uv", "run", "python", "-m", "app.db.bootstrap"],
         cwd=BACKEND_DIR,
         env=env,
     )
@@ -211,7 +212,7 @@ def _request_authentik_token() -> str:
 
 
 @pytest.fixture(scope="session")
-def e2e_stack() -> E2EStack:
+def e2e_stack() -> Generator[E2EStack, None, None]:
     stack = E2EStack(compose_file=COMPOSE_FILE, compose_project=COMPOSE_PROJECT)
 
     _run(_compose_command(stack, "up", "-d", "--wait"), cwd=E2E_DIR)
@@ -259,7 +260,7 @@ def clear_rate_limit_redis(configured_backend_env: None) -> None:
 def backend_client(configured_backend_env: None):
     del configured_backend_env
 
-    from fastapi.testclient import TestClient
+    from fastapi.testclient import TestClient  # pyright: ignore[reportMissingImports]
 
     from app.main import create_app
 

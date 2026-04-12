@@ -74,7 +74,7 @@ function taskRecord(overrides: Record<string, unknown> = {}) {
 }
 
 describe("AdminTasksPage", () => {
-  it("does not make API calls when user is not authenticated and stays in loading state", async () => {
+  it("does not make API calls when user is not authenticated and shows empty state", async () => {
     useSessionMock.mockReturnValue({ data: null, status: "unauthenticated" });
 
     render(<AdminTasksPage />);
@@ -84,7 +84,7 @@ describe("AdminTasksPage", () => {
     await screen.findByText("Tasks & Task Sets");
     expect(apiGetMock).not.toHaveBeenCalled();
 
-    expect(screen.queryByText("Showing 0 task(s)")).toBeNull();
+    await screen.findByText("Showing 0 task(s)");
   });
 
   it("loads task sets and tasks when authenticated", async () => {

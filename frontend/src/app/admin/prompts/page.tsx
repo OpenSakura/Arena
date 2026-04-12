@@ -41,7 +41,10 @@ export default function AdminPromptsPage() {
     let cancelled = false;
 
     async function load() {
-      if (!headers) return;
+      if (!headers) {
+        setLoading(false);
+        return;
+      }
       setLoading(true);
       setErrorText(null);
       try {

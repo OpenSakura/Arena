@@ -9,23 +9,25 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signIn, signOut, useSession } from "next-auth/react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useId } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { useAdminAccess } from "@/hooks/useAdminAccess";
 
 type NavLink = {
   href: string;
   label: string;
   prefix?: string;
   authRequired?: boolean;
+  adminRequired?: boolean;
 };
 
 const NAV_LINKS: NavLink[] = [
   { href: "/battle/new", label: "Battle", prefix: "/battle" },
   { href: "/leaderboard", label: "Leaderboard" },
   { href: "/onboarding", label: "Profile" },
-  { href: "/admin/models", label: "Admin", prefix: "/admin", authRequired: true },
+  { href: "/admin/models", label: "Admin", prefix: "/admin", adminRequired: true },
 ];
 
 function SakuraIcon({ className = "" }: { className?: string }) {
@@ -53,10 +55,11 @@ function SakuraIcon({ className = "" }: { className?: string }) {
 
 export function Header() {
   const { data: session, status } = useSession();
-  const isAuthenticated = status === "authenticated" && Boolean(session?.accessToken);
+  const { isAuthenticated, isAdmin, loading: adminLoading } = useAdminAccess();
   const pathname = usePathname() ?? "/";
   const [mobileOpen, setMobileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+  const mobileMenuId = useId();
 
   // Auto-close mobile menu on route change.
   useEffect(() => {
@@ -96,7 +99,11 @@ export function Header() {
 
         {/* Desktop nav */}
         <nav className="hidden md:flex items-center gap-1 text-sm font-medium">
-          {NAV_LINKS.filter((link) => !link.authRequired || isAuthenticated).map((link) => (
+          {NAV_LINKS.filter((link) => {
+            if (link.adminRequired) return isAdmin === true;
+            if (link.authRequired) return isAuthenticated;
+            return true;
+          }).map((link) => (
             <Link
               key={link.href}
               href={link.href}
@@ -156,6 +163,7 @@ export function Header() {
           onClick={() => setMobileOpen(!mobileOpen)}
           aria-label="Toggle menu"
           aria-expanded={mobileOpen}
+          aria-controls={mobileMenuId}
         >
           <span className={`block h-0.5 w-5 bg-foreground transition-all ${mobileOpen ? "rotate-45 translate-y-1.5" : ""}`} />
           <span className={`block h-0.5 w-5 bg-foreground transition-all ${mobileOpen ? "opacity-0" : ""}`} />
@@ -167,6 +175,7 @@ export function Header() {
       <AnimatePresence>
         {mobileOpen && (
           <motion.div
+            id={mobileMenuId}
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: "auto" }}
             exit={{ opacity: 0, height: 0 }}
@@ -174,7 +183,11 @@ export function Header() {
             className="md:hidden border-t border-border/50 bg-background/95 backdrop-blur-xl overflow-hidden"
           >
             <div className="px-6 py-4 space-y-1">
-              {NAV_LINKS.filter((link) => !link.authRequired || isAuthenticated).map((link) => (
+              {NAV_LINKS.filter((link) => {
+                if (link.adminRequired) return isAdmin === true;
+                if (link.authRequired) return isAuthenticated;
+                return true;
+              }).map((link) => (
                 <Link
                   key={link.href}
                   href={link.href}

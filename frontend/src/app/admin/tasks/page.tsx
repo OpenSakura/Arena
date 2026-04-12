@@ -95,7 +95,10 @@ export default function AdminTasksPage() {
     let cancelled = false;
 
     async function loadTaskSets() {
-      if (!headers) return;
+      if (!headers) {
+        setLoadingSets(false);
+        return;
+      }
       setLoadingSets(true);
       setErrorText(null);
       try {
@@ -120,7 +123,10 @@ export default function AdminTasksPage() {
     let cancelled = false;
 
     async function loadTasks() {
-      if (!headers) return;
+      if (!headers) {
+        setLoadingTasks(false);
+        return;
+      }
       setLoadingTasks(true);
       setErrorText(null);
       try {
