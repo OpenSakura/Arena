@@ -180,7 +180,15 @@ class RollingWindowRateLimiter:
         current_bucket_key = bucket_keys[0]
 
         redis_client = self._redis
-        assert redis_client is not None
+        if redis_client is None:
+            # _is_limited_redis is only called when self._enabled is True,
+            # which requires redis_client to be non-None (see __init__).
+            # This branch is unreachable in normal operation but guards
+            # against future refactors that might break that invariant.
+            raise RuntimeError(
+                "_is_limited_redis called with redis_client=None; "
+                "this is a programming error"
+            )
 
         expire_seconds = self._window_seconds + self._bucket_seconds
 

@@ -3,7 +3,10 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSession } from "next-auth/react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
+
+import { apiGet } from "@/lib/api";
 
 const ADMIN_TABS = [
   { href: "/admin/models", label: "Models", icon: "M" },
@@ -11,12 +14,48 @@ const ADMIN_TABS = [
   { href: "/admin/tasks", label: "Tasks", icon: "T" },
 ] as const;
 
+type MeResponse = {
+  authenticated: boolean;
+  is_admin: boolean;
+};
+
 export default function AdminLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { data: session, status } = useSession();
   const isAuthed = status === "authenticated" && Boolean(session?.accessToken);
   const normalizedPathname = (pathname ?? "").replace(/\/+$/, "") || "/";
-  const isAdminIndex = normalizedPathname === "/admin";
+
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
+  const [meLoading, setMeLoading] = useState(false);
+
+  useEffect(() => {
+    if (!isAuthed) {
+      setIsAdmin(null);
+      return;
+    }
+
+    let cancelled = false;
+    setMeLoading(true);
+
+    apiGet("/me", {
+      headers: { Authorization: `Bearer ${session.accessToken!}` },
+    })
+      .then((data) => {
+        if (cancelled) return;
+        const me = data as MeResponse;
+        setIsAdmin(Boolean(me?.is_admin));
+      })
+      .catch(() => {
+        if (!cancelled) setIsAdmin(false);
+      })
+      .finally(() => {
+        if (!cancelled) setMeLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthed, session?.accessToken]);
 
   const loadingState = (
     <div className="grid gap-6">
@@ -26,9 +65,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
     </div>
   );
 
-  if (isAdminIndex) return <>{loadingState}{children}</>;
-
-  if (status === "loading") return loadingState;
+  if (status === "loading" || (isAuthed && meLoading)) return loadingState;
 
   if (!isAuthed) {
     return (
@@ -36,6 +73,18 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
         <div className="glass-panel-accent p-6 text-center">
           <p className="text-sm text-muted-foreground">
             You must be logged in with an admin account to access this area.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (isAdmin === false) {
+    return (
+      <div className="grid gap-6">
+        <div className="glass-panel-accent p-6 text-center">
+          <p className="text-sm text-muted-foreground">
+            You are not authorized to access the admin area.
           </p>
         </div>
       </div>

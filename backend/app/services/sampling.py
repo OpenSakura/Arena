@@ -127,6 +127,15 @@ def select_battle_pair(
     else:
         rival_weights = _normalize_weights(rival_weights_raw)
 
+    if not rival_candidates:
+        # All remaining candidates are administratively disabled (weight=0).
+        # Raise with a clear message rather than letting _weighted_index raise
+        # an opaque "weights cannot be empty" ValueError.
+        raise ValueError(
+            f"No valid rival found for '{chosen.model_name}': all other "
+            f"candidates are outage-excluded or have weight=0"
+        )
+
     rival_idx = _weighted_index(rival_weights, rng)
     rival = rival_candidates[rival_idx]
 

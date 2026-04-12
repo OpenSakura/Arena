@@ -37,12 +37,25 @@ async def get_refresh_status() -> dict[str, object]:
 @router.post("/refresh")
 async def run_refresh_now() -> dict[str, object]:
     refresher = get_leaderboard_refresher()
+    # Snapshot total_refreshes *before* the call so we can detect a no-op
+    # skip (advisory lock held by another worker) vs a real completion.
+    before_status = await asyncio.to_thread(refresher.get_status)
+    before_total = before_status.total_refreshes
+
     await asyncio.to_thread(refresher.refresh_once)
+
     status = await asyncio.to_thread(refresher.get_status)
     if status.last_error is not None:
         raise HTTPException(
             status_code=500,
             detail=f"Refresh failed: {status.last_error}",
+        )
+    if status.total_refreshes == before_total:
+        # refresh_once returned early because the advisory lock was already
+        # held by a background worker — no work was done.
+        raise HTTPException(
+            status_code=409,
+            detail="Refresh skipped: a refresh is already in progress (advisory lock busy)",
         )
     return {
         "ok": True,

@@ -378,7 +378,15 @@ class LLMClient:
 
         # The loop always either breaks on success or raises on final failure,
         # so response is guaranteed to be set here.
-        assert response is not None
+        if response is None:
+            # Unreachable: the retry loop always either assigns response (on
+            # a successful break) or raises (on the final attempt).  Guard
+            # against future refactors that might introduce a new code path
+            # that exits the loop without either.
+            raise RuntimeError(
+                "chat_completion: response is None after retry loop; "
+                "this is a programming error"
+            )
         body = response.json()
 
         if not isinstance(body, dict):

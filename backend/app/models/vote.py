@@ -57,6 +57,14 @@ class Vote(Base):
         Index("ix_votes_voter_anon_id", "voter_anon_id"),
         Index("ix_votes_ip_hash", "ip_hash"),
         Index("ix_votes_created_at", "created_at"),
+        # Composite index for leaderboard refresh: WHERE revealed IS TRUE ORDER BY created_at
+        # (queries in leaderboard_refresh.py filter on revealed then sort by created_at).
+        Index("ix_votes_revealed_created_at", "revealed", "created_at"),
+        # Composite indexes for daily vote-cap queries (battles.py):
+        # WHERE voter_user_id = ? AND created_at >= day_start AND created_at < day_end
+        Index("ix_votes_voter_user_id_created_at", "voter_user_id", "created_at"),
+        # WHERE voter_anon_id = ? AND created_at >= day_start AND created_at < day_end
+        Index("ix_votes_voter_anon_id_created_at", "voter_anon_id", "created_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
