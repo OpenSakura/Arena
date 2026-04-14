@@ -49,11 +49,11 @@ describe("loadOrCreateBattle", () => {
 });
 
 describe("asRecord", () => {
-  it("returns null for non-object values", () => {
-    expect(asRecord(null)).toBeNull();
-    expect(asRecord(undefined)).toBeNull();
-    expect(asRecord("x")).toBeNull();
-    expect(asRecord(12)).toBeNull();
+  it("returns undefined for non-object values", () => {
+    expect(asRecord(null)).toBeUndefined();
+    expect(asRecord(undefined)).toBeUndefined();
+    expect(asRecord("x")).toBeUndefined();
+    expect(asRecord(12)).toBeUndefined();
   });
 
   it("returns objects as-is", () => {

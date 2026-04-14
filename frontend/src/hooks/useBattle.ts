@@ -12,7 +12,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 import { isBattleBootstrapReady } from "@/components/battleAuth";
 import { loadOrCreateBattle, mergeBattleDelta } from "@/components/battleViewUtils";
-import { getBackendBaseUrl, apiGet, apiPost } from "@/lib/api";
+import { getBackendBaseUrl, apiPost } from "@/lib/api";
 import { streamSSE } from "@/lib/sse";
 import { useAuthHeaders } from "@/hooks/useAuthHeaders";
 import { asRecord, isRecord } from "@/lib/typeGuards";
@@ -27,8 +27,7 @@ type BattleStatus =
   | "failed"
   | "error"
   | "pending"
-  | "running"
-  | "waiting_for_turnstile";
+  | "running";
 type Winner = "A" | "B" | "tie";
 type BattlePublicStatus = "pending" | "running" | "completed" | "failed";
 
@@ -76,13 +75,11 @@ export type BattleState = {
   winner: Winner | null;
   rubricTags: string[];
   comment: string;
-  turnstileToken: string;
   submittingVote: boolean;
   voteId: string | null;
   reveal: RevealData | null;
   revealLoading: boolean;
   retryCount: number;
-  anonBattleTurnstileRequired: boolean;
 };
 
 type Action =
@@ -102,7 +99,6 @@ type Action =
   | { type: "SET_WINNER"; winner: Winner | null }
   | { type: "TOGGLE_RUBRIC_TAG"; tag: string }
   | { type: "SET_COMMENT"; comment: string }
-  | { type: "SET_TURNSTILE_TOKEN"; token: string }
   | { type: "VOTE_SUBMITTING" }
   | { type: "VOTE_SUCCESS"; voteId: string }
   | { type: "VOTE_ERROR"; error: string }
@@ -110,7 +106,6 @@ type Action =
   | { type: "REVEAL_SUCCESS"; reveal: RevealData }
   | { type: "REVEAL_ERROR"; error: string }
   | { type: "RETRY_ERROR"; error: string; status: Extract<BattleStatus, "failed" | "error"> }
-  | { type: "SET_TURNSTILE_REQUIRED"; required: boolean }
   | { type: "RETRY_BATTLE" };
 
 const INITIAL_STATE: BattleState = {
@@ -125,13 +120,11 @@ const INITIAL_STATE: BattleState = {
   winner: null,
   rubricTags: [],
   comment: "",
-  turnstileToken: "",
   submittingVote: false,
   voteId: null,
   reveal: null,
   revealLoading: false,
   retryCount: 0,
-  anonBattleTurnstileRequired: false,
 };
 
 const BATTLE_PUBLIC_STATUSES: readonly BattlePublicStatus[] = [
@@ -154,8 +147,6 @@ function battleReducer(state: BattleState, action: Action): BattleState {
     case "RESET_BATTLE":
       return {
         ...INITIAL_STATE,
-        anonBattleTurnstileRequired: state.anonBattleTurnstileRequired,
-        turnstileToken: state.turnstileToken,
       };
 
     case "BOOTSTRAP_SUCCESS": {
@@ -267,9 +258,6 @@ function battleReducer(state: BattleState, action: Action): BattleState {
     case "SET_COMMENT":
       return { ...state, comment: action.comment };
 
-    case "SET_TURNSTILE_TOKEN":
-      return { ...state, turnstileToken: action.token };
-
     case "VOTE_SUBMITTING":
       return { ...state, submittingVote: true, errorText: null };
 
@@ -290,9 +278,6 @@ function battleReducer(state: BattleState, action: Action): BattleState {
 
     case "RETRY_ERROR":
       return { ...state, status: action.status, errorText: action.error };
-
-    case "SET_TURNSTILE_REQUIRED":
-      return { ...state, anonBattleTurnstileRequired: action.required };
 
     case "RETRY_BATTLE":
       return {
@@ -389,22 +374,11 @@ function parseVoteSubmitResponse(value: unknown): VoteSubmitResponse {
   return value;
 }
 
-function parsePublicConfig(value: unknown): { anonBattleTurnstileRequired: boolean } {
-  if (!isRecord(value)) {
-    throw new Error("Invalid public config response");
-  }
-
-  return {
-    anonBattleTurnstileRequired: value.anon_battle_turnstile_required === true,
-  };
-}
-
 export function useBattle(battleId: string) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const restartKey = searchParams.get("r") ?? "";
-  const { headers, headersRef, accessTokenRef, authStatus, accessToken, sessionError } = useAuthHeaders();
-  const turnstileSiteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? "";
+  const { headersRef, accessTokenRef, authStatus, accessToken, sessionError } = useAuthHeaders();
   const isAuthed = authStatus === "authenticated" && Boolean(accessToken);
   const hasRefreshError = sessionError !== null && REFRESH_ERRORS.includes(sessionError);
 
@@ -417,33 +391,6 @@ export function useBattle(battleId: string) {
   useEffect(() => {
     statusRef.current = state.status;
   }, [state.status]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadPublicConfig() {
-      try {
-        const payload = parsePublicConfig(await apiGet("/public-config"));
-        if (cancelled) return;
-        dispatch({
-          type: "SET_TURNSTILE_REQUIRED",
-          required: payload.anonBattleTurnstileRequired,
-        });
-      } catch {
-        if (cancelled) return;
-        dispatch({
-          type: "SET_TURNSTILE_REQUIRED",
-          required: Boolean(turnstileSiteKey),
-        });
-      }
-    }
-
-    void loadPublicConfig();
-    return () => {
-      cancelled = true;
-    };
-  }, [turnstileSiteKey]);
-
   useEffect(() => {
     let cancelled = false;
 
@@ -451,16 +398,15 @@ export function useBattle(battleId: string) {
       if (!isBattleBootstrapReady(authStatus)) {
         return;
       }
-
-      if (
-        battleId === "new" &&
-        !isAuthed &&
-        state.anonBattleTurnstileRequired &&
-        !state.turnstileToken &&
-        !state.resolvedBattleId
-      ) {
-        dispatch({ type: "SET_STATUS", status: "waiting_for_turnstile" });
-        return;
+      if (battleId === "new") {
+        if (hasRefreshError) {
+          dispatch({ type: "BOOTSTRAP_ERROR", error: "Your session has expired. Please log in again to create a battle." });
+          return;
+        }
+        if (!isAuthed) {
+          dispatch({ type: "BOOTSTRAP_ERROR", error: "Login required to start a battle." });
+          return;
+        }
       }
 
       if (state.resolvedBattleId && state.resolvedBattleId === battleId) {
@@ -477,11 +423,7 @@ export function useBattle(battleId: string) {
 
       try {
         const battle = parseBattlePublic(
-          await loadOrCreateBattle(
-            battleId,
-            accessTokenRef.current,
-            battleId === "new" ? state.turnstileToken || undefined : undefined,
-          ),
+          await loadOrCreateBattle(battleId, accessTokenRef.current),
         );
         if (cancelled) return;
 
@@ -498,7 +440,6 @@ export function useBattle(battleId: string) {
         }
       } catch (err) {
         if (cancelled) return;
-        dispatch({ type: "SET_TURNSTILE_TOKEN", token: "" });
         dispatch({
           type: "BOOTSTRAP_ERROR",
           error: err instanceof Error ? err.message : "Failed to load battle",
@@ -510,33 +451,27 @@ export function useBattle(battleId: string) {
     return () => {
       cancelled = true;
     };
-  }, [
+    }, [
     accessTokenRef,
     authStatus,
     battleId,
+    hasRefreshError,
     isAuthed,
     restartKey,
     router,
-    state.anonBattleTurnstileRequired,
-    state.resolvedBattleId,
-    state.turnstileToken,
+    state.resolvedBattleId
   ]);
-
-  async function handleBattleTurnstileToken(token: string) {
-    dispatch({ type: "SET_TURNSTILE_TOKEN", token });
-
-    if (battleId === "new") {
-      dispatch({ type: "SET_STATUS", status: "loading" });
-    }
-  }
 
   const streamUrl = useMemo(() => {
     if (!state.resolvedBattleId) {
       return null;
     }
+    if (state.status === "done" || state.status === "failed" || state.status === "error") {
+      return null;
+    }
 
     return `${getBackendBaseUrl()}/battles/${encodeURIComponent(state.resolvedBattleId)}/stream`;
-  }, [state.resolvedBattleId]);
+  }, [state.resolvedBattleId, state.status]);
 
   useEffect(() => {
     if (!streamUrl || !state.resolvedBattleId) {
@@ -665,6 +600,14 @@ export function useBattle(battleId: string) {
   }, [headersRef, state.resolvedBattleId, state.retryCount, streamUrl]);
 
   async function handleVoteSubmit() {
+    if (hasRefreshError) {
+      dispatch({ type: "VOTE_ERROR", error: "Your session has expired. Please log in again to submit a vote." });
+      return;
+    }
+    if (!isAuthed) {
+      dispatch({ type: "VOTE_ERROR", error: "Login required to submit a vote." });
+      return;
+    }
     if (
       voteSubmitLockRef.current ||
       !state.resolvedBattleId ||
@@ -724,6 +667,14 @@ export function useBattle(battleId: string) {
   }
 
   async function handleReveal() {
+    if (hasRefreshError) {
+      dispatch({ type: "REVEAL_ERROR", error: "Your session has expired. Please log in again to reveal." });
+      return;
+    }
+    if (!isAuthed) {
+      dispatch({ type: "REVEAL_ERROR", error: "Login required to reveal models." });
+      return;
+    }
     if (!state.resolvedBattleId || !state.voteId || state.reveal) {
       return;
     }
@@ -758,11 +709,19 @@ export function useBattle(battleId: string) {
   }
 
   async function handleRetry() {
+    const retryFallbackStatus = state.status === "failed" ? "failed" : "error";
+
+    if (hasRefreshError) {
+      dispatch({ type: "RETRY_ERROR", error: "Your session has expired. Please log in again to retry.", status: retryFallbackStatus });
+      return;
+    }
+    if (!isAuthed) {
+      dispatch({ type: "RETRY_ERROR", error: "Login required to retry.", status: retryFallbackStatus });
+      return;
+    }
     if (!state.resolvedBattleId || state.voteId) {
       return;
     }
-
-    const retryFallbackStatus = state.status === "failed" ? "failed" : "error";
 
     try {
       await apiPost(`/battles/${encodeURIComponent(state.resolvedBattleId)}/retry`, {}, {
@@ -780,21 +739,20 @@ export function useBattle(battleId: string) {
     }
   }
 
-  const needsTurnstileForBattle =
-    authStatus !== "loading" && !isAuthed && state.anonBattleTurnstileRequired;
-  const turnstileMisconfigured = needsTurnstileForBattle && !turnstileSiteKey;
+
   const voteSubmitted = state.voteId !== null;
 
   const canVote =
+    isAuthed &&
     !hasRefreshError &&
     state.resolvedBattleId !== null &&
-    authStatus !== "loading" &&
     state.winner !== null &&
     state.reveal === null &&
     !state.submittingVote &&
     state.status === "done";
 
   const canReveal =
+    isAuthed &&
     !hasRefreshError &&
     state.voteId !== null &&
     state.reveal === null &&
@@ -802,6 +760,7 @@ export function useBattle(battleId: string) {
     !state.submittingVote;
 
   const canRetry =
+    isAuthed &&
     !hasRefreshError &&
     state.resolvedBattleId !== null &&
     (state.status === "failed" || state.status === "error") &&
@@ -820,8 +779,6 @@ export function useBattle(battleId: string) {
               ? "Error"
               : state.status === "loading"
                 ? "Loading..."
-                : state.status === "waiting_for_turnstile"
-                  ? "Verification Required"
                   : state.status.charAt(0).toUpperCase() + state.status.slice(1);
 
   return {
@@ -829,9 +786,7 @@ export function useBattle(battleId: string) {
     dispatch,
     isAuthed,
     authStatus,
-    turnstileSiteKey,
-    needsTurnstileForBattle,
-    turnstileMisconfigured,
+    hasRefreshError,
     canVote,
     canReveal,
     canRetry,
@@ -840,7 +795,6 @@ export function useBattle(battleId: string) {
     handleVoteSubmit,
     handleReveal,
     handleRetry,
-    handleBattleTurnstileToken,
     handleStartAnotherBattle,
   };
 }

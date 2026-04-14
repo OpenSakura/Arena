@@ -5,16 +5,11 @@ export { asRecord } from "@/lib/typeGuards";
 export async function loadOrCreateBattle(
   battleId: string,
   accessToken?: string,
-  turnstileToken?: string,
 ): Promise<unknown> {
   const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined;
 
   if (battleId === "new") {
-    const body: Record<string, unknown> = {};
-    if (turnstileToken) {
-      body.turnstile_token = turnstileToken;
-    }
-    return apiPost("/battles", body, { headers });
+    return apiPost("/battles", {}, { headers });
   }
 
   return apiGet(`/battles/${encodeURIComponent(battleId)}`, { headers });

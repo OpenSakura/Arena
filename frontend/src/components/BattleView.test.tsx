@@ -11,7 +11,6 @@ const replaceMock = vi.fn();
 const routerMock = { push: pushMock, replace: replaceMock };
 const useSearchParamsMock = vi.fn();
 const useSessionMock = vi.fn();
-const apiGetMock = vi.fn();
 const apiPostMock = vi.fn();
 const getBackendBaseUrlMock = vi.fn();
 const streamSSEMock = vi.fn();
@@ -27,21 +26,12 @@ vi.mock("next-auth/react", () => ({
 }));
 
 vi.mock("@/lib/api", () => ({
-  apiGet: (...args: unknown[]) => apiGetMock(...args),
   apiPost: (...args: unknown[]) => apiPostMock(...args),
   getBackendBaseUrl: () => getBackendBaseUrlMock(),
 }));
 
 vi.mock("@/lib/sse", () => ({
   streamSSE: (...args: unknown[]) => streamSSEMock(...args),
-}));
-
-vi.mock("@/components/TurnstileWidget", () => ({
-  TurnstileWidget: ({ onToken }: { onToken: (token: string) => void }) => (
-    <button type="button" onClick={() => onToken("turnstile-token")}>
-      Solve Turnstile
-    </button>
-  ),
 }));
 
 vi.mock("@/components/battleViewUtils", () => ({
@@ -67,7 +57,6 @@ function emptyEventStream() {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.clearAllMocks();
-  delete process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
 });
 
 beforeEach(() => {
@@ -75,14 +64,12 @@ beforeEach(() => {
   replaceMock.mockReset();
   useSearchParamsMock.mockReset();
   useSessionMock.mockReset();
-  apiGetMock.mockReset();
   apiPostMock.mockReset();
   getBackendBaseUrlMock.mockReset();
   streamSSEMock.mockReset();
   loadOrCreateBattleMock.mockReset();
 
   useSearchParamsMock.mockReturnValue({ get: () => null });
-  apiGetMock.mockResolvedValue({ anon_battle_turnstile_required: false });
   getBackendBaseUrlMock.mockReturnValue("http://backend.test");
   streamSSEMock.mockReturnValue(emptyEventStream());
 });
@@ -127,7 +114,7 @@ describe("BattleView", () => {
     render(<BattleView battleId="new" />);
 
     await screen.findByText("JP source");
-    expect(loadOrCreateBattleMock).toHaveBeenCalledWith("new", "access-token", undefined);
+    expect(loadOrCreateBattleMock).toHaveBeenCalledWith("new", "access-token");
 
     await screen.findByText("Alpha");
     await screen.findByText("Beta");
@@ -223,66 +210,7 @@ describe("BattleView", () => {
     });
   });
 
-  it("requires Turnstile verification for anonymous battle creation", async () => {
-    process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY = "site-key";
-    apiGetMock.mockResolvedValue({ anon_battle_turnstile_required: true });
 
-    useSessionMock.mockReturnValue({
-      data: null,
-      status: "unauthenticated",
-    });
-
-    // Delay battle creation so config loads first and Turnstile gate activates
-    loadOrCreateBattleMock.mockImplementation(
-      () => new Promise(() => {}), // never resolves — gate should prevent reaching this
-    );
-
-    render(<BattleView battleId="new" />);
-
-    // Should show verification gate
-    await screen.findByText("Verification Required");
-
-    // After solving Turnstile, battle should be created with the token
-    loadOrCreateBattleMock.mockResolvedValue({
-      id: "battle-2",
-      task_id: "task-2",
-      source_text: "Another source",
-      source_lang: "ja",
-      target_lang: "zh",
-      mode: "jp2zh_ab",
-      status: "pending",
-      run_a: { id: "run-a", side: "A", output_text: null, stats: null, error_text: null },
-      run_b: { id: "run-b", side: "B", output_text: null, stats: null, error_text: null },
-    });
-
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Solve Turnstile" }));
-
-    await waitFor(() => {
-      expect(loadOrCreateBattleMock).toHaveBeenCalledWith("new", undefined, "turnstile-token");
-    });
-  });
-
-  it("shows misconfiguration warning when backend requires Turnstile but site key is missing", async () => {
-    // No NEXT_PUBLIC_TURNSTILE_SITE_KEY set
-    apiGetMock.mockResolvedValue({ anon_battle_turnstile_required: true });
-
-    useSessionMock.mockReturnValue({
-      data: null,
-      status: "unauthenticated",
-    });
-
-    loadOrCreateBattleMock.mockImplementation(
-      () => new Promise(() => {}),
-    );
-
-    render(<BattleView battleId="new" />);
-
-    await screen.findByText("Verification Required");
-    expect(
-      screen.getByText(/NEXT_PUBLIC_TURNSTILE_SITE_KEY/),
-    ).toBeDefined();
-  });
 
   it("shows an error when bootstrap fails", async () => {
     useSessionMock.mockReturnValue({
@@ -351,7 +279,7 @@ describe("BattleView", () => {
       source_lang: "ja",
       target_lang: "zh",
       mode: "jp2zh_ab",
-      status: "completed",
+      status: "pending",
       run_a: { id: "run-a", side: "A", output_text: null, stats: null, error_text: null },
       run_b: { id: "run-b", side: "B", output_text: null, stats: null, error_text: null },
     });
@@ -521,6 +449,65 @@ describe("BattleView", () => {
     await waitFor(() => {
       expect(screen.getByText(/Reveal succeeded but response was missing reveal data/i)).toBeDefined();
     });
+
+    expect(screen.getByRole("button", { name: "Update Vote" }).hasAttribute("disabled")).toBe(false);
+    expect(screen.getByRole("button", { name: "Reveal Models" }).hasAttribute("disabled")).toBe(false);
+  });
+
+  it("preserves a successful vote when the reveal request fails", async () => {
+    useSessionMock.mockReturnValue({
+      data: { accessToken: "access-token" },
+      status: "authenticated",
+    });
+
+    loadOrCreateBattleMock.mockResolvedValue({
+      id: "battle-reveal-fail",
+      task_id: "task-reveal-fail",
+      source_text: "JP source",
+      source_lang: "ja",
+      target_lang: "zh",
+      mode: "jp2zh_ab",
+      status: "completed",
+      run_a: { id: "run-a", side: "A", output_text: "Alpha", stats: null, error_text: null },
+      run_b: { id: "run-b", side: "B", output_text: "Beta", stats: null, error_text: null },
+    });
+
+    streamSSEMock.mockReturnValue(emptyEventStream());
+
+    apiPostMock
+      .mockResolvedValueOnce({
+        vote_id: "vote-1",
+        battle_id: "battle-reveal-fail",
+        winner: "A",
+        reveal: null,
+      })
+      .mockRejectedValueOnce(new Error("reveal failed"));
+
+    render(<BattleView battleId="battle-reveal-fail" />);
+
+    await screen.findByText("Alpha");
+    await screen.findByText("Beta");
+
+    const user = userEvent.setup();
+    let btn = screen.getByText(/Model A is better/i).closest("button");
+    if (btn) await user.click(btn);
+    btn = screen.getByText(/Submit Vote/i).closest("button");
+    if (btn) await user.click(btn);
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenNthCalledWith(
+        2,
+        "/battles/battle-reveal-fail/vote/reveal",
+        {},
+        {
+          headers: { Authorization: "Bearer access-token" },
+        },
+      );
+    });
+
+    await screen.findByText("reveal failed");
+    expect(screen.getByRole("button", { name: "Update Vote" }).hasAttribute("disabled")).toBe(false);
+    expect(screen.getByRole("button", { name: "Reveal Models" }).hasAttribute("disabled")).toBe(false);
   });
 
   it("blocks interactions when session refresh has failed", async () => {
@@ -549,12 +536,11 @@ describe("BattleView", () => {
     await screen.findByText("Output B");
 
     await waitFor(() => {
-      expect(screen.getByText(/Cast Your Vote/i)).toBeDefined();
+      expect(screen.getByText(/Session Expired/i)).toBeDefined();
     });
 
-    const user = userEvent.setup();
-    let btn = screen.getByText(/Model A is better/i).closest('button');
-    if (btn) await user.click(btn);
+    expect(screen.queryByText(/Cast Your Vote/i)).toBeNull();
+    expect(screen.queryByText(/Model A is better/i)).toBeNull();
 
     const submitBtn = screen.getByText(/Submit Vote/i).closest('button');
     expect(submitBtn).toBeDefined();

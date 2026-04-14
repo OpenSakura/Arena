@@ -8,10 +8,8 @@
 "use client";
 
 import { motion, AnimatePresence } from "framer-motion";
-
-import { TurnstileWidget } from "@/components/TurnstileWidget";
 import { Button } from "@/components/ui/button";
-import { useBattle, type RevealData } from "@/hooks/useBattle";
+import { useBattle } from "@/hooks/useBattle";
 
 const RUBRIC_TAGS = [
   "accuracy",
@@ -30,9 +28,8 @@ export function BattleView({ battleId }: { battleId: string }) {
     state,
     dispatch,
     isAuthed,
-    turnstileSiteKey,
-    needsTurnstileForBattle,
-    turnstileMisconfigured,
+    authStatus,
+    hasRefreshError,
     canVote,
     canReveal,
     canRetry,
@@ -41,7 +38,6 @@ export function BattleView({ battleId }: { battleId: string }) {
     handleVoteSubmit,
     handleReveal,
     handleRetry,
-    handleBattleTurnstileToken,
     handleStartAnotherBattle,
   } = useBattle(battleId);
 
@@ -67,48 +63,6 @@ export function BattleView({ battleId }: { battleId: string }) {
 
   function toggleRubricTag(tag: string) {
     dispatch({ type: "TOGGLE_RUBRIC_TAG", tag });
-  }
-
-  // ── Turnstile gate: show widget before battle creation ──
-  if (status === "waiting_for_turnstile") {
-    return (
-      <div
-        className="grid gap-6"
-      >
-        <div className="glass-panel-accent p-8 flex flex-col items-center gap-6">
-          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/[0.08] border border-primary/15">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary/80" aria-hidden>
-              <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
-              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-            </svg>
-          </div>
-          <div className="text-center">
-            <h3 className="text-xl font-bold heading-gradient mb-2">Verification Required</h3>
-            <p className="text-sm text-muted-foreground mb-6">
-              Please complete the verification below to start a new battle.
-            </p>
-          </div>
-          {needsTurnstileForBattle && turnstileSiteKey ? (
-            <div className="flex justify-center">
-              <TurnstileWidget
-                siteKey={turnstileSiteKey}
-                onToken={(token) => void handleBattleTurnstileToken(token)}
-                onExpire={() => dispatch({ type: "SET_TURNSTILE_TOKEN", token: "" })}
-                onError={(message) => {
-                  dispatch({ type: "SET_TURNSTILE_TOKEN", token: "" });
-                  dispatch({ type: "SET_ERROR", error: message });
-                }}
-              />
-            </div>
-          ) : turnstileMisconfigured ? (
-            <div className="text-center text-sm text-destructive">
-              Backend requires Turnstile for anonymous battles, but <code>NEXT_PUBLIC_TURNSTILE_SITE_KEY</code> is missing.
-            </div>
-          ) : null}
-          {errorText ? <p className="mt-2 text-center text-sm text-destructive">{errorText}</p> : null}
-        </div>
-      </div>
-    );
   }
 
   return (
@@ -158,6 +112,33 @@ export function BattleView({ battleId }: { battleId: string }) {
           className="glass-panel-accent p-8 flex flex-col items-center gap-6"
         >
           {status === "done" && (
+            (!isAuthed && !hasRefreshError) ? (
+              <div className="w-full max-w-2xl text-center glass-panel-accent p-6 border-amber-500/20 bg-amber-500/5">
+                <div className="flex flex-col items-center gap-3">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-8 w-8 text-amber-600/80" aria-hidden>
+                    <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+                    <polyline points="10 17 15 12 10 7" />
+                    <line x1="15" y1="12" x2="3" y2="12" />
+                  </svg>
+                  <h3 className="text-lg font-semibold text-foreground">Login to Vote</h3>
+                  <p className="text-sm text-muted-foreground max-w-md mx-auto">
+                    You&apos;re viewing this battle anonymously. To cast a vote and reveal which models were used, please log in.
+                  </p>
+                </div>
+              </div>
+            ) : hasRefreshError ? (
+              <div className="w-full max-w-2xl text-center glass-panel-accent p-6 border-red-500/20 bg-red-500/5">
+                <div className="flex flex-col items-center gap-3">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-8 w-8 text-red-600/80" aria-hidden>
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                  </svg>
+                  <h3 className="text-lg font-semibold text-foreground">Session Expired</h3>
+                  <p className="text-sm text-muted-foreground max-w-md mx-auto">
+                    Your session has expired. Please log in again to cast a vote and reveal which models were used.
+                  </p>
+                </div>
+              </div>
+            ) : (
             <>
               <div className="w-full max-w-2xl text-center">
                 <h3 className="mb-2 text-xl font-bold heading-gradient">Cast Your Vote</h3>
@@ -218,6 +199,7 @@ export function BattleView({ battleId }: { battleId: string }) {
                 />
               </div>
             </>
+            )
           )}
 
           <div className="w-full max-w-2xl">
