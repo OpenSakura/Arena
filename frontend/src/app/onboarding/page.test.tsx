@@ -43,6 +43,22 @@ describe("OnboardingPage", () => {
     expect(screen.getByRole("button", { name: "Save profile" }).hasAttribute("disabled")).toBe(true);
   });
 
+  it("shows explicit re-login copy for expired sessions", async () => {
+    useSessionMock.mockReturnValue({
+      data: { accessToken: "access-token", error: "RefreshTokenExpired" },
+      status: "authenticated",
+    });
+
+    render(<OnboardingPage />);
+
+    await screen.findByText("Session expired");
+    expect(
+      screen.getByText(/Your session expired before we could load or save your profile/i),
+    ).toBeDefined();
+    expect(apiGetMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Save profile" }).hasAttribute("disabled")).toBe(true);
+  });
+
   it("loads profile fields using authenticated access token", async () => {
     authenticatedSession();
     apiGetMock.mockResolvedValue({

@@ -41,7 +41,7 @@ describe("useAdminAccess", () => {
 
   it("returns is_admin: false when API returns false", async () => {
     useSessionMock.mockReturnValue({
-      data: { accessToken: "tok", user: {}, expires: "2099" },
+      data: { accessToken: "tok-false", user: {}, expires: "2099" },
       status: "authenticated",
     });
     apiGetMock.mockResolvedValue({ authenticated: true, is_admin: false });
@@ -59,7 +59,7 @@ describe("useAdminAccess", () => {
 
   it("returns is_admin: true when API returns true", async () => {
     useSessionMock.mockReturnValue({
-      data: { accessToken: "tok", user: {}, expires: "2099" },
+      data: { accessToken: "tok-true", user: {}, expires: "2099" },
       status: "authenticated",
     });
     apiGetMock.mockResolvedValue({ authenticated: true, is_admin: true });
@@ -75,7 +75,7 @@ describe("useAdminAccess", () => {
 
   it("returns is_admin: false when API fails", async () => {
     useSessionMock.mockReturnValue({
-      data: { accessToken: "tok", user: {}, expires: "2099" },
+      data: { accessToken: "tok-fail", user: {}, expires: "2099" },
       status: "authenticated",
     });
     apiGetMock.mockRejectedValue(new Error("network error"));
@@ -86,5 +86,28 @@ describe("useAdminAccess", () => {
       expect(result.current.loading).toBe(false);
       expect(result.current.isAdmin).toBe(false);
     });
+  });
+
+  it("stops before /me probing when the session refresh has failed", async () => {
+    useSessionMock.mockReturnValue({
+      data: {
+        accessToken: "tok-expired",
+        error: "RefreshTokenExpired",
+        user: {},
+        expires: "2099",
+      },
+      status: "authenticated",
+    });
+
+    const { result } = renderHook(() => useAdminAccess());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.isAuthenticated).toBe(true);
+    expect(result.current.isAdmin).toBe(false);
+    expect(result.current.error).toBe("Your session has expired. Please log in again.");
+    expect(apiGetMock).not.toHaveBeenCalled();
   });
 });

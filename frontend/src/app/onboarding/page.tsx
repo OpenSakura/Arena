@@ -4,8 +4,9 @@
  * User onboarding/profile capture.
  *
  * Notes:
- * - Anonymous voting is allowed, but logged-in users can optionally add
- *   language/experience info to improve downstream filtering.
+ * - Login is required to create battles, vote, and reveal results. Logged-in
+ *   users can optionally add language/experience info to improve downstream
+ *   filtering.
  */
 
 "use client";
@@ -27,8 +28,13 @@ const EXPERIENCE_ROLES = ["translator", "editor", "qc", "tl"] as const;
 type ExperienceRole = (typeof EXPERIENCE_ROLES)[number];
 
 export default function OnboardingPage() {
-  const { authStatus, accessToken, headers, headersRef } = useAuthHeaders();
-  const canSave = authStatus === "authenticated" && Boolean(accessToken);
+  const { authStatus, accessToken, headers, headersRef, sessionError } = useAuthHeaders();
+  const hasRefreshError = sessionError !== null && ["RefreshTokenMissing", "RefreshDiscoveryFailed", "RefreshTokenExpired", "RefreshTokenError"].includes(sessionError);
+  const canSave = authStatus === "authenticated" && Boolean(accessToken) && !hasRefreshError;
+  const authNoticeTitle = hasRefreshError ? "Session expired" : "Login required to save";
+  const authNoticeBody = hasRefreshError
+    ? "Your session expired before we could load or save your profile. Sign in again to save profile info, create battles, vote, and reveal results. You can still browse battles and results while signed out."
+    : "You can browse battles and results without logging in, but creating battles, voting, and revealing results require a login. Profile info is stored for logged-in users only.";
 
   const [displayName, setDisplayName] = useState("");
   const [uiLanguage, setUiLanguage] = useState("en");
@@ -164,11 +170,10 @@ export default function OnboardingPage() {
               <line x1="12" y1="8" x2="12" y2="12" />
               <line x1="12" y1="16" x2="12.01" y2="16" />
             </svg>
-            <div className="font-semibold text-foreground">Login required to save</div>
+            <div className="font-semibold text-foreground">{authNoticeTitle}</div>
           </div>
           <p className="mt-2 text-sm leading-relaxed text-muted-foreground ml-[30px]">
-            You can battle and vote anonymously, but profile info is only stored for logged-in
-            users.
+            {authNoticeBody}
           </p>
         </div>
       ) : null}

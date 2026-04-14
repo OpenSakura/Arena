@@ -14,7 +14,7 @@ const ADMIN_TABS = [
 
 export default function AdminLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname();
-  const { isAuthenticated, isAdmin, loading } = useAdminAccess();
+  const { isAuthenticated, isAdmin, loading, error } = useAdminAccess();
   const normalizedPathname = (pathname ?? "").replace(/\/+$/, "") || "/";
 
   const loadingState = (
@@ -26,6 +26,18 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
   );
 
   if (loading) return loadingState;
+
+  if (error) {
+    return (
+      <div className="grid gap-6">
+        <div className="glass-panel-accent p-6 text-center">
+          <p className="text-sm text-destructive">
+            {error}
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return (

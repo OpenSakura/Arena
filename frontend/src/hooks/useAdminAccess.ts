@@ -15,6 +15,13 @@ import { parseMeResponse } from "@/types/me";
 
 const ADMIN_ACCESS_CACHE_TTL_MS = 5_000;
 
+const REFRESH_ERRORS = [
+  "RefreshTokenMissing",
+  "RefreshDiscoveryFailed",
+  "RefreshTokenExpired",
+  "RefreshTokenError",
+];
+
 let meRequestCache:
   | {
       accessToken: string;
@@ -56,10 +63,11 @@ function loadMe(accessToken: string) {
 export function useAdminAccess() {
   const { data: session, status } = useSession();
   const isAuthenticated = status === "authenticated" && Boolean(session?.accessToken);
-
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const sessionError = typeof session?.error === "string" ? session.error : null;
+  const hasRefreshError = sessionError !== null && REFRESH_ERRORS.includes(sessionError);
 
   useEffect(() => {
     if (status === "loading") {
@@ -67,7 +75,12 @@ export function useAdminAccess() {
       setError(null);
       return;
     }
-
+    if (hasRefreshError) {
+      setIsAdmin(false);
+      setLoading(false);
+      setError("Your session has expired. Please log in again.");
+      return;
+    }
     if (!isAuthenticated) {
       setIsAdmin(false);
       setLoading(false);
@@ -96,7 +109,7 @@ export function useAdminAccess() {
     return () => {
       cancelled = true;
     };
-  }, [isAuthenticated, session?.accessToken, status]);
+  }, [isAuthenticated, session?.accessToken, status, hasRefreshError]);
 
   return { isAuthenticated, isAdmin, loading, error };
 }

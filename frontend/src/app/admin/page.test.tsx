@@ -70,7 +70,7 @@ describe("AdminLayout", () => {
   it("shows not-authorized message when /me returns is_admin: false", async () => {
     usePathnameMock.mockReturnValue("/admin/models");
     useSessionMock.mockReturnValue({
-      data: { accessToken: "tok", user: {}, expires: "2099" },
+      data: { accessToken: "tok-false", user: {}, expires: "2099" },
       status: "authenticated",
     });
     apiGetMock.mockResolvedValue({ authenticated: true, is_admin: false });
@@ -92,7 +92,7 @@ describe("AdminLayout", () => {
   it("renders admin shell and children when /me returns is_admin: true", async () => {
     usePathnameMock.mockReturnValue("/admin/models");
     useSessionMock.mockReturnValue({
-      data: { accessToken: "tok", user: {}, expires: "2099" },
+      data: { accessToken: "tok-true", user: {}, expires: "2099" },
       status: "authenticated",
     });
     apiGetMock.mockResolvedValue({ authenticated: true, is_admin: true });
@@ -112,7 +112,7 @@ describe("AdminLayout", () => {
   it("shows not-authorized message when /me call fails", async () => {
     usePathnameMock.mockReturnValue("/admin/models");
     useSessionMock.mockReturnValue({
-      data: { accessToken: "tok", user: {}, expires: "2099" },
+      data: { accessToken: "tok-fail", user: {}, expires: "2099" },
       status: "authenticated",
     });
     apiGetMock.mockRejectedValue(new Error("network error"));
@@ -125,8 +125,35 @@ describe("AdminLayout", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText("You are not authorized to access the admin area."),
+        screen.getByText("network error"),
       ).toBeDefined();
     });
+  });
+
+  it("shows expired-session messaging without probing /me", async () => {
+    usePathnameMock.mockReturnValue("/admin/models");
+    useSessionMock.mockReturnValue({
+      data: {
+        accessToken: "tok-expired",
+        error: "RefreshTokenExpired",
+        user: {},
+        expires: "2099",
+      },
+      status: "authenticated",
+    });
+
+    render(
+      <AdminLayout>
+        <div>child-content</div>
+      </AdminLayout>,
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Your session has expired. Please log in again."),
+      ).toBeDefined();
+    });
+    expect(apiGetMock).not.toHaveBeenCalled();
+    expect(screen.queryByText("child-content")).toBeNull();
   });
 });
