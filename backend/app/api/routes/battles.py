@@ -66,18 +66,28 @@ def create_battle(
 ) -> BattlePublic:
     # By design: authenticated users are trusted with higher rate limits.
     # Only anonymous users are subject to Turnstile verification.
+    #
+    # Order matters for anonymous users:
+    # 1. Issue / read the anon cookie first so we have an identity for the
+    #    battle record even when the cookie is brand-new (not yet in
+    #    request.cookies).
+    # 2. Verify Turnstile *before* incrementing the rate-limit counter so that
+    #    a missing or invalid token does not consume the caller's rate-limit
+    #    slot.
+    # 3. Only then enforce the rate limit.
+    anon_id: str | None = None
     if not principal.is_authenticated:
-        get_or_set_anon_id(
+        anon_id = get_or_set_anon_id(
             request=request,
             response=response,
             secure=settings.anon_id_cookie_secure,
         )
-        _enforce_anon_battle_rate_limit(
+        _verify_turnstile_or_raise(
+            turnstile_token=payload.turnstile_token,
             request=request,
             settings=settings,
         )
-        _verify_turnstile_or_raise(
-            turnstile_token=payload.turnstile_token,
+        _enforce_anon_battle_rate_limit(
             request=request,
             settings=settings,
         )
@@ -99,8 +109,6 @@ def create_battle(
 
     task = _select_task(db=db, payload=payload)
     model_a_id, model_b_id = _select_model_pair(db, settings=settings)
-
-    anon_id = request.cookies.get("arena_anon_id")
 
     battle = Battle(
         task_id=task.id,

@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "127.0.0.1:15432:5432"
+      - "127.0.0.1:${ARENA_POSTGRES_HOST_PORT:-15432}:5432"
     volumes:
       - ./postgres-init.sql:/docker-entrypoint-initdb.d/postgres-init.sql:ro
     healthcheck:
@@ -18,7 +18,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "127.0.0.1:16379:6379"
+      - "127.0.0.1:${ARENA_REDIS_HOST_PORT:-16379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -49,7 +49,7 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "127.0.0.1:19000:9000"
+      - "127.0.0.1:${ARENA_AUTHENTIK_HOST_PORT:-19000}:9000"
     healthcheck:
       test: ["CMD", "ak", "healthcheck"]
       interval: 10s

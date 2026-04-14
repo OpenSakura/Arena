@@ -78,8 +78,8 @@ class Settings(BaseSettings):
     # Set to False explicitly for local HTTP development.
     anon_id_cookie_secure: bool = True
 
-    # Redis backend for anonymous rate limiting.
-    # Leave empty to disable anonymous rate limits.
+    # Redis backend for rate limiting (anonymous and authenticated) and shared
+    # confidence-interval result caching. Leave empty to disable both.
     rate_limit_redis_url: str = ""
     rate_limit_redis_key_prefix: str = "arena"
     rate_limit_redis_timeout_seconds: float = 0.25
@@ -102,9 +102,17 @@ class Settings(BaseSettings):
     battle_outage_models: list[str] = Field(default_factory=list)
     battle_sampling_boost_models: list[str] = Field(default_factory=list)
 
-    # Deprecated compatibility knob from the old multi-worker observer flow.
-    # Live battle execution is now owned by a single in-process orchestrator,
-    # so observers no longer time out and force-fail healthy running battles.
+    # Worker count guard: battle execution relies on in-process singletons
+    # (orchestrator, leaderboard refresher) that are NOT shared across OS
+    # processes.  Production deployments MUST run exactly one uvicorn worker.
+    # Set WEB_CONCURRENCY=1 in your process manager / container spec.
+    # Values <= 0 are treated as 1 (unset / not applicable).
+    web_concurrency: int = 1
+
+    # Maximum wall-clock seconds the owned battle task may run before being
+    # force-failed.  Applies to active battle execution by this process's
+    # BattleOrchestrator, not to cross-process observer polling (which is
+    # only a fallback for stale "running" battles left by a prior process).
     battle_running_wait_timeout_seconds: int = 600
 
     # Leaderboard refresh background job.
@@ -187,6 +195,14 @@ class Settings(BaseSettings):
             errors.append(
                 "TURNSTILE_SECRET_KEY is empty — "
                 "Turnstile verification for anonymous battle creation is disabled"
+            )
+
+        effective_workers = self.web_concurrency if self.web_concurrency > 0 else 1
+        if effective_workers > 1:
+            errors.append(
+                f"WEB_CONCURRENCY is {self.web_concurrency} — "
+                "battle execution relies on in-process singletons and is only "
+                "safe with a single API worker. Set WEB_CONCURRENCY=1."
             )
 
         if not self.anon_id_cookie_secure:

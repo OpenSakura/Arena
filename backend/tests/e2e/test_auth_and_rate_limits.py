@@ -64,7 +64,7 @@ def test_anon_battle_rate_limit_is_enforced_with_redis(
     db_session.commit()
 
     first = backend_client.post("/api/v1/battles", json={})
-    assert first.status_code == 200
+    assert first.status_code == 201
 
     second = backend_client.post("/api/v1/battles", json={})
     assert second.status_code == 429
@@ -119,10 +119,30 @@ def test_anon_vote_rate_limit_is_enforced_with_redis(
 
     db_session.add_all(
         [
-            Run(battle_id=battle_a.id, side="A", model_id=model_a.id),
-            Run(battle_id=battle_a.id, side="B", model_id=model_b.id),
-            Run(battle_id=battle_b.id, side="A", model_id=model_a.id),
-            Run(battle_id=battle_b.id, side="B", model_id=model_b.id),
+            Run(
+                battle_id=battle_a.id,
+                side="A",
+                model_id=model_a.id,
+                output_text="A output",
+            ),
+            Run(
+                battle_id=battle_a.id,
+                side="B",
+                model_id=model_b.id,
+                output_text="B output",
+            ),
+            Run(
+                battle_id=battle_b.id,
+                side="A",
+                model_id=model_a.id,
+                output_text="A output",
+            ),
+            Run(
+                battle_id=battle_b.id,
+                side="B",
+                model_id=model_b.id,
+                output_text="B output",
+            ),
         ]
     )
     db_session.commit()
@@ -130,7 +150,7 @@ def test_anon_vote_rate_limit_is_enforced_with_redis(
     first = backend_client.post(
         f"/api/v1/battles/{battle_a.id}/vote", json={"winner": "A"}
     )
-    assert first.status_code == 200
+    assert first.status_code == 201
 
     second = backend_client.post(
         f"/api/v1/battles/{battle_b.id}/vote", json={"winner": "B"}

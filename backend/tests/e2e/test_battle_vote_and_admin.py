@@ -259,7 +259,7 @@ def test_battle_stream_executes_and_persists_terminal_state(
     task, _, _ = _seed_task_and_models(db_session, suffix=suffix)
 
     create = backend_client.post("/api/v1/battles", json={"task_id": str(task.id)})
-    assert create.status_code == 200
+    assert create.status_code == 201
     battle_id = create.json()["id"]
 
     with backend_client.stream(
@@ -397,6 +397,7 @@ def test_battle_stream_vote_and_leaderboard_reflect_rating_updates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.services.llm_client import LLMClient, LLMStreamChunk
+    from app.services.leaderboard_refresh import get_leaderboard_refresher
 
     async def fake_stream_chat_completion(self, *, model: str, **kwargs):
         _ = (self, kwargs)
@@ -416,7 +417,7 @@ def test_battle_stream_vote_and_leaderboard_reflect_rating_updates(
     task, _, _ = _seed_task_and_models(db_session, suffix=suffix)
 
     create = backend_client.post("/api/v1/battles", json={"task_id": str(task.id)})
-    assert create.status_code == 200
+    assert create.status_code == 201
     battle_id = create.json()["id"]
 
     with backend_client.stream(
@@ -460,6 +461,11 @@ def test_battle_stream_vote_and_leaderboard_reflect_rating_updates(
     reveal_payload = reveal.json()
     assert reveal_payload["reveal"]["A"]["model_id"] == str(run_a.model_id)
     assert reveal_payload["reveal"]["B"]["model_id"] == str(run_b.model_id)
+
+    # Elo leaderboard reads persisted ModelRating snapshots. In this e2e
+    # harness the periodic refresher is disabled, so trigger one refresh cycle
+    # explicitly before asserting the persisted leaderboard view.
+    get_leaderboard_refresher().refresh_once()
 
     leaderboard = backend_client.get("/api/v1/leaderboard?method=elo")
     assert leaderboard.status_code == 200
@@ -531,7 +537,7 @@ def test_turnstile_enforcement_for_anon_and_authenticated_battles(
         headers={"User-Agent": "arena-e2e-turnstile-valid"},
         json={"turnstile_token": "valid-turnstile-token"},
     )
-    assert valid_token.status_code in (200, 201)
+    assert valid_token.status_code == 201
     assert len(verification_calls) == 1
     assert verification_calls[0]["url"] == "https://turnstile.example/siteverify"
     call_data = verification_calls[0]["data"]
@@ -552,4 +558,4 @@ def test_turnstile_enforcement_for_anon_and_authenticated_battles(
         headers={"Authorization": f"Bearer {authentik_token}"},
         json={},
     )
-    assert authed_battle.status_code in (200, 201)
+    assert authed_battle.status_code == 201

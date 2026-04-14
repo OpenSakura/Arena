@@ -5,6 +5,7 @@ import { apiDelete, apiGet, apiPost, apiPut, getBackendBaseUrl } from "./api";
 afterEach(() => {
   vi.restoreAllMocks();
   delete process.env.NEXT_PUBLIC_BACKEND_URL;
+  delete process.env.BACKEND_INTERNAL_URL;
 });
 
 describe("getBackendBaseUrl", () => {
@@ -18,6 +19,26 @@ describe("getBackendBaseUrl", () => {
     process.env.NEXT_PUBLIC_BACKEND_URL = "http://backend.test/";
 
     expect(getBackendBaseUrl()).toBe("http://backend.test");
+  });
+
+  it("prefers BACKEND_INTERNAL_URL over NEXT_PUBLIC_BACKEND_URL for SSR (server environment)", () => {
+    process.env.BACKEND_INTERNAL_URL = "http://backend-internal.cluster/";
+    process.env.NEXT_PUBLIC_BACKEND_URL = "http://backend-public.example/";
+    const originalWindow = globalThis.window;
+    vi.stubGlobal("window", undefined);
+
+    try {
+      expect(getBackendBaseUrl()).toBe("http://backend-internal.cluster");
+    } finally {
+      vi.stubGlobal("window", originalWindow);
+    }
+  });
+
+  it("falls back to NEXT_PUBLIC_BACKEND_URL when BACKEND_INTERNAL_URL is absent", () => {
+    delete process.env.BACKEND_INTERNAL_URL;
+    process.env.NEXT_PUBLIC_BACKEND_URL = "http://backend-public.example/";
+
+    expect(getBackendBaseUrl()).toBe("http://backend-public.example");
   });
 });
 

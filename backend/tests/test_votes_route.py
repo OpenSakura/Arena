@@ -422,7 +422,8 @@ def test_resolve_duplicate_vote_conflict_returns_existing_vote_response(
         lambda *_args, **_kwargs: existing_vote,
     )
 
-    db = SimpleNamespace(commit=lambda: None)
+    commit_calls: list[None] = []
+    db = SimpleNamespace(commit=lambda: commit_calls.append(None))
     response = votes._resolve_duplicate_vote_conflict(
         db=db,  # type: ignore[arg-type]
         response=Response(),
@@ -444,6 +445,7 @@ def test_resolve_duplicate_vote_conflict_returns_existing_vote_response(
     assert response.battle_id == str(battle_id)
     assert response.winner == "A"
     assert response.reveal is None
+    assert len(commit_calls) == 1, "conflict resolver must commit explicitly"
 
 
 def test_submit_vote_rejects_invalid_battle_id() -> None:
@@ -1286,6 +1288,7 @@ def test_duplicate_conflict_recovery_applies_identity_upgrade(
     assert response.vote_id == str(existing_vote.id)
     assert existing_vote.voter_user_id == user_id
     assert existing_vote.user_agent_hash is not None
+    assert db.commit_calls == 1, "conflict resolver must commit identity upgrades"
 
 
 def test_mid_flow_identity_switch_finds_existing_vote(
@@ -1448,7 +1451,8 @@ class TestAnonymousToAuthenticatedUpgradeRegression:
         )
 
         # Call _resolve_duplicate_vote_conflict directly
-        db = SimpleNamespace(commit=lambda: None)
+        commit_calls: list[None] = []
+        db = SimpleNamespace(commit=lambda: commit_calls.append(None))
         votes._resolve_duplicate_vote_conflict(
             db=db,  # type: ignore[arg-type]
             response=Response(),
@@ -1469,6 +1473,7 @@ class TestAnonymousToAuthenticatedUpgradeRegression:
         assert existing_vote.voter_anon_id == "anon-conflict"
         assert existing_vote.ip_hash == "new-ip"
         assert existing_vote.user_agent_hash == "new-ua"
+        assert len(commit_calls) == 1, "conflict resolver must commit identity upgrades"
 
 
 # ── Task 2 regressions: duplicate conflict payload + missing-side validation ──
@@ -1499,7 +1504,8 @@ def test_duplicate_conflict_updates_payload(
         lambda *_a, **_kw: existing_vote,
     )
 
-    db = SimpleNamespace(commit=lambda: None)
+    commit_calls: list[None] = []
+    db = SimpleNamespace(commit=lambda: commit_calls.append(None))
     resp = votes._resolve_duplicate_vote_conflict(
         db=db,  # type: ignore[arg-type]
         response=Response(),
@@ -1522,6 +1528,7 @@ def test_duplicate_conflict_updates_payload(
     assert existing_vote.winner == "B"
     assert existing_vote.rubric == {"tags": ["fluency", "style"]}
     assert existing_vote.comment == "updated comment"
+    assert len(commit_calls) == 1, "conflict resolver must commit updated payload"
 
 
 def test_rejects_vote_for_missing_side(
@@ -1604,3 +1611,99 @@ def test_submit_vote_ip_fallback_does_not_overmatch_fingerprinted_row(
     assert len(ip_filters) == 1
     ip_sql = str(ip_filters[0][1])
     assert "user_agent_hash IS NULL" in ip_sql
+
+
+# ── Conflict-path persistence regression ──────────────────────────────────────
+
+
+def test_conflict_resolver_commits_for_revealed_matching_winner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    battle, runs, model_a_id, model_b_id = _battle_and_runs()
+    existing_vote = SimpleNamespace(
+        id=uuid.uuid4(),
+        winner="A",
+        revealed=True,
+        rubric=None,
+        comment=None,
+        voter_user_id=None,
+        voter_anon_id="anon-rev",
+        ip_hash=None,
+        user_agent_hash=None,
+    )
+
+    monkeypatch.setattr(
+        votes,
+        "find_existing_battle_vote",
+        lambda *_a, **_kw: existing_vote,
+    )
+
+    commit_calls: list[None] = []
+    db = SimpleNamespace(commit=lambda: commit_calls.append(None))
+
+    resp = votes._resolve_duplicate_vote_conflict(
+        db=db,  # type: ignore[arg-type]
+        response=Response(),
+        battle_id=battle.id,
+        winner="A",
+        voter_user_id=None,
+        requester_identity=RequesterIdentity(
+            voter_user_id=None,
+            voter_anon_id="anon-rev",
+            ip_hash="ip-new",
+            user_agent_hash="ua-new",
+        ),
+        model_a_id=model_a_id,
+        model_b_id=model_b_id,
+    )
+
+    assert resp.winner == "A"
+    assert existing_vote.ip_hash == "ip-new"
+    assert existing_vote.user_agent_hash == "ua-new"
+    assert len(commit_calls) == 1, (
+        "resolver must commit even when only identity is upgraded"
+    )
+
+
+def test_conflict_resolver_does_not_commit_on_409(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    battle, runs, _, _ = _battle_and_runs()
+    existing_vote = SimpleNamespace(
+        id=uuid.uuid4(),
+        winner="B",
+        revealed=True,
+        voter_user_id=None,
+        voter_anon_id="anon-rev",
+        ip_hash=None,
+        user_agent_hash=None,
+    )
+
+    monkeypatch.setattr(
+        votes,
+        "find_existing_battle_vote",
+        lambda *_a, **_kw: existing_vote,
+    )
+
+    commit_calls: list[None] = []
+    db = SimpleNamespace(commit=lambda: commit_calls.append(None))
+
+    with pytest.raises(HTTPException) as exc_info:
+        votes._resolve_duplicate_vote_conflict(
+            db=db,  # type: ignore[arg-type]
+            response=Response(),
+            battle_id=battle.id,
+            winner="A",
+            voter_user_id=None,
+            requester_identity=RequesterIdentity(
+                voter_user_id=None,
+                voter_anon_id="anon-rev",
+                ip_hash=None,
+                user_agent_hash=None,
+            ),
+            model_a_id=uuid.uuid4(),
+            model_b_id=uuid.uuid4(),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert len(commit_calls) == 0, "must not commit when raising 409"

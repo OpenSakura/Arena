@@ -28,6 +28,10 @@ from app.services.leaderboard_refresh import get_leaderboard_refresher
 from app.services.battle_orchestrator import get_battle_orchestrator
 from app.services.oidc import get_oidc_verifier
 from app.utils.client_ip import get_client_ip
+from app.utils.process_guard import (
+    acquire_battle_process_lock,
+    release_battle_process_lock,
+)
 from app.utils.redis import close_all_redis_clients
 
 
@@ -47,11 +51,12 @@ def _emit_startup_warnings(settings: Settings) -> None:
             "Set RATE_LIMIT_REDIS_URL to enable Redis-backed protections."
         )
 
-    if is_prod:
-        logger.warning(
-            "Live battle execution relies on in-process singletons and is "
-            "only supported with a single API worker. If running multiple "
-            "uvicorn workers, battle state will not be shared across them."
+    effective_workers = settings.web_concurrency if settings.web_concurrency > 0 else 1
+    if effective_workers > 1:
+        raise RuntimeError(
+            f"WEB_CONCURRENCY={settings.web_concurrency}: battle execution "
+            "relies on in-process singletons that are not shared across "
+            "OS processes. Run with exactly one worker (WEB_CONCURRENCY=1)."
         )
 
 
@@ -62,6 +67,7 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         _emit_startup_warnings(settings)
+        await asyncio.to_thread(acquire_battle_process_lock)
 
         stop_event = asyncio.Event()
         refresh_task: asyncio.Task[None] | None = None
@@ -108,6 +114,9 @@ def create_app() -> FastAPI:
 
             with suppress(Exception):
                 close_all_redis_clients()
+
+            with suppress(Exception):
+                await asyncio.to_thread(release_battle_process_lock)
 
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
 

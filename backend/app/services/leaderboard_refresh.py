@@ -124,18 +124,18 @@ class LeaderboardRefresher:
         db = SessionLocal()
 
         try:
-            # Acquire the advisory lock on the session's underlying connection
-            # so all ORM work shares the same connection that holds the lock.
+            # Acquire a transaction-scoped advisory lock on the session's
+            # underlying connection so the lock is released automatically when
+            # the refresh transaction commits or rolls back.
             conn = db.connection()
             locked = bool(
                 conn.execute(
-                    text("SELECT pg_try_advisory_lock(:key)"),
+                    text("SELECT pg_try_advisory_xact_lock(:key)"),
                     {"key": lock_key},
                 ).scalar_one()
             )
             if not locked:
                 logger.debug("Leaderboard refresh skipped (lock busy)")
-                db.close()
                 return
 
             try:
@@ -155,26 +155,6 @@ class LeaderboardRefresher:
                 logger.exception("Leaderboard refresh failed")
                 with self._status_lock:
                     self._last_error = str(exc)
-            finally:
-                # Always release the advisory lock, even if the refresh
-                # raises, to prevent the lock from leaking on the pooled
-                # connection.
-                try:
-                    conn.execute(
-                        text("SELECT pg_advisory_unlock(:key)"),
-                        {"key": lock_key},
-                    )
-                except Exception:  # noqa: BLE001
-                    # If unlock itself fails (e.g. broken connection), log
-                    # and discard the connection from the pool so the
-                    # leaked advisory lock does not affect future callers
-                    # that receive this same pooled connection.
-                    logger.exception(
-                        "Failed to release advisory lock %s; "
-                        "invalidating connection to prevent lock leak",
-                        lock_key,
-                    )
-                    conn.invalidate()
         finally:
             db.close()
 

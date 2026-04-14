@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import uuid
 
+import app.services.leaderboard_refresh as leaderboard_refresh_module
 from app.services.leaderboard_refresh import (
     LeaderboardRefresher,
     VoteSample,
@@ -300,6 +301,73 @@ def test_refresh_locked_serializes_ratings_before_loading_votes() -> None:
     assert vote_count == 0
     assert captured["model_ids"] == [model_id]
     assert captured["ratings"] == {}
+
+
+def test_refresh_once_uses_transaction_scoped_lock_without_manual_unlock(
+    monkeypatch,
+) -> None:
+    executed_sql: list[str] = []
+
+    class _ScalarResult:
+        def scalar_one(self) -> bool:
+            return True
+
+    class _FakeConnection:
+        def execute(
+            self,
+            stmt: object,
+            params: dict[str, object],
+        ) -> _ScalarResult:
+            executed_sql.append(str(stmt))
+            if len(executed_sql) > 1:
+                raise AssertionError(f"Unexpected follow-up SQL: {stmt}")
+            assert "key" in params
+            return _ScalarResult()
+
+        def invalidate(self) -> None:
+            raise AssertionError(
+                "refresh_once must not invalidate the connection on success"
+            )
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.close_calls = 0
+            self._conn = _FakeConnection()
+
+        def connection(self) -> _FakeConnection:
+            return self._conn
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+        def rollback(self) -> None:
+            raise AssertionError("rollback should not be called on success")
+
+    fake_session = _FakeSession()
+    refresher = LeaderboardRefresher(
+        enabled=True,
+        interval_seconds=60,
+        daily_vote_cap=0,
+        elo_k=32.0,
+    )
+
+    monkeypatch.setattr(
+        leaderboard_refresh_module,
+        "get_sessionmaker",
+        lambda: lambda: fake_session,
+    )
+    monkeypatch.setattr(refresher, "_refresh_locked", lambda _db: (2, 1))
+
+    refresher.refresh_once()
+
+    assert len(executed_sql) == 1
+    assert "pg_try_advisory_xact_lock" in executed_sql[0]
+    assert fake_session.close_calls == 1
+
+    status = refresher.get_status()
+    assert status.total_refreshes == 1
+    assert status.last_error is None
+    assert status.last_succeeded_at is not None
 
 
 class TestLimitVotesPerJudgeUsesSharedJudgeKey:

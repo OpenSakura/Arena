@@ -376,6 +376,36 @@ def _principal(
     return SimpleNamespace(is_authenticated=authenticated, user_id=user_id)
 
 
+def _creator_principal_and_battle(
+    *,
+    task_id: uuid.UUID | None = None,
+    status: str = "failed",
+    metadata_json: dict[str, object] | None = None,
+) -> tuple[Principal, SimpleNamespace]:
+    user_id = str(uuid.uuid4())
+    battle_metadata = metadata_json or {
+        "task_snapshot": {
+            "source_text": "JP text",
+            "source_lang": "ja",
+            "target_lang": "zh",
+        },
+        "requester_user_id": user_id,
+        "requester_anon_id": None,
+    }
+    battle = SimpleNamespace(
+        id=uuid.uuid4(),
+        task_id=task_id or uuid.uuid4(),
+        mode="jp2zh_ab",
+        status=status,
+        metadata_json=battle_metadata,
+    )
+    principal = cast(
+        Principal,
+        _principal(authenticated=True, user_id=user_id),
+    )
+    return principal, battle
+
+
 def test_enforce_daily_vote_cap_allows_when_disabled() -> None:
     """Cap <= 0 means disabled — should not raise."""
     battles._enforce_daily_vote_cap(
@@ -606,19 +636,8 @@ class _RetryLockDB(_RetryDB):
 
 
 def _failed_battle(*, task_id: uuid.UUID | None = None) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=uuid.uuid4(),
-        task_id=task_id or uuid.uuid4(),
-        mode="jp2zh_ab",
-        status="failed",
-        metadata_json={
-            "task_snapshot": {
-                "source_text": "JP text",
-                "source_lang": "ja",
-                "target_lang": "zh",
-            }
-        },
-    )
+    _, battle = _creator_principal_and_battle(task_id=task_id, status="failed")
+    return battle
 
 
 def _stale_run(*, battle_id: uuid.UUID, side: str) -> SimpleNamespace:
@@ -636,12 +655,17 @@ def _stale_run(*, battle_id: uuid.UUID, side: str) -> SimpleNamespace:
 
 
 def test_retry_battle_clears_all_run_artifacts() -> None:
-    battle = _failed_battle()
+    principal, battle = _creator_principal_and_battle(status="failed")
     run_a = _stale_run(battle_id=battle.id, side="A")
     run_b = _stale_run(battle_id=battle.id, side="B")
 
     db = _RetryDB(battle=battle, runs=[run_a, run_b])
-    battles.retry_battle(str(battle.id), db=db)  # type: ignore[arg-type]
+    battles.retry_battle(
+        str(battle.id),
+        request=_request(),
+        db=db,  # type: ignore[arg-type]
+        principal=principal,
+    )
 
     for run in [run_a, run_b]:
         assert run.output_text is None
@@ -657,29 +681,33 @@ def test_retry_battle_clears_all_run_artifacts() -> None:
 
 def test_retry_battle_rejects_non_failed_status() -> None:
     for status in ("pending", "running", "completed"):
-        battle = SimpleNamespace(
-            id=uuid.uuid4(),
-            task_id=uuid.uuid4(),
-            mode="jp2zh_ab",
-            status=status,
-            metadata_json=None,
-        )
+        principal, battle = _creator_principal_and_battle(status=status)
         db = _RetryDB(battle=battle, runs=[])
 
         with pytest.raises(HTTPException) as exc_info:
-            battles.retry_battle(str(battle.id), db=db)  # type: ignore[arg-type]
+            battles.retry_battle(
+                str(battle.id),
+                request=_request(),
+                db=db,  # type: ignore[arg-type]
+                principal=principal,
+            )
 
         assert exc_info.value.status_code == 409
         assert "Only failed battles" in exc_info.value.detail
 
 
 def test_retry_battle_rejects_when_vote_exists() -> None:
-    battle = _failed_battle()
+    principal, battle = _creator_principal_and_battle(status="failed")
     vote_id = uuid.uuid4()
     db = _RetryDB(battle=battle, runs=[], vote_ids=[vote_id])
 
     with pytest.raises(HTTPException) as exc_info:
-        battles.retry_battle(str(battle.id), db=db)  # type: ignore[arg-type]
+        battles.retry_battle(
+            str(battle.id),
+            request=_request(),
+            db=db,  # type: ignore[arg-type]
+            principal=principal,
+        )
 
     assert exc_info.value.status_code == 409
     assert "already has a vote" in exc_info.value.detail
@@ -693,18 +721,27 @@ def test_retry_battle_returns_404_for_missing_battle() -> None:
     db = _MissingRetryDB()
 
     with pytest.raises(HTTPException) as exc_info:
-        battles.retry_battle(str(uuid.uuid4()), db=db)  # type: ignore[arg-type]
+        battles.retry_battle(
+            str(uuid.uuid4()),
+            request=_request(),
+            db=db,  # type: ignore[arg-type]
+        )
 
     assert exc_info.value.status_code == 404
 
 
 def test_retry_battle_returns_pending_battle_public() -> None:
-    battle = _failed_battle()
+    principal, battle = _creator_principal_and_battle(status="failed")
     run_a = _stale_run(battle_id=battle.id, side="A")
     run_b = _stale_run(battle_id=battle.id, side="B")
 
     db = _RetryDB(battle=battle, runs=[run_a, run_b])
-    result = battles.retry_battle(str(battle.id), db=db)  # type: ignore[arg-type]
+    result = battles.retry_battle(
+        str(battle.id),
+        request=_request(),
+        db=db,  # type: ignore[arg-type]
+        principal=principal,
+    )
 
     assert result.status == "pending"
     assert result.source_text == "JP text"
@@ -716,28 +753,43 @@ def test_retry_battle_returns_pending_battle_public() -> None:
 
 
 def test_retry_lock_uses_row_lock_select() -> None:
-    battle = _failed_battle()
+    principal, battle = _creator_principal_and_battle(status="failed")
     run_a = _stale_run(battle_id=battle.id, side="A")
     run_b = _stale_run(battle_id=battle.id, side="B")
     db = _RetryLockDB(battle=battle, runs=[run_a, run_b])
 
-    battles.retry_battle(str(battle.id), db=db)  # type: ignore[arg-type]
+    battles.retry_battle(
+        str(battle.id),
+        request=_request(),
+        db=db,  # type: ignore[arg-type]
+        principal=principal,
+    )
 
     assert db.retry_stmt is not None
     assert "for update" in str(db.retry_stmt).lower()
 
 
 def test_retry_lock_serializes_retry_with_row_lock() -> None:
-    battle = _failed_battle()
+    principal, battle = _creator_principal_and_battle(status="failed")
     run_a = _stale_run(battle_id=battle.id, side="A")
     run_b = _stale_run(battle_id=battle.id, side="B")
     db = _RetryDB(battle=battle, runs=[run_a, run_b])
 
-    first = battles.retry_battle(str(battle.id), db=db)  # type: ignore[arg-type]
+    first = battles.retry_battle(
+        str(battle.id),
+        request=_request(),
+        db=db,  # type: ignore[arg-type]
+        principal=principal,
+    )
     assert first.status == "pending"
 
     with pytest.raises(HTTPException) as exc_info:
-        battles.retry_battle(str(battle.id), db=db)  # type: ignore[arg-type]
+        battles.retry_battle(
+            str(battle.id),
+            request=_request(),
+            db=db,  # type: ignore[arg-type]
+            principal=principal,
+        )
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail == "Only failed battles can be retried"
@@ -784,3 +836,164 @@ def test_stats_visible_after_vote() -> None:
     assert response.run_b is not None
     assert response.run_a.stats == {"request_id": "req-a"}
     assert response.run_b.stats == {"request_id": "req-b"}
+
+
+def _request_with_cookie(cookie_value: str) -> Request:
+    cookie_header = f"arena_anon_id={cookie_value}".encode("latin-1")
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/",
+        "raw_path": b"/",
+        "query_string": b"",
+        "headers": [(b"cookie", cookie_header)],
+        "client": ("127.0.0.1", 12345),
+        "server": ("testserver", 80),
+    }
+    return Request(scope)
+
+
+def test_is_battle_creator_uses_anon_id_from_metadata() -> None:
+    anon_id = uuid.uuid4().hex
+    battle = SimpleNamespace(
+        metadata_json={
+            "requester_user_id": None,
+            "requester_anon_id": anon_id,
+        }
+    )
+    principal = SimpleNamespace(is_authenticated=False, user_id=None)
+
+    assert battles._is_battle_creator(
+        cast(Battle, battle),
+        principal=cast(Principal, principal),
+        request=_request_with_cookie(anon_id),
+    )
+
+
+def test_is_battle_creator_returns_false_when_anon_id_mismatch() -> None:
+    battle = SimpleNamespace(
+        metadata_json={
+            "requester_user_id": None,
+            "requester_anon_id": uuid.uuid4().hex,
+        }
+    )
+    principal = SimpleNamespace(is_authenticated=False, user_id=None)
+
+    assert not battles._is_battle_creator(
+        cast(Battle, battle),
+        principal=cast(Principal, principal),
+        request=_request_with_cookie(uuid.uuid4().hex),
+    )
+
+
+def test_is_battle_creator_returns_false_when_creator_anon_id_is_none() -> None:
+    battle = SimpleNamespace(
+        metadata_json={
+            "requester_user_id": None,
+            "requester_anon_id": None,
+        }
+    )
+    principal = SimpleNamespace(is_authenticated=False, user_id=None)
+
+    assert not battles._is_battle_creator(
+        cast(Battle, battle),
+        principal=cast(Principal, principal),
+        request=_request_with_cookie(uuid.uuid4().hex),
+    )
+
+
+def test_turnstile_failure_does_not_consume_rate_limit_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    limit_checked = []
+
+    class _NeverCalledLimiter:
+        def is_limited(self, key: str) -> bool:
+            limit_checked.append(key)
+            return False
+
+    monkeypatch.setattr(
+        battles, "_get_battle_create_rate_limiter", lambda: _NeverCalledLimiter()
+    )
+    monkeypatch.setattr(battles, "build_anon_rate_limit_key", lambda **_kw: "key")
+
+    settings = _settings(
+        turnstile_secret_key="secret",
+        turnstile_verify_url="https://turnstile.example/siteverify",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        battles._verify_turnstile_or_raise(
+            turnstile_token=None,
+            request=_request(),
+            settings=cast(Settings, settings),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert limit_checked == [], "rate limiter must not be called before Turnstile check"
+
+
+def test_create_battle_anon_id_stored_from_get_or_set_return_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fresh_anon_id = uuid.uuid4().hex
+
+    def fake_get_or_set_anon_id(**_kwargs: object) -> str:
+        return fresh_anon_id
+
+    monkeypatch.setattr(battles, "get_or_set_anon_id", fake_get_or_set_anon_id)
+    monkeypatch.setattr(battles, "_verify_turnstile_or_raise", lambda **_kw: None)
+    monkeypatch.setattr(battles, "_enforce_anon_battle_rate_limit", lambda **_kw: None)
+    monkeypatch.setattr(battles, "_enforce_daily_vote_cap", lambda **_kw: None)
+
+    task = _task()
+    model_a_id = uuid.uuid4()
+    model_b_id = uuid.uuid4()
+
+    monkeypatch.setattr(battles, "_select_task", lambda **_kw: task)
+    monkeypatch.setattr(
+        battles, "_select_model_pair", lambda *_args, **_kw: (model_a_id, model_b_id)
+    )
+
+    added_objects: list[object] = []
+
+    class _FakeDB:
+        def add(self, obj: object) -> None:
+            added_objects.append(obj)
+
+        def add_all(self, objs: list[object]) -> None:
+            added_objects.extend(objs)
+
+        def flush(self) -> None:
+            pass
+
+        def commit(self) -> None:
+            pass
+
+        def refresh(self, obj: object) -> None:
+            if isinstance(obj, Battle):
+                obj.id = uuid.uuid4()
+
+    principal = SimpleNamespace(is_authenticated=False, user_id=None)
+    request = _request()
+    response_obj = SimpleNamespace(set_cookie=lambda **_kw: None)
+    settings = cast(Settings, _settings(anon_id_cookie_secure=False))
+
+    battles.create_battle(
+        payload=BattleCreate(),
+        request=request,
+        response=response_obj,  # type: ignore[arg-type]
+        db=_FakeDB(),  # type: ignore[arg-type]
+        principal=cast(Principal, principal),
+        settings=settings,
+    )
+
+    battles_added = [o for o in added_objects if isinstance(o, Battle)]
+    assert len(battles_added) == 1
+    stored_anon_id = battles_added[0].metadata_json["requester_anon_id"]
+    assert stored_anon_id == fresh_anon_id, (
+        "requester_anon_id must come from get_or_set_anon_id return value, "
+        "not request.cookies (which would be None for a brand-new cookie)"
+    )

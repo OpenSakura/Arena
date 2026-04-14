@@ -38,7 +38,7 @@ async function mockBattleRoutes(
     });
 
     await route.fulfill({
-      status: 200,
+      status: 201,
       contentType: "application/json",
       body: JSON.stringify({
         id: options.battleId,
@@ -167,7 +167,7 @@ test("anonymous battle creation waits for Turnstile before POSTing", async ({ pa
 
   await page.getByRole("button", { name: "Solve Turnstile" }).click();
 
-  await expect(page.getByText(/done/i)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText(/complete/i)).toBeVisible({ timeout: 60_000 });
   expect(creates).toHaveLength(1);
   expect(creates[0]?.payload).toMatchObject({
     turnstile_token: "mock-turnstile-token",
@@ -199,7 +199,7 @@ test("authenticated users bypass Turnstile for battle creation", async ({ page }
 
   await page.goto("/battle/new");
 
-  await expect(page.getByText(/done/i)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText(/complete/i)).toBeVisible({ timeout: 60_000 });
   await expect(page.getByRole("button", { name: "Solve Turnstile" })).toHaveCount(0);
 
   expect(creates).toHaveLength(1);
@@ -242,7 +242,7 @@ test("a new anonymous battle is gated after an authenticated session expires", a
   });
 
   await page.goto("/battle/new");
-  await expect(page.getByText(/done/i)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText(/complete/i)).toBeVisible({ timeout: 60_000 });
   expect(creates).toHaveLength(1);
   expect(creates[0]?.authHeader).toBe("Bearer e2e-access-token");
 
@@ -256,7 +256,7 @@ test("a new anonymous battle is gated after an authenticated session expires", a
 
   await page.getByRole("button", { name: "Solve Turnstile" }).click();
 
-  await expect(page.getByText(/done/i)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText(/complete/i)).toBeVisible({ timeout: 60_000 });
   expect(creates).toHaveLength(2);
   expect(creates[1]?.authHeader).toBeUndefined();
   expect(creates[1]?.payload).toMatchObject({

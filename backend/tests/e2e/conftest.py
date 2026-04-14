@@ -241,6 +241,7 @@ def configured_backend_env(
     monkeypatch.setenv("RATE_LIMIT_REDIS_URL", RATE_LIMIT_REDIS_URL)
     monkeypatch.setenv("OIDC_ISSUER", AUTHENTIK_ISSUER)
     monkeypatch.setenv("OIDC_AUDIENCE", AUTHENTIK_CLIENT_ID)
+    monkeypatch.setenv("ANON_ID_COOKIE_SECURE", "false")
     monkeypatch.setenv("ANON_BATTLE_CREATE_RATE_LIMIT", "1")
     monkeypatch.setenv("ANON_BATTLE_CREATE_RATE_LIMIT_WINDOW_SECONDS", "60")
     monkeypatch.setenv("ANON_VOTE_SUBMIT_RATE_LIMIT", "1")

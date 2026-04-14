@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.api.routes import health
@@ -9,6 +10,7 @@ import app.core.config as config_module
 from app.core import logging as app_logging
 import app.main as main
 from app.utils import redis as redis_utils
+import app.utils.process_guard as process_guard_module
 
 
 def _settings(
@@ -16,6 +18,7 @@ def _settings(
     access_log_enabled: bool = False,
     leaderboard_refresh_enabled: bool = False,
     turnstile_secret_key: str = "",
+    web_concurrency: int = 1,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         app_name="OpenSakura Arena API (tests)",
@@ -29,6 +32,7 @@ def _settings(
         trust_x_forwarded_for=False,
         rate_limit_redis_url="",
         rate_limit_redis_timeout_seconds=0.5,
+        web_concurrency=web_concurrency,
     )
 
 
@@ -38,11 +42,15 @@ def _create_test_app(
     access_log_enabled: bool = False,
     leaderboard_refresh_enabled: bool = False,
     turnstile_secret_key: str = "",
+    web_concurrency: int = 1,
+    acquire_guard=None,
+    release_guard=None,
 ):
     settings_obj = _settings(
         access_log_enabled=access_log_enabled,
         leaderboard_refresh_enabled=leaderboard_refresh_enabled,
         turnstile_secret_key=turnstile_secret_key,
+        web_concurrency=web_concurrency,
     )
 
     monkeypatch.setattr(
@@ -55,6 +63,18 @@ def _create_test_app(
     # Health checks call into redis utils; patch its get_settings reference too.
     monkeypatch.setattr(redis_utils, "get_settings", lambda: settings_obj)
     redis_utils.get_rate_limit_redis_client.cache_clear()
+
+    # Patch out the Postgres process guard so unit tests don't need a live DB.
+    monkeypatch.setattr(
+        main,
+        "acquire_battle_process_lock",
+        acquire_guard if acquire_guard is not None else lambda: None,
+    )
+    monkeypatch.setattr(
+        main,
+        "release_battle_process_lock",
+        release_guard if release_guard is not None else lambda: None,
+    )
 
     # Ensure the health check doesn't try to connect to a stale engine created
     # by another test module.
@@ -186,18 +206,48 @@ def test_warns_without_rate_limit_redis_in_prod(monkeypatch) -> None:
     assert any("RATE_LIMIT_REDIS_URL" in m for m in warning_messages)
 
 
-def test_worker_mode_warning_emitted_in_prod(monkeypatch) -> None:
+def test_worker_mode_raises_at_startup_when_web_concurrency_exceeds_one(
+    monkeypatch,
+) -> None:
+    import pytest
+
     logger = _CapturingLogger()
     monkeypatch.setattr(main, "logger", logger)
 
-    settings_obj = _settings()
+    settings_obj = _settings(web_concurrency=4)
     settings_obj.app_env = "production"
     settings_obj.rate_limit_redis_url = "redis://localhost:6379/0"
+
+    with pytest.raises(RuntimeError, match="WEB_CONCURRENCY"):
+        main._emit_startup_warnings(settings_obj)
+
+
+def test_worker_mode_raises_at_startup_in_dev_when_web_concurrency_exceeds_one(
+    monkeypatch,
+) -> None:
+    import pytest
+
+    logger = _CapturingLogger()
+    monkeypatch.setattr(main, "logger", logger)
+
+    settings_obj = _settings(web_concurrency=2)
+    settings_obj.app_env = "dev"
+
+    with pytest.raises(RuntimeError, match="WEB_CONCURRENCY"):
+        main._emit_startup_warnings(settings_obj)
+
+
+def test_worker_mode_zero_concurrency_treated_as_one(monkeypatch) -> None:
+    logger = _CapturingLogger()
+    monkeypatch.setattr(main, "logger", logger)
+
+    settings_obj = _settings(web_concurrency=0)
+    settings_obj.app_env = "dev"
 
     main._emit_startup_warnings(settings_obj)
 
     warning_messages = [msg for level, msg, _, _ in logger.calls if level == "warning"]
-    assert any("single API worker" in m for m in warning_messages)
+    assert not any("WEB_CONCURRENCY" in m for m in warning_messages)
 
 
 def test_no_startup_warnings_in_dev(monkeypatch) -> None:
@@ -315,3 +365,78 @@ def test_closes_redis_on_shutdown_exactly_once(monkeypatch) -> None:
         pass
 
     assert close_calls == [True]
+
+
+# ── Process guard (single-worker advisory lock) ──
+
+
+def test_process_guard_acquired_during_lifespan(monkeypatch) -> None:
+    acquired: list[bool] = []
+    released: list[bool] = []
+
+    app = _create_test_app(
+        monkeypatch,
+        acquire_guard=lambda: acquired.append(True),
+        release_guard=lambda: released.append(True),
+    )
+
+    with TestClient(app):
+        assert acquired == [True]
+        assert released == []
+
+    assert released == [True]
+
+
+def test_process_guard_released_on_shutdown(monkeypatch) -> None:
+    released: list[bool] = []
+
+    app = _create_test_app(
+        monkeypatch,
+        release_guard=lambda: released.append(True),
+    )
+
+    with TestClient(app):
+        pass
+
+    assert released == [True]
+
+
+def test_startup_aborts_when_process_guard_unavailable(monkeypatch) -> None:
+    def _lock_busy():
+        raise RuntimeError("Another process already holds the battle orchestrator lock")
+
+    app = _create_test_app(monkeypatch, acquire_guard=_lock_busy)
+
+    with pytest.raises(RuntimeError, match="battle orchestrator lock"):
+        with TestClient(app):
+            pass  # pragma: no cover
+
+
+def test_process_guard_acquire_called_before_serving_requests(monkeypatch) -> None:
+    sequence: list[str] = []
+
+    monkeypatch.setattr(
+        main, "acquire_battle_process_lock", lambda: sequence.append("acquire")
+    )
+    monkeypatch.setattr(main, "release_battle_process_lock", lambda: None)
+
+    settings_obj = _settings()
+    monkeypatch.setattr(main, "get_settings", lambda: settings_obj)
+    monkeypatch.setattr(config_module, "get_settings", lambda: settings_obj)
+    monkeypatch.setattr(health, "get_settings", lambda: settings_obj)
+    monkeypatch.setattr(redis_utils, "get_settings", lambda: settings_obj)
+    redis_utils.get_rate_limit_redis_client.cache_clear()
+
+    import app.db.session as session_module
+
+    session_module._engine = None
+    session_module._SessionLocal = None
+    monkeypatch.setattr(main, "configure_logging", lambda _: None)
+
+    app = main.create_app()
+
+    with TestClient(app) as client:
+        assert "acquire" in sequence, (
+            "guard must be acquired before requests are served"
+        )
+        client.get("/api/v1/livez")

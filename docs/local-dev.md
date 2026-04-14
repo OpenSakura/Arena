@@ -49,11 +49,21 @@ Notes:
 
 - If you plan to store per-model API keys, set `ARENA_MASTER_KEY` in `backend/.env`.
   If it's unset, model CRUD still works, but saving an `api_key` will fail.
-- Set `RATE_LIMIT_REDIS_URL=redis://localhost:6379/0` to enable shared
-  multi-worker anonymous rate limiting. If unset, anonymous throttling is
-  disabled.
-- Tune `BATTLE_RUNNING_WAIT_TIMEOUT_SECONDS` if clients should wait longer for
-  already-running battle streams before showing a timeout event.
+- **Single-worker only**: the backend must run with `WEB_CONCURRENCY=1` (the default).
+  Starting with more than one worker raises an error at startup because battle execution
+  depends on in-process singletons that are not safe across OS processes.
+- Set `RATE_LIMIT_REDIS_URL=redis://localhost:6379/0` to enable Redis-backed
+  throttling and shared caching. If unset, all rate limits (anonymous and
+  authenticated) and the shared confidence-interval cache are disabled.
+- Set `ANON_ID_COOKIE_SECURE=false` for local HTTP development (the default in
+  `.env.example`); in production this must be `true`.
+- To enable Cloudflare Turnstile gating on anonymous battle creation, set
+  `TURNSTILE_SECRET_KEY` in the backend **and** `NEXT_PUBLIC_TURNSTILE_SITE_KEY`
+  in the frontend. Both must be set together — the backend key enables
+  server-side verification, and the frontend key causes the widget to render.
+  Leave both empty to bypass Turnstile locally.
+- Tune `BATTLE_RUNNING_WAIT_TIMEOUT_SECONDS` to control how long an active
+  battle execution task may run before being force-failed (default: 600s).
 - Set `ACCESS_LOG_ENABLED=true` to emit per-request latency/access logs.
 - Set `LOG_JSON=true` when shipping logs to a structured log collector.
 

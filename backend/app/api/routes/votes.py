@@ -377,6 +377,12 @@ def _resolve_duplicate_vote_conflict(
         if existing_vote.comment != comment:
             existing_vote.comment = comment
 
+    # Commit explicitly so that identity upgrades and payload updates are
+    # durably persisted regardless of whether the caller's session teardown
+    # auto-commit fires (e.g. if the handler raises after this point or the
+    # get_db() auto-commit semantics change).
+    db.commit()
+
     return VoteSubmitResponse(
         vote_id=str(existing_vote.id),
         battle_id=str(battle_id),

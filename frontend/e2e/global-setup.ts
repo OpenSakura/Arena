@@ -3,16 +3,21 @@ import path from "node:path";
 
 const COMPOSE_PROJECT = "arena-frontend-e2e";
 const FRONTEND_PORT = 13000;
+const PLAYWRIGHT_POSTGRES_PORT = "25432";
+const PLAYWRIGHT_REDIS_PORT = "26379";
+const PLAYWRIGHT_AUTHENTIK_PORT = "29000";
 
 type RunOptions = {
   allowFailure?: boolean;
   cwd: string;
+  env?: NodeJS.ProcessEnv;
 };
 
 function run(command: string, args: string[], options: RunOptions): void {
   const result = spawnSync(command, args, {
     cwd: options.cwd,
     encoding: "utf-8",
+    env: options.env,
     stdio: "pipe",
   });
 
@@ -31,18 +36,24 @@ function run(command: string, args: string[], options: RunOptions): void {
   );
 }
 
-function composeArgs(composeFile: string, args: string[]): string[] {
-  return ["compose", "-f", composeFile, "-p", COMPOSE_PROJECT, ...args];
-}
-
 export default async function globalSetup(): Promise<void> {
   const frontendDir = process.cwd();
   const repoRoot = path.resolve(frontendDir, "..");
   const backendDir = path.join(repoRoot, "backend");
   const composeFile = path.join(repoRoot, "backend", "tests", "e2e", "docker-compose.yaml");
+  const composeEnv = {
+    ...process.env,
+    ARENA_POSTGRES_HOST_PORT: PLAYWRIGHT_POSTGRES_PORT,
+    ARENA_REDIS_HOST_PORT: PLAYWRIGHT_REDIS_PORT,
+    ARENA_AUTHENTIK_HOST_PORT: PLAYWRIGHT_AUTHENTIK_PORT,
+  };
 
   try {
-    run("docker", composeArgs(composeFile, ["up", "-d", "--wait"]), { cwd: repoRoot });
+    run(
+      "docker",
+      ["compose", "-f", composeFile, "-p", COMPOSE_PROJECT, "up", "-d", "--wait"],
+      { cwd: repoRoot, env: composeEnv },
+    );
 
     const bootstrapScript = [
       "from pathlib import Path",
@@ -67,14 +78,14 @@ export default async function globalSetup(): Promise<void> {
 
     run(
       "docker",
-      composeArgs(composeFile, ["exec", "-T", "authentik-server", "ak", "shell", "-c", configureScript]),
-      { cwd: repoRoot },
+      ["compose", "-f", composeFile, "-p", COMPOSE_PROJECT, "exec", "-T", "authentik-server", "ak", "shell", "-c", configureScript],
+      { cwd: repoRoot, env: composeEnv },
     );
   } catch (error) {
     run(
       "docker",
-      composeArgs(composeFile, ["down", "-v", "--remove-orphans"]),
-      { cwd: repoRoot, allowFailure: true },
+      ["compose", "-f", composeFile, "-p", COMPOSE_PROJECT, "down", "-v", "--remove-orphans"],
+      { cwd: repoRoot, env: composeEnv, allowFailure: true },
     );
     throw error;
   }
