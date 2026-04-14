@@ -87,3 +87,8 @@ def test_production_treats_zero_web_concurrency_as_one() -> None:
 def test_dev_allows_web_concurrency_of_one() -> None:
     settings = Settings(app_env="dev", web_concurrency=1)
     assert settings.web_concurrency == 1
+
+
+def test_production_accepts_empty_turnstile_secret_key() -> None:
+    settings = Settings(**_production_settings(turnstile_secret_key=""))
+    assert settings.turnstile_secret_key == ""

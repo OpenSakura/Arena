@@ -191,12 +191,6 @@ class Settings(BaseSettings):
                 "DATABASE_URL is still set to the default localhost/postgres — "
                 "set it to the production database connection string"
             )
-        if not self.turnstile_secret_key:
-            errors.append(
-                "TURNSTILE_SECRET_KEY is empty — "
-                "Turnstile verification for anonymous battle creation is disabled"
-            )
-
         effective_workers = self.web_concurrency if self.web_concurrency > 0 else 1
         if effective_workers > 1:
             errors.append(

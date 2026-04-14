@@ -1,9 +1,11 @@
 # Authentik OIDC Setup
 
-This repo uses Authentik as the OIDC provider for optional login (frontend) and
-JWT verification (backend). Anonymous battles/votes are supported, but:
+This repo uses Authentik as the OIDC provider for login (frontend) and
+JWT verification (backend). Login is required for all mutations (creating
+battles, voting, retrying battles, revealing votes). Public read pages remain
+accessible without login. Key details:
 
-- Logged-in votes are stored with `voter_user_id`.
+- All votes are stored with `voter_user_id` from the authenticated session.
 - Admin endpoints require membership in an Authentik group (default:
   `arena_admin`).
 

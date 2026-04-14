@@ -5,9 +5,10 @@ FastAPI control-plane API for the translation arena.
 Notes:
 - This backend does not host model inference. It calls your existing LLM gateway
   / provider endpoints via HTTP.
-- Authentication is OIDC (Authentik). Anonymous access is allowed; when a valid
-  OIDC access token is provided, the backend records `user_id` for higher-trust
-  analysis later.
+- Authentication is OIDC (Authentik). Public read endpoints (battles,
+  leaderboard, results) work without login. All mutations (creating battles,
+  retrying battles, submitting votes, revealing votes) require a valid OIDC
+  access token.
 - **Single-worker requirement**: battle execution relies on in-process singletons
   (orchestrator, leaderboard refresher) that are not safe across multiple OS
   processes. Always run with `WEB_CONCURRENCY=1` (the default). Starting with
@@ -26,14 +27,14 @@ Notes:
 - Access logs are optional (`ACCESS_LOG_ENABLED=true`) and can be emitted in
   JSON via `LOG_JSON=true` for easier ingestion.
 - Redis-backed throttling and shared caching use `RATE_LIMIT_REDIS_URL`; leaving
-  it unset disables both rate limits (anonymous and authenticated) and the shared
-  confidence-interval result cache.
-- Anonymous identity cookies use `anon_id_cookie_secure=True` by default — set
-  `ANON_ID_COOKIE_SECURE=false` only for local HTTP development.
-- Cloudflare Turnstile verification for anonymous battle creation is enabled
-  when `TURNSTILE_SECRET_KEY` is set (leave empty to disable). The frontend
-  must also have `NEXT_PUBLIC_TURNSTILE_SITE_KEY` set so the widget renders;
-  having only one side configured breaks anonymous battle creation.
+  it unset disables rate limits and the shared confidence-interval result cache.
+- Legacy anonymous identity cookies use `anon_id_cookie_secure=True` by
+  default. Set `ANON_ID_COOKIE_SECURE=false` only for local HTTP development.
+  These cookies are retained for backward compatibility with older vote records
+  but are not required for the current authenticated-only flow.
+- Cloudflare Turnstile (`TURNSTILE_SECRET_KEY`) can still be enabled as an
+  extra anti-abuse layer, but it is no longer the primary gate for battle
+  creation. All battle creation now requires authentication.
 
 Local quickstart (dev):
 1. Start local infra (Postgres + Redis): `docker compose -f ../infra/compose.yaml up -d`
