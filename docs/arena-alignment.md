@@ -52,7 +52,8 @@ Important nuance:
 
 - Frontend: Next.js (TypeScript), single app for arena + admin.
 - Backend: FastAPI (Python), Postgres only.
-- Auth: Authentik OIDC. Anonymous usage is allowed.
+- Auth: Authentik OIDC. Login required for all mutations (battle creation,
+  voting, retries, reveal). Public read pages remain accessible without login.
 - No worker queue: model calls are performed directly by the API (async).
 - No gateway service in this repo: an upstream gateway already exists.
 
@@ -142,30 +143,32 @@ Notes:
 
 ### Voting
 
-- Anonymous voting is allowed.
+- Voting requires authentication.
 - Vote data: A/B/tie + rubric tags + optional comment.
 - Reveal: show model identities only after the vote is submitted.
 
 ### User Accounts and Profiles
 
 - Authentik OIDC is the identity provider.
-- Anonymous usage is allowed; login is optional.
+- Login is required to create battles, submit votes, retry battles, and reveal
+  votes. Public read pages (battles, leaderboards, completed results) remain
+  accessible without login.
 - Logged-in users may optionally fill a profile for downstream filtering/analysis:
   - JP capability (e.g., JLPT N1-N5 or other certificates)
   - translation experience per language pair and role (translator/editor/qc/tl/etc.)
-- Votes should store `voter_user_id` when authenticated; otherwise store anonymous identifiers
-  (anon id + hashed IP/UA) for abuse detection.
+- Votes always store `voter_user_id` from the authenticated session.
 
 ### Rate Limits / Anti-abuse
 
-- Anonymous: strict throttles + store hashed IP/UA + Cloudflare Turnstile on vote.
-- Logged-in: no rate limit (acknowledged cost/abuse risk).
+- Authenticated users: no rate limit by default (acknowledged cost/abuse risk).
+- Cloudflare Turnstile can be enabled as an optional extra verification layer
+  on top of authentication.
 
 Notes / best assumptions:
 
-- Anonymous throttles should apply to both vote submission and battle creation.
-- Logged-in is "unlimited" by policy, but we should still have operational backstops: budget
-  alerts, anomaly detection, and the ability to throttle/ban users manually.
+- "Unlimited" by policy for authenticated users, but we should still have operational
+  backstops: budget alerts, anomaly detection, and the ability to throttle/ban
+  users manually.
 
 ### Logging / Reproducibility
 
@@ -264,7 +267,9 @@ Secrets notes:
 
 Privacy notes:
 
-- Anonymous voting implies we should store salted hashes of IP and User-Agent, not raw values.
+- All votes are tied to authenticated user IDs, simplifying privacy requirements.
+  Legacy anonymous vote records (from the earlier anonymous-allowed model) retain
+  salted hashes of IP and User-Agent for backward compatibility.
 - User profiles (language certificates/experience) are optional but sensitive; limit access and
   plan deletion/export for users.
 
@@ -285,7 +290,7 @@ Translation-specific evaluation:
 Voter quality and trust:
 
 - Calibration tasks (golden references) to estimate voter reliability.
-- Trust tiers: anonymous < logged-in < verified translators.
+- Trust tiers: logged-in < verified translators.
 - Offline vote weighting experiments (keep raw votes unchanged).
 
 Sampling/ratings:

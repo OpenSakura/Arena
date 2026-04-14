@@ -4,8 +4,10 @@ Next.js (TypeScript) web app for the translation arena.
 
 Notes:
 - Integrates with Authentik via OIDC (Auth.js / NextAuth).
-- Anonymous users can battle/vote; logged-in users add profile metadata used for
-  downstream filtering.
+- Anonymous users can browse public pages (battles, leaderboards, results).
+  Login is required to create battles, retry battles, submit votes, and reveal
+  votes. Logged-in users can also fill an optional profile for downstream
+  filtering.
 
 Local quickstart (dev):
 1. Copy env: `cp .env.example .env.local` and edit.
@@ -42,8 +44,4 @@ When enabled, Playwright additionally:
 
 If `PW_ENABLE_LIVE_STACK` is not set, `e2e/live-contract.spec.ts` is skipped by default.
 
-To exercise the anonymous Turnstile misconfiguration branch (backend requires Turnstile, frontend site key missing):
-
-```bash
-NEXT_PUBLIC_TURNSTILE_SITE_KEY= npm run test:e2e -- e2e/turnstile-misconfigured.spec.ts
-```
+Battle creation, retries, vote submission, and reveal flows are covered in Playwright with authenticated session mocks. Anonymous coverage remains browse-only (for example onboarding guard coverage).

@@ -53,15 +53,15 @@ Notes:
   Starting with more than one worker raises an error at startup because battle execution
   depends on in-process singletons that are not safe across OS processes.
 - Set `RATE_LIMIT_REDIS_URL=redis://localhost:6379/0` to enable Redis-backed
-  throttling and shared caching. If unset, all rate limits (anonymous and
-  authenticated) and the shared confidence-interval cache are disabled.
+  throttling and shared caching. If unset, rate limits and the shared
+  confidence-interval cache are disabled.
 - Set `ANON_ID_COOKIE_SECURE=false` for local HTTP development (the default in
-  `.env.example`); in production this must be `true`.
-- To enable Cloudflare Turnstile gating on anonymous battle creation, set
-  `TURNSTILE_SECRET_KEY` in the backend **and** `NEXT_PUBLIC_TURNSTILE_SITE_KEY`
-  in the frontend. Both must be set together — the backend key enables
-  server-side verification, and the frontend key causes the widget to render.
-  Leave both empty to bypass Turnstile locally.
+  `.env.example`); in production this must be `true`. This cookie is a legacy
+  mechanism retained for backward compatibility with older vote records.
+- Cloudflare Turnstile can optionally be enabled as an extra anti-abuse layer
+  by setting `TURNSTILE_SECRET_KEY` in the backend. Battle creation requires
+  authentication regardless of Turnstile configuration. Leave it empty to
+  skip Turnstile locally.
 - Tune `BATTLE_RUNNING_WAIT_TIMEOUT_SECONDS` to control how long an active
   battle execution task may run before being force-failed (default: 600s).
 - Set `ACCESS_LOG_ENABLED=true` to emit per-request latency/access logs.
@@ -70,7 +70,9 @@ Notes:
 Notes:
 
 - Admin endpoints (`/api/v1/admin/*`) require OIDC and admin group membership.
-- Public endpoints (battles/leaderboard/voting) work without login.
+- Public read endpoints (battles, leaderboard, results) work without login.
+- All mutations (creating battles, submitting votes, retrying battles, revealing
+  votes) require authentication.
 
 ## Frontend
 

@@ -35,8 +35,6 @@ const frontendServer = {
     AUTHENTIK_CLIENT_ID: "arena-e2e-client",
     AUTHENTIK_CLIENT_SECRET: "arena-e2e-secret",
     NEXT_PUBLIC_BACKEND_URL: BACKEND_BASE_URL,
-    NEXT_PUBLIC_TURNSTILE_SITE_KEY:
-      process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? "1x00000000000000000000AA",
   },
 };
 

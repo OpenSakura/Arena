@@ -16,6 +16,31 @@ test("onboarding shows anonymous guard", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Save profile" })).toBeDisabled();
 });
 
+test("onboarding shows explicit re-login messaging for expired sessions", async ({ page }) => {
+  await page.route("**/api/auth/session*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        user: { name: "Arena E2E", email: "arena-e2e@example.com" },
+        expires: "2099-01-01T00:00:00.000Z",
+        accessToken: "frontend-e2e-access-token",
+        error: "RefreshTokenExpired",
+      }),
+    });
+  });
+
+  await page.goto("/onboarding");
+
+  await expect(page.getByText("Your session has expired.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sign in again" })).toBeVisible();
+  await expect(page.getByText("Session expired", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText(/Your session expired before we could load or save your profile/i),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save profile" })).toBeDisabled();
+});
+
 test("onboarding saves profile payload for authenticated users", async ({ page }) => {
   const saveCalls: Array<{ authHeader: string | undefined; payload: Record<string, unknown> }> = [];
 

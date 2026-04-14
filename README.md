@@ -6,8 +6,9 @@ Japanese (JP) -> Chinese (ZH) light novel / visual novel style translations.
 Notes:
 - `backend/` is a FastAPI control-plane API backed by Postgres.
 - `frontend/` is a Next.js web app for battles, voting, leaderboards, and admin.
-- Auth uses OIDC (Authentik). Anonymous voting is allowed; logged-in users are
-  captured for downstream filtering and higher-trust analysis.
+- Auth uses OIDC (Authentik). Public pages (battles, leaderboards, results)
+  can be browsed without login. Creating battles, submitting votes, retrying
+  battles, and revealing votes all require authentication.
 
 Repo status:
 - This is a scaffold/source tree. Many files are intentionally stubs with TODOs.

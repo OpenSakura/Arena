@@ -8,6 +8,31 @@ test("completes a live battle, submits vote, and updates leaderboard", async ({ 
     "Set PW_ENABLE_LIVE_STACK=1 to run live backend contract smoke.",
   );
 
+  await page.goto("/");
+  await page.getByRole("button", { name: "Login" }).click();
+
+  const authForm = page.getByRole("main", { name: /authentication form/i });
+
+  const userInput = authForm.locator('input[name="uidField"]');
+  await userInput.waitFor({ state: "visible", timeout: 60_000 });
+  await userInput.fill("akadmin");
+  await userInput.press("Enter");
+
+  const identifyAction = authForm.getByRole("button", { name: /log in|continue/i });
+  await identifyAction.waitFor({ state: "visible", timeout: 30_000 });
+  await identifyAction.click({ force: true });
+
+  const passwordInput = authForm.locator('input[name="password"]');
+  await passwordInput.waitFor({ state: "visible", timeout: 60_000 });
+  await passwordInput.fill("password1234");
+  await passwordInput.press("Enter");
+
+  const passwordAction = authForm.getByRole("button", { name: /log in|continue/i });
+  await passwordAction.waitFor({ state: "visible", timeout: 30_000 });
+  await passwordAction.click({ force: true });
+
+  await page.getByRole("button", { name: "Logout" }).waitFor({ state: "visible", timeout: 60_000 });
+
   await page.goto("/battle/new");
 
   await expect(page.getByText(/complete/i)).toBeVisible({ timeout: 60_000 });

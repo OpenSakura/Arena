@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
+import { encode } from "next-auth/jwt";
 
 type Side = "A" | "B";
 
@@ -73,14 +74,30 @@ async function handleCorsIfPreflight(route: Route): Promise<boolean> {
   return false;
 }
 
-async function mockPublicConfig(page: Page): Promise<void> {
-  await page.route("**/api/v1/public-config", async (route) => {
-    if (await handleCorsIfPreflight(route)) return;
+async function mockAuthenticatedSession(page: Page, accessToken: string): Promise<void> {
+  const sessionToken = await encode({
+    token: { name: "Battle E2E", email: "battle-e2e@example.com" },
+    secret: "arena-frontend-e2e-nextauth-secret",
+  });
+
+  await page.context().addCookies([
+    {
+      name: "next-auth.session-token",
+      value: sessionToken,
+      domain: "localhost",
+      path: "/",
+    },
+  ]);
+
+  await page.route("**/api/auth/session*", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      headers: CORS_HEADERS,
-      body: JSON.stringify({ anon_battle_turnstile_required: false }),
+      body: JSON.stringify({
+        user: { name: "Battle E2E", email: "battle-e2e@example.com" },
+        expires: "2099-01-01T00:00:00.000Z",
+        accessToken,
+      }),
     });
   });
 }
@@ -113,9 +130,11 @@ async function mockBattleDetails(
 
 test("surfaces battle.error details and can recover via restart", async ({ page }) => {
   let createCount = 0;
+  const createAuthHeaders: Array<string | undefined> = [];
   const battlesById = new Map<string, BattlePublic>();
 
-  await mockPublicConfig(page);
+  await mockAuthenticatedSession(page, "battle-recovery-access-token");
+
   await mockBattleDetails(page, battlesById);
 
   await page.route("**/api/v1/battles", async (route) => {
@@ -125,6 +144,7 @@ test("surfaces battle.error details and can recover via restart", async ({ page 
       return;
     }
 
+    createAuthHeaders.push(route.request().headers()["authorization"]);
     createCount += 1;
     const battle =
       createCount === 1
@@ -175,9 +195,10 @@ test("surfaces battle.error details and can recover via restart", async ({ page 
   await expect(page.getByText("Partial A")).toBeVisible({ timeout: 5000 });
   await expect(page.getByText("Partial B")).toBeVisible();
   await expect(page.getByText("Battle error: Model gateway timeout")).toBeVisible();
-
-  await page.getByRole("button", { name: /Model A is better/i }).click();
-  await expect(page.getByRole("button", { name: "Submit Vote" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: /Model A is better/i })).toHaveCount(0);
+  await expect(page.getByLabel("Optional feedback")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Submit Vote" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Retry Battle" })).toBeVisible();
 
   await page.getByRole("button", { name: "Start another battle" }).click();
 
@@ -192,12 +213,17 @@ test("surfaces battle.error details and can recover via restart", async ({ page 
   await expect(page.getByRole("button", { name: "Submit Vote" })).toBeDisabled();
 
   expect(createCount).toBe(2);
+  expect(createAuthHeaders).toEqual([
+    "Bearer battle-recovery-access-token",
+    "Bearer battle-recovery-access-token",
+  ]);
 });
 
 test("disables voting when stream terminal state is battle.failed", async ({ page }) => {
   const battlesById = new Map<string, BattlePublic>();
 
-  await mockPublicConfig(page);
+  await mockAuthenticatedSession(page, "battle-failed-access-token");
+
   await mockBattleDetails(page, battlesById);
 
   await page.route("**/api/v1/battles", async (route) => {
@@ -244,21 +270,20 @@ test("disables voting when stream terminal state is battle.failed", async ({ pag
   await expect(page.getByText(/^failed$/i)).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText("A failed completion")).toBeVisible();
   await expect(page.getByText("B failed completion")).toBeVisible();
-
-  await page.getByLabel("Optional feedback").fill("B handled the partial output better.");
-  await page.getByRole("button", { name: /Model B is better/i }).click();
-
-  const submitVote = page.getByRole("button", { name: "Submit Vote" });
-  await expect(submitVote).toBeDisabled();
+  await expect(page.getByRole("button", { name: /Model B is better/i })).toHaveCount(0);
+  await expect(page.getByLabel("Optional feedback")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Submit Vote" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Retry Battle" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Start another battle" })).toBeVisible();
 });
 
 test("recovers when initial battle bootstrap fails and retry starts cleanly", async ({ page }) => {
   let createCount = 0;
+  const createAuthHeaders: Array<string | undefined> = [];
   const battlesById = new Map<string, BattlePublic>();
 
-  await mockPublicConfig(page);
+  await mockAuthenticatedSession(page, "battle-bootstrap-access-token");
+
   await mockBattleDetails(page, battlesById);
 
   await page.route("**/api/v1/battles", async (route) => {
@@ -268,6 +293,7 @@ test("recovers when initial battle bootstrap fails and retry starts cleanly", as
       return;
     }
 
+    createAuthHeaders.push(route.request().headers()["authorization"]);
     createCount += 1;
     if (createCount === 1) {
       await route.fulfill({
@@ -328,12 +354,17 @@ test("recovers when initial battle bootstrap fails and retry starts cleanly", as
   ).toHaveCount(0);
 
   expect(createCount).toBe(2);
+  expect(createAuthHeaders).toEqual([
+    "Bearer battle-bootstrap-access-token",
+    "Bearer battle-bootstrap-access-token",
+  ]);
 });
 
 test("marks status as error on run.error and keeps voting disabled", async ({ page }) => {
   const battlesById = new Map<string, BattlePublic>();
 
-  await mockPublicConfig(page);
+  await mockAuthenticatedSession(page, "battle-run-error-access-token");
+
   await mockBattleDetails(page, battlesById);
 
   await page.route("**/api/v1/battles", async (route) => {
@@ -376,13 +407,14 @@ test("marks status as error on run.error and keeps voting disabled", async ({ pa
   await expect(page.getByText(/^error$/i)).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText("Partial output A")).toBeVisible();
   await expect(page.getByText("Partial output B")).toBeVisible();
-
-  await page.getByRole("button", { name: /Model A is better/i }).click();
-  await expect(page.getByRole("button", { name: "Submit Vote" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: /Model A is better/i })).toHaveCount(0);
+  await expect(page.getByLabel("Optional feedback")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Submit Vote" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Retry Battle" })).toBeVisible();
 });
 
 test("surfaces stream transport failures and keeps voting disabled", async ({ page }) => {
-  await mockPublicConfig(page);
+  await mockAuthenticatedSession(page, "battle-stream-failure-access-token");
 
   await page.route("**/api/v1/battles", async (route) => {
     if (await handleCorsIfPreflight(route)) return;
@@ -409,7 +441,9 @@ test("surfaces stream transport failures and keeps voting disabled", async ({ pa
     timeout: 60_000,
   });
   await expect(page.getByText(/SSE failed|Failed to fetch|Battle stream failed/i)).toBeVisible();
-
-  await page.getByRole("button", { name: /Model B is better/i }).click();
-  await expect(page.getByRole("button", { name: "Submit Vote" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: /Model B is better/i })).toHaveCount(0);
+  await expect(page.getByLabel("Optional feedback")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Submit Vote" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Retry Battle" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Start another battle" })).toBeVisible();
 });

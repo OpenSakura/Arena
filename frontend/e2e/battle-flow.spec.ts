@@ -1,4 +1,5 @@
 import { expect, test, type Route } from "@playwright/test";
+import { encode } from "next-auth/jwt";
 
 type Side = "A" | "B";
 
@@ -73,6 +74,37 @@ async function handleCorsIfPreflight(route: Route): Promise<boolean> {
   return false;
 }
 
+async function mockAuthenticatedSession(
+  page: import("@playwright/test").Page,
+  accessToken: string,
+): Promise<void> {
+  const sessionToken = await encode({
+    token: { name: "Battle E2E", email: "battle-e2e@example.com" },
+    secret: "arena-frontend-e2e-nextauth-secret",
+  });
+
+  await page.context().addCookies([
+    {
+      name: "next-auth.session-token",
+      value: sessionToken,
+      domain: "localhost",
+      path: "/",
+    },
+  ]);
+
+  await page.route("**/api/auth/session*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        user: { name: "Battle E2E", email: "battle-e2e@example.com" },
+        expires: "2099-01-01T00:00:00.000Z",
+        accessToken,
+      }),
+    });
+  });
+}
+
 async function mockBattleDetails(
   page: import("@playwright/test").Page,
   battlesById: Map<string, BattlePublic>,
@@ -101,18 +133,11 @@ async function mockBattleDetails(
 
 test("streams outputs, reveals models after vote, and restarts cleanly", async ({ page }) => {
   let createCount = 0;
-  const votePayloads: unknown[] = [];
+  const votePayloads: Array<{ authHeader: string | undefined; payload: unknown }> = [];
+  const createAuthHeaders: Array<string | undefined> = [];
   const battlesById = new Map<string, BattlePublic>();
 
-  await page.route("**/api/v1/public-config", async (route) => {
-    if (await handleCorsIfPreflight(route)) return;
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      headers: CORS_HEADERS,
-      body: JSON.stringify({ anon_battle_turnstile_required: false }),
-    });
-  });
+  await mockAuthenticatedSession(page, "battle-flow-access-token");
 
   await page.route("**/api/v1/battles", async (route) => {
     if (await handleCorsIfPreflight(route)) return;
@@ -121,6 +146,7 @@ test("streams outputs, reveals models after vote, and restarts cleanly", async (
       return;
     }
 
+    createAuthHeaders.push(route.request().headers()["authorization"]);
     createCount += 1;
     const battle =
       createCount === 1
@@ -169,7 +195,10 @@ test("streams outputs, reveals models after vote, and restarts cleanly", async (
 
   await page.route(/\/api\/v1\/battles\/[^/]+\/vote$/, async (route) => {
     if (await handleCorsIfPreflight(route)) return;
-    votePayloads.push(route.request().postDataJSON());
+    votePayloads.push({
+      authHeader: route.request().headers()["authorization"],
+      payload: route.request().postDataJSON(),
+    });
     const match = /\/battles\/([^/]+)\/vote$/.exec(route.request().url());
     const battleId = match?.[1] ?? "battle-unknown";
 
@@ -222,7 +251,8 @@ test("streams outputs, reveals models after vote, and restarts cleanly", async (
   await expect(page.getByText("Revealed Model B", { exact: true }).first()).toBeVisible();
 
   expect(votePayloads).toHaveLength(1);
-  const firstVote = votePayloads[0] as Record<string, unknown>;
+  const firstVote = votePayloads[0]?.payload as Record<string, unknown>;
+  expect(votePayloads[0]?.authHeader).toBe("Bearer battle-flow-access-token");
   expect(firstVote).toMatchObject({
     winner: "A",
     comment: null,
@@ -241,21 +271,17 @@ test("streams outputs, reveals models after vote, and restarts cleanly", async (
   await expect(page.getByText("Revealed Model A", { exact: true })).toHaveCount(0);
 
   expect(createCount).toBe(2);
+  expect(createAuthHeaders).toEqual([
+    "Bearer battle-flow-access-token",
+    "Bearer battle-flow-access-token",
+  ]);
 });
 
 test("loads an existing completed battle id without creating a new one", async ({ page }) => {
   let createCount = 0;
-  const votePayloads: unknown[] = [];
+  const votePayloads: Array<{ authHeader: string | undefined; payload: unknown }> = [];
 
-  await page.route("**/api/v1/public-config", async (route) => {
-    if (await handleCorsIfPreflight(route)) return;
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      headers: CORS_HEADERS,
-      body: JSON.stringify({ anon_battle_turnstile_required: false }),
-    });
-  });
+  await mockAuthenticatedSession(page, "battle-existing-access-token");
 
   await page.route("**/api/v1/battles", async (route) => {
     if (await handleCorsIfPreflight(route)) return;
@@ -340,7 +366,10 @@ test("loads an existing completed battle id without creating a new one", async (
 
   await page.route(/\/api\/v1\/battles\/[^/]+\/vote$/, async (route) => {
     if (await handleCorsIfPreflight(route)) return;
-    votePayloads.push(route.request().postDataJSON());
+    votePayloads.push({
+      authHeader: route.request().headers()["authorization"],
+      payload: route.request().postDataJSON(),
+    });
 
     await route.fulfill({
       status: 200,
@@ -391,6 +420,7 @@ test("loads an existing completed battle id without creating a new one", async (
 
   expect(createCount).toBe(0);
   expect(votePayloads).toHaveLength(1);
-  const payload = votePayloads[0] as Record<string, unknown>;
+  expect(votePayloads[0]?.authHeader).toBe("Bearer battle-existing-access-token");
+  const payload = votePayloads[0]?.payload as Record<string, unknown>;
   expect(payload).toMatchObject({ winner: "B" });
 });

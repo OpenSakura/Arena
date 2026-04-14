@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
+import { encode } from "next-auth/jwt";
 
 const CORS_HEADERS: Record<string, string> = {
   "access-control-allow-origin": "http://localhost:13000",
@@ -13,6 +14,34 @@ async function handleCorsIfPreflight(route: Route): Promise<boolean> {
     return true;
   }
   return false;
+}
+
+async function mockAuthenticatedSession(page: Page, accessToken: string): Promise<void> {
+  const sessionToken = await encode({
+    token: { name: "Vote E2E", email: "vote-e2e@example.com" },
+    secret: "arena-frontend-e2e-nextauth-secret",
+  });
+
+  await page.context().addCookies([
+    {
+      name: "next-auth.session-token",
+      value: sessionToken,
+      domain: "localhost",
+      path: "/",
+    },
+  ]);
+
+  await page.route("**/api/auth/session*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        user: { name: "Vote E2E", email: "vote-e2e@example.com" },
+        expires: "2099-01-01T00:00:00.000Z",
+        accessToken,
+      }),
+    });
+  });
 }
 
 async function mockBattleDetails(
@@ -102,16 +131,6 @@ function sseBody(events: Array<{ event: string; data: unknown }>): string {
 async function mockCompletedBattle(page: Page, battleId: string): Promise<void> {
   const battlesById = new Map<string, BattlePublic>();
 
-  await page.route("**/api/v1/public-config", async (route) => {
-    if (await handleCorsIfPreflight(route)) return;
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      headers: CORS_HEADERS,
-      body: JSON.stringify({ anon_battle_turnstile_required: false }),
-    });
-  });
-
   await page.route("**/api/v1/battles", async (route) => {
     if (await handleCorsIfPreflight(route)) return;
     if (route.request().method() !== "POST") {
@@ -151,13 +170,17 @@ async function mockCompletedBattle(page: Page, battleId: string): Promise<void> 
 }
 
 test("submits tie votes with rubric tags and comment payload", async ({ page }) => {
-  const votePayloads: unknown[] = [];
+  const votePayloads: Array<{ authHeader: string | undefined; payload: unknown }> = [];
 
+  await mockAuthenticatedSession(page, "vote-tie-access-token");
   await mockCompletedBattle(page, "battle-vote-tie");
 
   await page.route(/\/api\/v1\/battles\/[^/]+\/vote$/, async (route) => {
     if (await handleCorsIfPreflight(route)) return;
-    votePayloads.push(route.request().postDataJSON());
+    votePayloads.push({
+      authHeader: route.request().headers()["authorization"],
+      payload: route.request().postDataJSON(),
+    });
 
     await route.fulfill({
       status: 200,
@@ -203,7 +226,8 @@ test("submits tie votes with rubric tags and comment payload", async ({ page }) 
   await expect(page.getByText("Model A", { exact: true }).first()).toBeVisible();
 
   expect(votePayloads).toHaveLength(1);
-  const payload = votePayloads[0] as Record<string, unknown>;
+  expect(votePayloads[0]?.authHeader).toBe("Bearer vote-tie-access-token");
+  const payload = votePayloads[0]?.payload as Record<string, unknown>;
   expect(payload).toMatchObject({
     winner: "tie",
     comment: "Both outputs are strong in different dimensions.",
@@ -214,15 +238,19 @@ test("submits tie votes with rubric tags and comment payload", async ({ page }) 
 });
 
 test("shows conflict errors and allows retry with the same vote state", async ({ page }) => {
-  const votePayloads: unknown[] = [];
+  const votePayloads: Array<{ authHeader: string | undefined; payload: unknown }> = [];
   let submitCount = 0;
 
+  await mockAuthenticatedSession(page, "vote-conflict-access-token");
   await mockCompletedBattle(page, "battle-vote-conflict");
 
   await page.route(/\/api\/v1\/battles\/[^/]+\/vote$/, async (route) => {
     if (await handleCorsIfPreflight(route)) return;
     submitCount += 1;
-    votePayloads.push(route.request().postDataJSON());
+    votePayloads.push({
+      authHeader: route.request().headers()["authorization"],
+      payload: route.request().postDataJSON(),
+    });
 
     if (submitCount === 1) {
       await route.fulfill({
@@ -286,8 +314,10 @@ test("shows conflict errors and allows retry with the same vote state", async ({
   await expect(page.getByText(/Vote already submitted for this battle/)).toHaveCount(0);
 
   expect(votePayloads).toHaveLength(2);
-  const firstPayload = votePayloads[0] as Record<string, unknown>;
-  const secondPayload = votePayloads[1] as Record<string, unknown>;
+  expect(votePayloads[0]?.authHeader).toBe("Bearer vote-conflict-access-token");
+  expect(votePayloads[1]?.authHeader).toBe("Bearer vote-conflict-access-token");
+  const firstPayload = votePayloads[0]?.payload as Record<string, unknown>;
+  const secondPayload = votePayloads[1]?.payload as Record<string, unknown>;
 
   expect(firstPayload).toMatchObject({
     winner: "A",
@@ -305,15 +335,19 @@ test("shows conflict errors and allows retry with the same vote state", async ({
 });
 
 test("submits only once when users double-click submit under latency", async ({ page }) => {
-  const votePayloads: unknown[] = [];
+  const votePayloads: Array<{ authHeader: string | undefined; payload: unknown }> = [];
   let voteCallCount = 0;
 
+  await mockAuthenticatedSession(page, "vote-idempotent-access-token");
   await mockCompletedBattle(page, "battle-vote-idempotent");
 
   await page.route(/\/api\/v1\/battles\/[^/]+\/vote$/, async (route) => {
     if (await handleCorsIfPreflight(route)) return;
     voteCallCount += 1;
-    votePayloads.push(route.request().postDataJSON());
+    votePayloads.push({
+      authHeader: route.request().headers()["authorization"],
+      payload: route.request().postDataJSON(),
+    });
 
     await new Promise<void>((resolve) => {
       setTimeout(resolve, 250);
@@ -364,7 +398,8 @@ test("submits only once when users double-click submit under latency", async ({ 
 
   expect(voteCallCount).toBe(1);
   expect(votePayloads).toHaveLength(1);
-  expect(votePayloads[0]).toMatchObject({
+  expect(votePayloads[0]?.authHeader).toBe("Bearer vote-idempotent-access-token");
+  expect(votePayloads[0]?.payload).toMatchObject({
     winner: "A",
   });
 });
