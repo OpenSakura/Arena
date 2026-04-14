@@ -246,6 +246,10 @@ def configured_backend_env(
     monkeypatch.setenv("ANON_BATTLE_CREATE_RATE_LIMIT_WINDOW_SECONDS", "60")
     monkeypatch.setenv("ANON_VOTE_SUBMIT_RATE_LIMIT", "1")
     monkeypatch.setenv("ANON_VOTE_SUBMIT_RATE_LIMIT_WINDOW_SECONDS", "60")
+    monkeypatch.setenv("AUTH_BATTLE_CREATE_RATE_LIMIT", "1")
+    monkeypatch.setenv("AUTH_BATTLE_CREATE_RATE_LIMIT_WINDOW_SECONDS", "60")
+    monkeypatch.setenv("AUTH_VOTE_SUBMIT_RATE_LIMIT", "1")
+    monkeypatch.setenv("AUTH_VOTE_SUBMIT_RATE_LIMIT_WINDOW_SECONDS", "60")
 
     _reset_backend_singletons()
 

@@ -316,6 +316,12 @@ def test_create_model_encrypts_api_key_and_resolves_prompt_template(
     db = _ModelMutationDB(prompt_templates={template_id})
 
     monkeypatch.setattr(
+        admin_models.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [(None, None, None, None, ("8.8.8.8", 443))],
+    )
+
+    monkeypatch.setattr(
         admin_models, "_encrypt_api_key", lambda api_key: f"enc:{api_key}"
     )
     monkeypatch.setattr(

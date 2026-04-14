@@ -3,9 +3,10 @@
 Vote ingestion endpoints.
 
 Notes:
-- Anonymous voting is allowed; store an anonymous session id + hashed IP/UA.
-- Logged-in votes should additionally store `user_id` for higher-trust filtering
-  in offline processing.
+- Vote submission and reveal are authenticated-only operations.
+- Vote rows still keep the legacy anonymous/session identity fields so
+  authenticated callers can reconcile and upgrade older votes created before
+  this contract changed.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
-from app.core.security import Principal, get_principal_optional
+from app.core.security import Principal, get_principal_required
 from app.db.session import get_db
 from app.models.battle import Battle, Run
 from app.models.model_registry import Model
@@ -46,7 +47,7 @@ def submit_vote(
     request: Request,
     response: Response,
     db: Session = Depends(get_db),
-    principal: Principal = Depends(get_principal_optional),
+    principal: Principal = Depends(get_principal_required),
     settings: Settings = Depends(get_settings),
 ) -> VoteSubmitResponse:
     battle_uuid = parse_uuid_or_422(battle_id, "battle_id")
@@ -87,12 +88,11 @@ def submit_vote(
                 detail=f"Side {winner} has no rendered output",
             )
 
-    voter_user_id: uuid.UUID | None = None
-    if principal.is_authenticated and principal.user_id is not None:
-        voter_user_id = uuid.UUID(principal.user_id)
+    voter_user_id = uuid.UUID(principal.user_id)
 
-    # Always bind a stable anonymous session id so identity-mode switches
-    # (anonymous <-> logged-in) cannot create duplicate votes for a battle.
+    # Keep binding a stable anonymous session id even for authenticated voters
+    # so legacy anonymous votes can still be found and upgraded instead of
+    # creating duplicate rows for the same battle.
     voter_anon_id = get_or_set_anon_id(
         request=request,
         response=response,
@@ -155,18 +155,10 @@ def submit_vote(
             reveal=None,
         )
 
-    # By design: authenticated users have higher rate limits than anonymous.
-    # Turnstile verification is enforced at battle creation, not voting.
-    if voter_user_id is None:
-        _enforce_anon_vote_rate_limit(
-            request=request,
-            settings=settings,
-        )
-    else:
-        _enforce_auth_vote_rate_limit(
-            voter_user_id=voter_user_id,
-            settings=settings,
-        )
+    _enforce_auth_vote_rate_limit(
+        voter_user_id=voter_user_id,
+        settings=settings,
+    )
 
     vote = Vote(
         battle_id=battle_uuid,
@@ -232,7 +224,7 @@ def reveal_vote(
     request: Request,
     response: Response,
     db: Session = Depends(get_db),
-    principal: Principal = Depends(get_principal_optional),
+    principal: Principal = Depends(get_principal_required),
     settings: Settings = Depends(get_settings),
 ) -> VoteSubmitResponse:
     """Lock the vote and reveal model identities.
@@ -245,9 +237,7 @@ def reveal_vote(
     if battle is None:
         raise HTTPException(status_code=404, detail="Battle not found")
 
-    voter_user_id: uuid.UUID | None = None
-    if principal.is_authenticated and principal.user_id is not None:
-        voter_user_id = uuid.UUID(principal.user_id)
+    voter_user_id = uuid.UUID(principal.user_id)
 
     voter_anon_id = get_or_set_anon_id(
         request=request,

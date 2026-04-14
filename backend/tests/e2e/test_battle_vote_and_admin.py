@@ -238,6 +238,7 @@ def test_battle_stream_executes_and_persists_terminal_state(
     backend_client,
     db_session,
     monkeypatch: pytest.MonkeyPatch,
+    authentik_token: str,
 ) -> None:
     from app.services.llm_client import LLMClient, LLMStreamChunk
 
@@ -258,12 +259,18 @@ def test_battle_stream_executes_and_persists_terminal_state(
     suffix = uuid.uuid4().hex[:8]
     task, _, _ = _seed_task_and_models(db_session, suffix=suffix)
 
-    create = backend_client.post("/api/v1/battles", json={"task_id": str(task.id)})
+    auth_headers = {"Authorization": f"Bearer {authentik_token}"}
+
+    create = backend_client.post(
+        "/api/v1/battles",
+        headers=auth_headers,
+        json={"task_id": str(task.id)},
+    )
     assert create.status_code == 201
     battle_id = create.json()["id"]
 
     with backend_client.stream(
-        "GET", f"/api/v1/battles/{battle_id}/stream"
+        "GET", f"/api/v1/battles/{battle_id}/stream", headers=auth_headers
     ) as response:
         assert response.status_code == 200
         events = _parse_sse_events(response.iter_lines())
@@ -300,15 +307,19 @@ def test_battle_stream_executes_and_persists_terminal_state(
 def test_vote_pipeline_handles_idempotency_and_conflicts(
     backend_client,
     db_session,
+    authentik_token: str,
 ) -> None:
     suffix = uuid.uuid4().hex[:8]
     battle_id, model_a_id, model_b_id = _seed_completed_battle(
         db_session, suffix=suffix
     )
+    auth_headers = {"Authorization": f"Bearer {authentik_token}"}
 
     # Submit initial vote — returns reveal=null (vote is not yet revealed).
     first = backend_client.post(
-        f"/api/v1/battles/{battle_id}/vote", json={"winner": "A"}
+        f"/api/v1/battles/{battle_id}/vote",
+        headers=auth_headers,
+        json={"winner": "A"},
     )
     assert first.status_code == 201
     first_payload = first.json()
@@ -319,7 +330,9 @@ def test_vote_pipeline_handles_idempotency_and_conflicts(
 
     # Re-submitting with the same winner is idempotent.
     second = backend_client.post(
-        f"/api/v1/battles/{battle_id}/vote", json={"winner": "A"}
+        f"/api/v1/battles/{battle_id}/vote",
+        headers=auth_headers,
+        json={"winner": "A"},
     )
     assert second.status_code == 200
     second_payload = second.json()
@@ -330,6 +343,7 @@ def test_vote_pipeline_handles_idempotency_and_conflicts(
     # Changing winner BEFORE reveal is allowed (vote update).
     updated = backend_client.post(
         f"/api/v1/battles/{battle_id}/vote",
+        headers=auth_headers,
         json={"winner": "B"},
     )
     assert updated.status_code == 200
@@ -338,7 +352,10 @@ def test_vote_pipeline_handles_idempotency_and_conflicts(
     assert updated.json()["reveal"] is None
 
     # Reveal the vote — locks it and returns model identities.
-    reveal = backend_client.post(f"/api/v1/battles/{battle_id}/vote/reveal")
+    reveal = backend_client.post(
+        f"/api/v1/battles/{battle_id}/vote/reveal",
+        headers=auth_headers,
+    )
     assert reveal.status_code == 200
     reveal_payload = reveal.json()
     assert reveal_payload["vote_id"] == first_vote_id
@@ -349,6 +366,7 @@ def test_vote_pipeline_handles_idempotency_and_conflicts(
     # After reveal, changing winner is rejected.
     conflicting = backend_client.post(
         f"/api/v1/battles/{battle_id}/vote",
+        headers=auth_headers,
         json={"winner": "A"},
     )
     assert conflicting.status_code == 409
@@ -395,6 +413,7 @@ def test_battle_stream_vote_and_leaderboard_reflect_rating_updates(
     backend_client,
     db_session,
     monkeypatch: pytest.MonkeyPatch,
+    authentik_token: str,
 ) -> None:
     from app.services.llm_client import LLMClient, LLMStreamChunk
     from app.services.leaderboard_refresh import get_leaderboard_refresher
@@ -416,12 +435,18 @@ def test_battle_stream_vote_and_leaderboard_reflect_rating_updates(
     suffix = uuid.uuid4().hex[:8]
     task, _, _ = _seed_task_and_models(db_session, suffix=suffix)
 
-    create = backend_client.post("/api/v1/battles", json={"task_id": str(task.id)})
+    auth_headers = {"Authorization": f"Bearer {authentik_token}"}
+
+    create = backend_client.post(
+        "/api/v1/battles",
+        headers=auth_headers,
+        json={"task_id": str(task.id)},
+    )
     assert create.status_code == 201
     battle_id = create.json()["id"]
 
     with backend_client.stream(
-        "GET", f"/api/v1/battles/{battle_id}/stream"
+        "GET", f"/api/v1/battles/{battle_id}/stream", headers=auth_headers
     ) as stream_response:
         assert stream_response.status_code == 200
         events = _parse_sse_events(stream_response.iter_lines())
@@ -448,7 +473,9 @@ def test_battle_stream_vote_and_leaderboard_reflect_rating_updates(
     before_b_rating, before_b_games = _rating_snapshot(db_session, run_b.model_id)
 
     vote = backend_client.post(
-        f"/api/v1/battles/{battle_id}/vote", json={"winner": "A"}
+        f"/api/v1/battles/{battle_id}/vote",
+        headers=auth_headers,
+        json={"winner": "A"},
     )
     assert vote.status_code == 201
     vote_payload = vote.json()
@@ -456,7 +483,10 @@ def test_battle_stream_vote_and_leaderboard_reflect_rating_updates(
     assert vote_payload["reveal"] is None
 
     # Reveal models — locks the vote and returns model identities.
-    reveal = backend_client.post(f"/api/v1/battles/{battle_id}/vote/reveal")
+    reveal = backend_client.post(
+        f"/api/v1/battles/{battle_id}/vote/reveal",
+        headers=auth_headers,
+    )
     assert reveal.status_code == 200
     reveal_payload = reveal.json()
     assert reveal_payload["reveal"]["A"]["model_id"] == str(run_a.model_id)
@@ -481,7 +511,7 @@ def test_battle_stream_vote_and_leaderboard_reflect_rating_updates(
     assert row_b["rating"] < before_b_rating
 
 
-def test_turnstile_enforcement_for_anon_and_authenticated_battles(
+def test_battle_create_requires_authentication_even_when_turnstile_is_enabled(
     backend_client_with_turnstile_enabled,
     db_session,
     monkeypatch: pytest.MonkeyPatch,
@@ -521,31 +551,27 @@ def test_turnstile_enforcement_for_anon_and_authenticated_battles(
         battles_route, "_get_turnstile_http_client", lambda: _FakeTurnstileClient()
     )
 
-    # 1. Anonymous battle creation without token → 400
+    # 1. Unauthenticated battle creation is rejected before Turnstile runs.
     missing_token = backend_client_with_turnstile_enabled.post(
         "/api/v1/battles",
         headers={"User-Agent": "arena-e2e-turnstile-missing"},
         json={},
     )
-    assert missing_token.status_code == 400
-    assert missing_token.json()["detail"] == "Missing Turnstile token"
+    assert missing_token.status_code == 401
+    assert missing_token.json()["detail"] == "Authentication required"
     assert verification_calls == []
 
-    # 2. Anonymous battle creation with valid token → success
+    # 2. Turnstile still does not rescue unauthenticated callers.
     valid_token = backend_client_with_turnstile_enabled.post(
         "/api/v1/battles",
         headers={"User-Agent": "arena-e2e-turnstile-valid"},
         json={"turnstile_token": "valid-turnstile-token"},
     )
-    assert valid_token.status_code == 201
-    assert len(verification_calls) == 1
-    assert verification_calls[0]["url"] == "https://turnstile.example/siteverify"
-    call_data = verification_calls[0]["data"]
-    assert isinstance(call_data, dict)
-    assert call_data["secret"] == "arena-e2e-turnstile-secret"
-    assert call_data["response"] == "valid-turnstile-token"
+    assert valid_token.status_code == 401
+    assert valid_token.json()["detail"] == "Authentication required"
+    assert verification_calls == []
 
-    # 3. Authenticated battle creation → Turnstile verification skipped
+    # 3. Authenticated battle creation still skips Turnstile verification.
     def fail_if_called():
         raise AssertionError(
             "Turnstile verification must be skipped for authenticated battles"

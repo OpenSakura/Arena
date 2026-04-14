@@ -3,8 +3,9 @@
 Vote table.
 
 Notes:
-- Anonymous voting is allowed. Store anonymous identifiers + hashed IP/UA for
-  abuse detection.
+- Vote mutations are authenticated-only.
+- Store legacy anonymous identifiers + hashed IP/UA so authenticated callers can
+  still reconcile and upgrade older vote rows without a schema change.
 - Logged-in users additionally store `voter_user_id`.
 """
 

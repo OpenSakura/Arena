@@ -21,6 +21,10 @@ from app.utils.requester_identity import (
 )
 
 
+def _authenticated_principal() -> Principal:
+    return Principal(is_authenticated=True, user_id=str(uuid.uuid4()))
+
+
 def _request(
     *,
     ip: str = "127.0.0.1",
@@ -458,7 +462,7 @@ def test_submit_vote_rejects_invalid_battle_id() -> None:
             request=_request(),
             response=Response(),
             db=db,  # type: ignore[arg-type]
-            principal=Principal(is_authenticated=False),
+            principal=_authenticated_principal(),
             settings=_settings(),  # type: ignore[arg-type]
         )
 
@@ -476,7 +480,7 @@ def test_submit_vote_returns_404_when_battle_is_missing() -> None:
             request=_request(),
             response=Response(),
             db=db,  # type: ignore[arg-type]
-            principal=Principal(is_authenticated=False),
+            principal=_authenticated_principal(),
             settings=_settings(),  # type: ignore[arg-type]
         )
 
@@ -495,7 +499,7 @@ def test_submit_vote_rejects_battle_not_ready_for_voting() -> None:
             request=_request(),
             response=Response(),
             db=db,  # type: ignore[arg-type]
-            principal=Principal(is_authenticated=False),
+            principal=_authenticated_principal(),
             settings=_settings(),  # type: ignore[arg-type]
         )
 
@@ -514,7 +518,7 @@ def test_submit_vote_rejects_battle_without_both_runs() -> None:
             request=_request(),
             response=Response(),
             db=db,  # type: ignore[arg-type]
-            principal=Principal(is_authenticated=False),
+            principal=_authenticated_principal(),
             settings=_settings(),  # type: ignore[arg-type]
         )
 
@@ -527,6 +531,7 @@ def test_submit_vote_returns_existing_vote_response(
 ) -> None:
     battle, runs, model_a_id, model_b_id = _battle_and_runs()
     db = _VoteDB(battle=battle, runs=runs)
+    principal = _authenticated_principal()
     existing_vote = SimpleNamespace(
         id=uuid.uuid4(),
         winner="A",
@@ -555,7 +560,7 @@ def test_submit_vote_returns_existing_vote_response(
     monkeypatch.setattr(votes, "find_existing_battle_vote", fake_find)
     monkeypatch.setattr(
         votes,
-        "_enforce_anon_vote_rate_limit",
+        "_enforce_auth_vote_rate_limit",
         lambda **_kwargs: pytest.fail("Rate-limit checks should not run"),
     )
 
@@ -565,7 +570,7 @@ def test_submit_vote_returns_existing_vote_response(
         request=_request(),
         response=Response(),
         db=db,  # type: ignore[arg-type]
-        principal=Principal(is_authenticated=False),
+        principal=principal,
         settings=_settings(),  # type: ignore[arg-type]
     )
 
@@ -575,7 +580,7 @@ def test_submit_vote_returns_existing_vote_response(
     assert captured["battle_id"] == battle.id
     requester_identity = captured["requester_identity"]
     assert isinstance(requester_identity, RequesterIdentity)
-    assert requester_identity.voter_user_id is None
+    assert requester_identity.voter_user_id == uuid.UUID(principal.user_id)
     assert requester_identity.voter_anon_id == "anon-1"
     assert (
         requester_identity.ip_hash == hashlib.sha256(b"ip-salt|127.0.0.1").hexdigest()
@@ -617,7 +622,7 @@ def test_submit_vote_rejects_conflicting_existing_vote(
             request=_request(),
             response=Response(),
             db=db,  # type: ignore[arg-type]
-            principal=Principal(is_authenticated=False),
+            principal=_authenticated_principal(),
             settings=_settings(),  # type: ignore[arg-type]
         )
 
@@ -625,11 +630,12 @@ def test_submit_vote_rejects_conflicting_existing_vote(
     assert exc_info.value.detail == "Vote already revealed and cannot be changed"
 
 
-def test_submit_vote_anonymous_path_updates_ratings_and_records_vote(
+def test_submit_vote_authenticated_path_records_vote_and_uses_auth_rate_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     battle, runs, model_a_id, model_b_id = _battle_and_runs()
     db = _VoteDB(battle=battle, runs=runs)
+    principal = _authenticated_principal()
     settings = _settings(
         anon_ip_hash_salt="ip-salt", anon_user_agent_hash_salt="ua-salt"
     )
@@ -643,7 +649,7 @@ def test_submit_vote_anonymous_path_updates_ratings_and_records_vote(
     )
     monkeypatch.setattr(
         votes,
-        "_enforce_anon_vote_rate_limit",
+        "_enforce_auth_vote_rate_limit",
         lambda **_kwargs: calls.__setitem__("rate_limit", True),
     )
 
@@ -653,7 +659,7 @@ def test_submit_vote_anonymous_path_updates_ratings_and_records_vote(
         request=_request(ip="10.0.0.8", user_agent="arena-agent"),
         response=Response(),
         db=db,  # type: ignore[arg-type]
-        principal=Principal(is_authenticated=False),
+        principal=principal,
         settings=settings,  # type: ignore[arg-type]
     )
 
@@ -667,7 +673,7 @@ def test_submit_vote_anonymous_path_updates_ratings_and_records_vote(
     assert db.rollback_calls == 0
 
     vote_row = next(row for row in db.added if isinstance(row, Vote))
-    assert vote_row.voter_user_id is None
+    assert vote_row.voter_user_id == uuid.UUID(principal.user_id)
     assert vote_row.voter_anon_id == "anon-1"
     assert vote_row.ip_hash == hashlib.sha256(b"ip-salt|10.0.0.8").hexdigest()
     assert (
@@ -690,8 +696,8 @@ def test_submit_vote_authenticated_path_skips_anonymous_guards(
     )
     monkeypatch.setattr(
         votes,
-        "_enforce_anon_vote_rate_limit",
-        lambda **_kwargs: pytest.fail("Rate-limit checks should be skipped"),
+        "_enforce_auth_vote_rate_limit",
+        lambda **_kwargs: None,
     )
 
     response = votes.submit_vote(
@@ -736,8 +742,8 @@ def test_submit_vote_upgrades_existing_anonymous_vote_when_user_logs_in(
     )
     monkeypatch.setattr(
         votes,
-        "_enforce_anon_vote_rate_limit",
-        lambda **_kwargs: pytest.fail("Rate-limit checks should be skipped"),
+        "_enforce_auth_vote_rate_limit",
+        lambda **_kwargs: None,
     )
 
     response = votes.submit_vote(
@@ -823,7 +829,7 @@ def test_submit_vote_resolves_duplicate_conflict_after_flush_error(
         "find_existing_battle_vote",
         lambda *_args, **_kwargs: None,
     )
-    monkeypatch.setattr(votes, "_enforce_anon_vote_rate_limit", lambda **_kwargs: None)
+    monkeypatch.setattr(votes, "_enforce_auth_vote_rate_limit", lambda **_kwargs: None)
 
     expected = _vote_submit_response(
         vote_id=uuid.uuid4(),
@@ -844,7 +850,7 @@ def test_submit_vote_resolves_duplicate_conflict_after_flush_error(
         request=_request(),
         response=Response(),
         db=db,  # type: ignore[arg-type]
-        principal=Principal(is_authenticated=False),
+        principal=_authenticated_principal(),
         settings=_settings(),  # type: ignore[arg-type]
     )
 
@@ -872,7 +878,7 @@ def test_submit_vote_resolves_duplicate_conflict_after_commit_error(
         "find_existing_battle_vote",
         lambda *_args, **_kwargs: None,
     )
-    monkeypatch.setattr(votes, "_enforce_anon_vote_rate_limit", lambda **_kwargs: None)
+    monkeypatch.setattr(votes, "_enforce_auth_vote_rate_limit", lambda **_kwargs: None)
 
     expected = _vote_submit_response(
         vote_id=uuid.uuid4(),
@@ -893,7 +899,7 @@ def test_submit_vote_resolves_duplicate_conflict_after_commit_error(
         request=_request(),
         response=Response(),
         db=db,  # type: ignore[arg-type]
-        principal=Principal(is_authenticated=False),
+        principal=_authenticated_principal(),
         settings=_settings(),  # type: ignore[arg-type]
     )
 
@@ -1093,11 +1099,12 @@ def test_submit_vote_anon_first_then_auth_backfills_identity(
 def test_submit_vote_auth_first_found_via_shared_lookup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Authenticated vote exists; anonymous resubmit from same fingerprint
-    should find it via the shared precedence chain (fingerprint tier)."""
+    """Authenticated vote lookup should still include the caller's user id in
+    the shared requester identity contract."""
     battle, runs, _, _ = _battle_and_runs()
     db = _VoteDB(battle=battle, runs=runs)
     user_id = uuid.uuid4()
+    principal = Principal(is_authenticated=True, user_id=str(user_id))
 
     existing_vote = Vote(
         battle_id=battle.id,
@@ -1126,12 +1133,12 @@ def test_submit_vote_auth_first_found_via_shared_lookup(
         request=_request(),
         response=Response(),
         db=db,  # type: ignore[arg-type]
-        principal=Principal(is_authenticated=False),
+        principal=principal,
         settings=_settings(),  # type: ignore[arg-type]
     )
 
     assert response.vote_id == str(existing_vote.id)
-    assert captured_identity[0].voter_user_id is None
+    assert captured_identity[0].voter_user_id == user_id
     assert existing_vote.voter_user_id == user_id
 
 
@@ -1190,10 +1197,11 @@ def test_reveal_after_identity_upgrade(
 def test_reveal_upgrades_anonymous_vote_identity_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Anonymous vote with missing fingerprint fields gets them back-filled
-    during reveal when the requester has them."""
+    """A legacy vote with missing fingerprint fields gets them back-filled
+    during reveal by an authenticated requester."""
     battle, runs, model_a_id, model_b_id = _battle_and_runs()
     db = _VoteDB(battle=battle, runs=runs)
+    principal = _authenticated_principal()
 
     existing_vote = Vote(
         battle_id=battle.id,
@@ -1228,7 +1236,7 @@ def test_reveal_upgrades_anonymous_vote_identity_fields(
         request=_request(),
         response=Response(),
         db=db,  # type: ignore[arg-type]
-        principal=Principal(is_authenticated=False),
+        principal=principal,
         settings=_settings(),  # type: ignore[arg-type]
     )
 
@@ -1273,7 +1281,7 @@ def test_duplicate_conflict_recovery_applies_identity_upgrade(
 
     monkeypatch.setattr(votes, "get_or_set_anon_id", lambda **_kwargs: "anon-1")
     monkeypatch.setattr(votes, "find_existing_battle_vote", fake_find)
-    monkeypatch.setattr(votes, "_enforce_anon_vote_rate_limit", lambda **_kwargs: None)
+    monkeypatch.setattr(votes, "_enforce_auth_vote_rate_limit", lambda **_kwargs: None)
 
     response = votes.submit_vote(
         battle_id=str(battle.id),
@@ -1559,7 +1567,7 @@ def test_rejects_vote_for_missing_side(
             request=_request(),
             response=Response(),
             db=db,  # type: ignore[arg-type]
-            principal=Principal(is_authenticated=False),
+            principal=_authenticated_principal(),
             settings=_settings(),  # type: ignore[arg-type]
         )
 
@@ -1588,7 +1596,7 @@ def test_submit_vote_ip_fallback_does_not_overmatch_fingerprinted_row(
 
     monkeypatch.setattr(votes, "get_or_set_anon_id", lambda **_kwargs: "anon-1")
     monkeypatch.setattr(votes, "find_existing_battle_vote", fake_find)
-    monkeypatch.setattr(votes, "_enforce_anon_vote_rate_limit", lambda **_kwargs: None)
+    monkeypatch.setattr(votes, "_enforce_auth_vote_rate_limit", lambda **_kwargs: None)
 
     votes.submit_vote(
         battle_id=str(battle.id),
@@ -1596,7 +1604,7 @@ def test_submit_vote_ip_fallback_does_not_overmatch_fingerprinted_row(
         request=_request(ip="10.0.0.1", user_agent="browser-X"),
         response=Response(),
         db=db,  # type: ignore[arg-type]
-        principal=Principal(is_authenticated=False),
+        principal=_authenticated_principal(),
         settings=_settings(),  # type: ignore[arg-type]
     )
 

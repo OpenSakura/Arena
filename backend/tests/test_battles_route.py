@@ -719,12 +719,14 @@ def test_retry_battle_returns_404_for_missing_battle() -> None:
             return _Result([])
 
     db = _MissingRetryDB()
+    principal, _battle = _creator_principal_and_battle(status="failed")
 
     with pytest.raises(HTTPException) as exc_info:
         battles.retry_battle(
             str(uuid.uuid4()),
             request=_request(),
             db=db,  # type: ignore[arg-type]
+            principal=principal,
         )
 
     assert exc_info.value.status_code == 404
@@ -935,17 +937,10 @@ def test_turnstile_failure_does_not_consume_rate_limit_slot(
     assert limit_checked == [], "rate limiter must not be called before Turnstile check"
 
 
-def test_create_battle_anon_id_stored_from_get_or_set_return_value(
+def test_create_battle_records_authenticated_requester_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fresh_anon_id = uuid.uuid4().hex
-
-    def fake_get_or_set_anon_id(**_kwargs: object) -> str:
-        return fresh_anon_id
-
-    monkeypatch.setattr(battles, "get_or_set_anon_id", fake_get_or_set_anon_id)
-    monkeypatch.setattr(battles, "_verify_turnstile_or_raise", lambda **_kw: None)
-    monkeypatch.setattr(battles, "_enforce_anon_battle_rate_limit", lambda **_kw: None)
+    monkeypatch.setattr(battles, "_enforce_auth_battle_rate_limit", lambda **_kw: None)
     monkeypatch.setattr(battles, "_enforce_daily_vote_cap", lambda **_kw: None)
 
     task = _task()
@@ -976,7 +971,7 @@ def test_create_battle_anon_id_stored_from_get_or_set_return_value(
             if isinstance(obj, Battle):
                 obj.id = uuid.uuid4()
 
-    principal = SimpleNamespace(is_authenticated=False, user_id=None)
+    principal = SimpleNamespace(is_authenticated=True, user_id=str(uuid.uuid4()))
     request = _request()
     response_obj = SimpleNamespace(set_cookie=lambda **_kw: None)
     settings = cast(Settings, _settings(anon_id_cookie_secure=False))
@@ -992,8 +987,5 @@ def test_create_battle_anon_id_stored_from_get_or_set_return_value(
 
     battles_added = [o for o in added_objects if isinstance(o, Battle)]
     assert len(battles_added) == 1
-    stored_anon_id = battles_added[0].metadata_json["requester_anon_id"]
-    assert stored_anon_id == fresh_anon_id, (
-        "requester_anon_id must come from get_or_set_anon_id return value, "
-        "not request.cookies (which would be None for a brand-new cookie)"
-    )
+    assert battles_added[0].metadata_json["requester_user_id"] == principal.user_id
+    assert battles_added[0].metadata_json["requester_anon_id"] is None

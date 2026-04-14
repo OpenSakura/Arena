@@ -331,6 +331,18 @@ def test_require_admin_rejects_unauthenticated_principal() -> None:
     assert exc_info.value.status_code == 401
 
 
+def test_get_principal_required_rejects_unauthenticated_principal() -> None:
+    with pytest.raises(HTTPException, match="Authentication required") as exc_info:
+        security.get_principal_required(security.Principal(is_authenticated=False))
+
+    assert exc_info.value.status_code == 401
+
+
+def test_get_principal_required_returns_authenticated_principal() -> None:
+    principal = security.Principal(is_authenticated=True, user_id=str(uuid.uuid4()))
+    assert security.get_principal_required(principal) is principal
+
+
 def test_require_admin_rejects_principal_without_group(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

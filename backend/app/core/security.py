@@ -4,8 +4,9 @@ Security primitives (OIDC bearer tokens, principals, role checks).
 
 Notes:
 - This project integrates with Authentik via standard OAuth2/OIDC.
-- Anonymous use is allowed; most endpoints should accept missing/invalid tokens
-  and treat the requester as unauthenticated.
+- Public read endpoints may accept missing/invalid tokens and treat the
+  requester as unauthenticated.
+- Authenticated-only endpoints should depend on ``get_principal_required``.
 - Admin endpoints must enforce authorization based on OIDC claims (e.g. groups).
 """
 
@@ -145,6 +146,17 @@ async def get_principal_optional(
         oidc_sub=user.oidc_sub,
         claims=claims,
     )
+
+
+def get_principal_required(
+    principal: Principal = Depends(get_principal_optional),
+) -> Principal:
+    """Dependency that requires an authenticated requester."""
+
+    if not principal.is_authenticated or principal.user_id is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    return principal
 
 
 def require_admin(principal: Principal = Depends(get_principal_optional)) -> Principal:

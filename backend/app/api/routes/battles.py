@@ -7,7 +7,7 @@ Notes:
 - Streaming should be done via SSE so the UI can display partial outputs.
 - Live execution assumes a single API worker/process owns the cached
   ``BattleOrchestrator`` singleton; additional stream consumers are observers.
-- Anonymous users can create battles; authenticated users enrich audit logs.
+- Battle creation and retry are authenticated-only operations.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from app.core.security import (
     Principal,
     claim_by_path,
     get_principal_optional,
+    get_principal_required,
     normalize_groups,
     require_admin,
 )
@@ -61,41 +62,16 @@ def create_battle(
     request: Request,
     response: Response,
     db: Session = Depends(get_db),
-    principal: Principal = Depends(get_principal_optional),
+    principal: Principal = Depends(get_principal_required),
     settings: Settings = Depends(get_settings),
 ) -> BattlePublic:
-    # By design: authenticated users are trusted with higher rate limits.
-    # Only anonymous users are subject to Turnstile verification.
-    #
-    # Order matters for anonymous users:
-    # 1. Issue / read the anon cookie first so we have an identity for the
-    #    battle record even when the cookie is brand-new (not yet in
-    #    request.cookies).
-    # 2. Verify Turnstile *before* incrementing the rate-limit counter so that
-    #    a missing or invalid token does not consume the caller's rate-limit
-    #    slot.
-    # 3. Only then enforce the rate limit.
+    _ = (request, response)
     anon_id: str | None = None
-    if not principal.is_authenticated:
-        anon_id = get_or_set_anon_id(
-            request=request,
-            response=response,
-            secure=settings.anon_id_cookie_secure,
-        )
-        _verify_turnstile_or_raise(
-            turnstile_token=payload.turnstile_token,
-            request=request,
-            settings=settings,
-        )
-        _enforce_anon_battle_rate_limit(
-            request=request,
-            settings=settings,
-        )
-    else:
-        _enforce_auth_battle_rate_limit(
-            principal=principal,
-            settings=settings,
-        )
+
+    _enforce_auth_battle_rate_limit(
+        principal=principal,
+        settings=settings,
+    )
 
     # Block battle creation when the daily vote cap is reached, to prevent
     # wasting LLM inference on battles whose votes would be silently excluded
@@ -272,7 +248,7 @@ def retry_battle(
     battle_id: str,
     request: Request,
     db: Session = Depends(get_db),
-    principal: Principal = Depends(get_principal_optional),
+    principal: Principal = Depends(get_principal_required),
 ) -> BattlePublic:
     """Reset a failed, unvoted battle to pending so it can be re-executed.
 
@@ -281,7 +257,7 @@ def retry_battle(
     SSE stream connection will re-execute both runs from scratch under the
     single-owner execution model.
 
-    Allowed for both the battle creator and admins.
+    Allowed for the authenticated battle creator and admins.
     """
     battle_uuid = parse_uuid_or_422(battle_id, "battle_id")
     battle = db.execute(
