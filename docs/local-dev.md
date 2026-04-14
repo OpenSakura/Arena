@@ -55,9 +55,6 @@ Notes:
 - Set `RATE_LIMIT_REDIS_URL=redis://localhost:6379/0` to enable Redis-backed
   throttling and shared caching. If unset, rate limits and the shared
   confidence-interval cache are disabled.
-- Set `ANON_ID_COOKIE_SECURE=false` for local HTTP development (the default in
-  `.env.example`); in production this must be `true`. This cookie is a legacy
-  mechanism retained for backward compatibility with older vote records.
 - Cloudflare Turnstile can optionally be enabled as an extra anti-abuse layer
   by setting `TURNSTILE_SECRET_KEY` in the backend. Battle creation requires
   authentication regardless of Turnstile configuration. Leave it empty to
@@ -99,7 +96,6 @@ Recommended workflow:
 1. Configure Authentik OIDC and admin group claim.
 2. Login in the UI.
 3. Use the admin pages:
-   - `http://localhost:3000/admin/prompts`
    - `http://localhost:3000/admin/models`
    - `http://localhost:3000/admin/tasks`
 

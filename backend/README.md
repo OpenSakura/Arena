@@ -19,7 +19,7 @@ Notes:
   owned battle task exceeds this wall-clock limit the battle is force-failed.
 - Leaderboard ratings are periodically refreshed in a background job
   (`LEADERBOARD_REFRESH_*`) and can be inspected/refreshed via admin endpoints.
-- `/leaderboard` supports `method=elo` (default) and `method=bt`.
+- `/leaderboard` supports `method=bt` (default) and `method=elo`.
   Bradley-Terry confidence intervals can be enabled via
   `include_confidence=true`.
 - Request correlation IDs are accepted via `X-Request-ID` (or generated when
@@ -28,10 +28,6 @@ Notes:
   JSON via `LOG_JSON=true` for easier ingestion.
 - Redis-backed throttling and shared caching use `RATE_LIMIT_REDIS_URL`; leaving
   it unset disables rate limits and the shared confidence-interval result cache.
-- Legacy anonymous identity cookies use `anon_id_cookie_secure=True` by
-  default. Set `ANON_ID_COOKIE_SECURE=false` only for local HTTP development.
-  These cookies are retained for backward compatibility with older vote records
-  but are not required for the current authenticated-only flow.
 - Cloudflare Turnstile (`TURNSTILE_SECRET_KEY`) can still be enabled as an
   extra anti-abuse layer, but it is no longer the primary gate for battle
   creation. All battle creation now requires authentication.

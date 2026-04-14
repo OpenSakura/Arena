@@ -32,11 +32,7 @@ suitable for testing or low-concurrency environments.
 
 Key construction
 ~~~~~~~~~~~~~~~~
-``build_anon_rate_limit_key`` builds a stable per-identity key from the
-client IP and a ``scope`` string.  It intentionally excludes User-Agent to
-prevent trivial bucket multiplication by rotating UA strings.  It also
-excludes client-provided cookie values so callers cannot bypass throttles
-by cycling cookies.
+Authenticated write paths use stable keys derived from the internal user UUID.
 """
 
 from __future__ import annotations
@@ -45,10 +41,6 @@ import hashlib
 import logging
 import time
 from typing import Callable
-
-from fastapi import Request
-
-from app.utils.client_ip import get_client_ip
 
 logger = logging.getLogger(__name__)
 
@@ -281,51 +273,6 @@ class RollingWindowRateLimiter:
 
     def _redis_bucket_key(self, *, key: str, bucket: int) -> str:
         return f"{self._redis_prefix}:ratelimit:{key}:{bucket}"
-
-
-def build_anon_rate_limit_key(
-    *,
-    scope: str,
-    request: Request,
-    trust_x_forwarded_for: bool = False,
-    ip_hash_salt: str = "",
-) -> str:
-    """Build a stable anonymous rate-limit key from the client IP.
-
-    The key is derived from ``scope`` + SHA-256(salt|client_ip).  It
-    intentionally **excludes**:
-
-    * **User-Agent** — including it would let attackers multiply their
-      effective rate limit by rotating User-Agent strings on each request.
-    * **Cookie values** — including them would let callers bypass throttles
-      by cycling cookie values.
-
-    Parameters
-    ----------
-    trust_x_forwarded_for:
-        When ``True``, ``X-Forwarded-For`` is preferred over
-        ``request.client.host``.  **Must only be enabled when the app
-        runs behind a trusted reverse proxy** that overwrites this
-        header (or sets Cloudflare's ``CF-Connecting-IP``); otherwise an
-        attacker can spoof it with any IP to get a fresh rate-limit
-        bucket.
-    ip_hash_salt:
-        Salt mixed into the IP hash to prevent rainbow-table attacks.
-    """
-
-    # WARNING: only trust forwarded headers behind a trusted proxy.
-    ip = get_client_ip(request, trust_x_forwarded_for=trust_x_forwarded_for) or ""
-
-    if not ip:
-        # When the client IP cannot be determined (e.g. Unix-socket proxy
-        # without X-Forwarded-For), use a shared sentinel key so all
-        # unknown clients share a single rate-limit bucket.  This fails
-        # closed — a burst from unknown clients is throttled — rather than
-        # giving each request a fresh bucket (which would bypass the limit).
-        ip = "__unknown_shared"
-
-    fingerprint = hashlib.sha256(f"{ip_hash_salt}|{ip}".encode("utf-8")).hexdigest()
-    return f"{scope}:{fingerprint}"
 
 
 def build_auth_rate_limit_key(*, scope: str, user_id: str) -> str:

@@ -3,7 +3,6 @@
 Bradley-Terry leaderboard helpers with optional bootstrap confidence intervals.
 
 Notes:
-- Elo remains the default leaderboard path for backward compatibility.
 - This module is pure and DB-agnostic so it is easy to test.
 """
 

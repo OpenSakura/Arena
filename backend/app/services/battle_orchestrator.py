@@ -33,16 +33,19 @@ from app.core.crypto import decrypt_secret
 from app.db.session import get_sessionmaker
 from app.models.battle import Battle, Run
 from app.models.model_registry import Model
-from app.models.prompt_template import PromptTemplate
 from app.models.task import Task
 from app.services.llm_client import LLMClient
-from app.services.prompting import build_chat_messages, render_prompt_template
+from app.services.prompting import (
+    build_chat_messages,
+    normalize_optional_prompt_text,
+    render_prompt_template,
+)
 from app.utils.sse import sse_event
 
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a professional literary translator. "
-    "Translate the user input from {source_lang} to {target_lang} while preserving tone, nuance, "
+    "Translate the user input from {{ source_lang }} to {{ target_lang }} while preserving tone, nuance, "
     "style, and character voice."
 )
 
@@ -714,13 +717,17 @@ class BattleOrchestrator:
                     raise RuntimeError(f"Model not found for run: {run.id}")
 
                 system_prompt = self._build_system_prompt(
-                    db=db,
                     model=model,
                     source_text=source_text,
                     source_lang=source_lang,
                     target_lang=target_lang,
                 )
-                user_prompt = source_text
+                user_prompt = self._build_user_prompt(
+                    model=model,
+                    source_text=source_text,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
                 messages = build_chat_messages(
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
@@ -735,16 +742,11 @@ class BattleOrchestrator:
                     "stream": True,
                     **params,
                 }
-                prompt_rendered = {
+                prompt_rendered: dict[str, object] = {
                     "system_prompt": system_prompt,
                     "user_prompt": user_prompt,
                     "source_lang": source_lang,
                     "target_lang": target_lang,
-                    "prompt_template_id": (
-                        str(model.prompt_template_id)
-                        if model.prompt_template_id is not None
-                        else None
-                    ),
                 }
 
                 api_key = (
@@ -780,39 +782,51 @@ class BattleOrchestrator:
     def _build_system_prompt(
         self,
         *,
-        db: Session,
         model: Model,
         source_text: str,
         source_lang: str,
         target_lang: str,
     ) -> str:
-        if model.prompt_template_id is not None:
-            template = db.get(PromptTemplate, model.prompt_template_id)
-            if template is None:
-                raise RuntimeError(
-                    f"Prompt template {model.prompt_template_id} not found for model {model.id}"
-                )
-            rendered = render_prompt_template(
-                template.template_text,
-                {
-                    "source_text": source_text,
-                    "source_lang": source_lang,
-                    "target_lang": target_lang,
-                },
-            )
-            return rendered
-
-        # Use Template.safe_substitute to avoid crashes if language names
-        # happen to contain Python format specifiers like {0} or {__class__}.
-        from string import Template as _StrTemplate
-
-        default_prompt = _StrTemplate(
-            DEFAULT_SYSTEM_PROMPT.replace("{", "${")
-        ).safe_substitute(
+        prompt_inputs = self._build_prompt_inputs(
+            source_text=source_text,
             source_lang=source_lang,
             target_lang=target_lang,
         )
-        return default_prompt
+        prompt_template = normalize_optional_prompt_text(model.system_prompt)
+        if prompt_template is None:
+            return render_prompt_template(DEFAULT_SYSTEM_PROMPT, prompt_inputs)
+        return render_prompt_template(prompt_template, prompt_inputs)
+
+    def _build_user_prompt(
+        self,
+        *,
+        model: Model,
+        source_text: str,
+        source_lang: str,
+        target_lang: str,
+    ) -> str:
+        prompt_inputs = self._build_prompt_inputs(
+            source_text=source_text,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        prompt_template = normalize_optional_prompt_text(model.user_prompt)
+        if prompt_template is None:
+            return source_text
+        return render_prompt_template(prompt_template, prompt_inputs)
+
+    @staticmethod
+    def _build_prompt_inputs(
+        *,
+        source_text: str,
+        source_lang: str,
+        target_lang: str,
+    ) -> dict[str, str]:
+        return {
+            "source_text": source_text,
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+        }
 
     @staticmethod
     def _build_model_params(model: Model) -> dict[str, object]:

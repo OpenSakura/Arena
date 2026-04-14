@@ -5,9 +5,9 @@ Small helper for encrypting/decrypting secrets stored in Postgres.
 Notes:
 - The MVP stores encrypted provider API keys in Postgres.
 - The master key comes from env var `ARENA_MASTER_KEY`.
-- Supports key rotation via MultiFernet: set `ARENA_MASTER_KEY` to the new key
-  and `ARENA_MASTER_KEY_OLD` (optional) to the previous key.  New encryptions
-  use the new key; decryptions try new key first, then fall back to old.
+- Set `ARENA_MASTER_KEY_OLD` during key rotation so existing secrets
+  (encrypted under the old key) can still be decrypted while new secrets
+  are always encrypted under the current key.
 """
 
 from __future__ import annotations
@@ -29,20 +29,19 @@ def _get_fernet() -> MultiFernet:
     if not settings.arena_master_key:
         raise RuntimeError("ARENA_MASTER_KEY is not set")
     try:
-        keys = [Fernet(settings.arena_master_key)]
+        current = Fernet(settings.arena_master_key)
     except (TypeError, ValueError) as exc:
         raise RuntimeError("ARENA_MASTER_KEY is invalid Fernet key") from exc
 
-    # Support key rotation: if an old key is configured, add it as a fallback
-    # for decrypting secrets encrypted with the previous key.
-    old_key = settings.arena_master_key_old or ""
-    if old_key:
-        try:
-            keys.append(Fernet(old_key))
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError("ARENA_MASTER_KEY_OLD is invalid Fernet key") from exc
+    if not settings.arena_master_key_old:
+        return MultiFernet([current])
 
-    return MultiFernet(keys)
+    try:
+        old = Fernet(settings.arena_master_key_old)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("ARENA_MASTER_KEY_OLD is invalid Fernet key") from exc
+
+    return MultiFernet([current, old])
 
 
 def reset_fernet() -> None:
@@ -62,7 +61,6 @@ def decrypt_secret(token: str) -> str:
         plaintext = f.decrypt(token.encode("ascii"))
     except InvalidToken as exc:
         raise SecretDecryptionError(
-            "Failed to decrypt secret — the master key may have been rotated "
-            "without configuring the old key as a fallback"
+            "Failed to decrypt secret — the master key may have changed"
         ) from exc
     return plaintext.decode("utf-8")

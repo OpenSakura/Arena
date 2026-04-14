@@ -9,8 +9,8 @@ import jwt
 import pytest
 from sqlalchemy import select
 
-from app.api.routes.battles import _get_battle_create_rate_limiter
-from app.api.routes.votes import _get_vote_submit_rate_limiter
+from app.api.routes.battles import _get_auth_battle_create_rate_limiter
+from app.api.routes.votes import _get_auth_vote_submit_rate_limiter
 from app.core.config import get_settings
 from app.models.battle import Battle, Run
 from app.models.model_registry import Model
@@ -162,8 +162,8 @@ def _reset_backend_singletons() -> None:
     get_settings.cache_clear()
     get_oidc_verifier.cache_clear()
     get_rate_limit_redis_client.cache_clear()
-    _get_battle_create_rate_limiter.cache_clear()
-    _get_vote_submit_rate_limiter.cache_clear()
+    _get_auth_battle_create_rate_limiter.cache_clear()
+    _get_auth_vote_submit_rate_limiter.cache_clear()
     session_module._engine = None
     session_module._SessionLocal = None
 

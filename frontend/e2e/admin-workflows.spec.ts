@@ -13,22 +13,14 @@ type AdminModel = {
   temperature: number | null;
   frequency_penalty: number | null;
   presence_penalty: number | null;
+  system_prompt: string | null;
+  user_prompt: string | null;
   params: Record<string, unknown> | null;
-  prompt_template_id: string | null;
   has_api_key: boolean;
   created_at: string;
   updated_at: string;
 };
 
-type PromptTemplate = {
-  id: string;
-  name: string;
-  version: number;
-  template_text: string;
-  input_schema: Record<string, unknown> | null;
-  content_hash: string;
-  created_at: string;
-};
 
 type AdminTaskSet = {
   id: string;
@@ -98,8 +90,9 @@ function modelRecord(overrides: Partial<AdminModel> = {}): AdminModel {
     temperature: null,
     frequency_penalty: null,
     presence_penalty: null,
+    system_prompt: null,
+    user_prompt: null,
     params: null,
-    prompt_template_id: null,
     has_api_key: true,
     created_at: "2026-02-19T00:00:00.000Z",
     updated_at: "2026-02-19T00:00:00.000Z",
@@ -240,93 +233,6 @@ test("admin models supports test, update, clear key, and delete", async ({ page 
   expect(deleteCalls[0]?.id).toBe("model-1");
 });
 
-test("admin prompts increments version for repeated names", async ({ page }) => {
-  const createCalls: Array<{ authHeader: string | undefined; payload: Record<string, unknown> }> = [];
-
-  let templates: PromptTemplate[] = [];
-
-  await mockAuthenticatedSession(page);
-
-  await page.route("**/api/v1/admin/prompt-templates", async (route) => {
-    const method = route.request().method();
-
-    if (method === "GET") {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ prompt_templates: templates }),
-      });
-      return;
-    }
-
-    if (method === "POST") {
-      const payload = route.request().postDataJSON() as Record<string, unknown>;
-      createCalls.push({
-        authHeader: route.request().headers()["authorization"],
-        payload,
-      });
-
-      const name = String(payload.name ?? "");
-      const currentVersion = templates
-        .filter((template) => template.name === name)
-        .reduce((maxVersion, template) => Math.max(maxVersion, template.version), 0);
-
-      const created: PromptTemplate = {
-        id: `prompt-${templates.length + 1}`,
-        name,
-        version: currentVersion + 1,
-        template_text: String(payload.template_text ?? ""),
-        input_schema:
-          payload.input_schema && typeof payload.input_schema === "object"
-            ? (payload.input_schema as Record<string, unknown>)
-            : null,
-        content_hash: `content-hash-${templates.length + 1}`,
-        created_at: "2026-02-19T00:00:00.000Z",
-      };
-
-      templates = [created, ...templates];
-
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(created),
-      });
-      return;
-    }
-
-    await route.abort();
-  });
-
-  await page.goto("/admin/prompts");
-
-  await expect(page.getByText("No prompt templates yet.")).toBeVisible();
-
-  await page.locator("#prompt-name").fill("jp2zh_vn_translation");
-  await page
-    .locator("#prompt-template-text")
-    .fill("You are a precise JP->ZH translation assistant. (v1)");
-  await page.getByRole("button", { name: "Create" }).click();
-
-  await expect(page.getByText("v1")).toBeVisible();
-  await expect(page.locator("#prompt-name")).toHaveValue("");
-
-  await page.locator("#prompt-name").fill("jp2zh_vn_translation");
-  await page
-    .locator("#prompt-template-text")
-    .fill("You are a precise JP->ZH translation assistant. (v2)");
-  await page.getByRole("button", { name: "Create" }).click();
-
-  const rows = page.locator("tbody tr");
-  await expect(rows).toHaveCount(2);
-  await expect(rows.first()).toContainText("jp2zh_vn_translation");
-  await expect(rows.first()).toContainText("v2");
-
-  expect(createCalls).toHaveLength(2);
-  expect(createCalls[0]?.authHeader).toBe("Bearer frontend-admin-access-token");
-  expect(createCalls[1]?.authHeader).toBe("Bearer frontend-admin-access-token");
-  expect(createCalls[0]?.payload).toMatchObject({ name: "jp2zh_vn_translation" });
-  expect(createCalls[1]?.payload).toMatchObject({ name: "jp2zh_vn_translation" });
-});
 
 test("admin tasks supports task-set/task CRUD and jsonl import", async ({ page }) => {
   const createTaskSetCalls: Array<{ authHeader: string | undefined; payload: Record<string, unknown> }> = [];
@@ -600,7 +506,7 @@ test("admin tasks supports task-set/task CRUD and jsonl import", async ({ page }
     mimeType: "application/x-ndjson",
     buffer: Buffer.from('{"source_text":"Imported line from jsonl"}\n', "utf-8"),
   });
-  await importSection.getByRole("button", { name: "Import" }).click();
+  await importSection.getByRole("button", { name: "Import", exact: true }).click();
 
   await expect(page.getByText("Imported 1 tasks from batch.jsonl")).toBeVisible();
   await expect(page.getByText("Imported line from jsonl")).toBeVisible();
@@ -671,22 +577,6 @@ test("admin models surfaces 403 for signed-in non-admin users", async ({ page })
   await expect(page.getByText("Model Registry")).toHaveCount(0);
 });
 
-test("admin prompts surfaces 403 for signed-in non-admin users", async ({ page }) => {
-  await mockAuthenticatedSession(page, "frontend-non-admin-token", false);
-
-  await page.route("**/api/v1/admin/prompt-templates", async (route) => {
-    await route.fulfill({
-      status: 403,
-      contentType: "application/json",
-      body: JSON.stringify({ detail: "admin access required" }),
-    });
-  });
-
-  await page.goto("/admin/prompts");
-
-  await expect(page.getByText("not authorized to access the admin area")).toBeVisible();
-  await expect(page.getByText("No prompt templates yet")).toHaveCount(0);
-});
 
 test("admin tasks surfaces 403 for signed-in non-admin users", async ({ page }) => {
   await mockAuthenticatedSession(page, "frontend-non-admin-token", false);

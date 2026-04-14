@@ -8,7 +8,6 @@ import { useAdminAccess } from "@/hooks/useAdminAccess";
 
 const ADMIN_TABS = [
   { href: "/admin/models", label: "Models" },
-  { href: "/admin/prompts", label: "Prompts" },
   { href: "/admin/tasks", label: "Tasks" },
 ] as const;
 

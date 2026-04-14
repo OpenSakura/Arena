@@ -1,35 +1,5 @@
 from __future__ import annotations
 
-from fastapi import Request
-
-
-def _request(
-    *,
-    ip: str,
-    user_agent: str,
-    cookie: str | None = None,
-    x_forwarded_for: str | None = None,
-) -> Request:
-    headers: list[tuple[bytes, bytes]] = [(b"user-agent", user_agent.encode("utf-8"))]
-    if cookie is not None:
-        headers.append((b"cookie", cookie.encode("ascii")))
-    if x_forwarded_for is not None:
-        headers.append((b"x-forwarded-for", x_forwarded_for.encode("ascii")))
-
-    scope = {
-        "type": "http",
-        "http_version": "1.1",
-        "method": "GET",
-        "scheme": "http",
-        "path": "/",
-        "raw_path": b"/",
-        "query_string": b"",
-        "headers": headers,
-        "client": (ip, 12345),
-        "server": ("testserver", 80),
-    }
-    return Request(scope)
-
 
 class _FakeRedis:
     def __init__(self) -> None:
@@ -45,65 +15,6 @@ class _FakeRedis:
 
     def mget(self, keys: list[str]) -> list[int | None]:
         return [self.store.get(key) for key in keys]
-
-
-def test_build_anon_rate_limit_key_ignores_cookie_variations() -> None:
-    from app.utils.rate_limit import build_anon_rate_limit_key
-
-    req_a = _request(
-        ip="127.0.0.1",
-        user_agent="agent-1",
-        cookie="arena_anon_id=first-cookie",
-    )
-    req_b = _request(
-        ip="127.0.0.1",
-        user_agent="agent-1",
-        cookie="arena_anon_id=second-cookie",
-    )
-
-    key_a = build_anon_rate_limit_key(scope="anon_vote_submit", request=req_a)
-    key_b = build_anon_rate_limit_key(scope="anon_vote_submit", request=req_b)
-
-    assert key_a == key_b
-
-
-def test_build_anon_rate_limit_key_changes_with_different_ip() -> None:
-    """Different IPs produce different rate-limit keys."""
-
-    from app.utils.rate_limit import build_anon_rate_limit_key
-
-    key_base = build_anon_rate_limit_key(
-        scope="anon_battle_create",
-        request=_request(ip="127.0.0.1", user_agent="agent-1"),
-    )
-    key_other_ip = build_anon_rate_limit_key(
-        scope="anon_battle_create",
-        request=_request(ip="127.0.0.2", user_agent="agent-1"),
-    )
-
-    assert key_base != key_other_ip
-
-
-def test_build_anon_rate_limit_key_ignores_user_agent_rotation() -> None:
-    """User-Agent rotation must NOT produce a different key.
-
-    Including User-Agent in the fingerprint would let an attacker multiply
-    their effective rate limit by sending a different User-Agent on each
-    request.  The key should be derived from IP only.
-    """
-
-    from app.utils.rate_limit import build_anon_rate_limit_key
-
-    key_ua1 = build_anon_rate_limit_key(
-        scope="anon_battle_create",
-        request=_request(ip="127.0.0.1", user_agent="agent-1"),
-    )
-    key_ua2 = build_anon_rate_limit_key(
-        scope="anon_battle_create",
-        request=_request(ip="127.0.0.1", user_agent="agent-2"),
-    )
-
-    assert key_ua1 == key_ua2
 
 
 def test_rolling_window_rate_limiter_limits_after_threshold() -> None:
@@ -315,57 +226,3 @@ def test_rolling_window_rate_limiter_evalsha_noscript_fallback() -> None:
     limiter.is_limited(key)  # EVALSHA fails → EVAL
 
     assert eval_calls == ["eval", "evalsha", "eval"]
-
-
-def test_build_anon_rate_limit_key_ignores_x_forwarded_for_by_default() -> None:
-    """When trust_x_forwarded_for is False (default), X-Forwarded-For is
-    ignored and the direct client IP is used instead."""
-
-    from app.utils.rate_limit import build_anon_rate_limit_key
-
-    req = _request(
-        ip="10.0.0.1",
-        user_agent="agent",
-        x_forwarded_for="1.2.3.4",
-    )
-
-    # Default: trust_x_forwarded_for=False
-    key_default = build_anon_rate_limit_key(
-        scope="test", request=req, trust_x_forwarded_for=False
-    )
-
-    # Key should be based on the direct client IP (10.0.0.1), not
-    # the spoofable X-Forwarded-For header (1.2.3.4).
-    key_direct = build_anon_rate_limit_key(
-        scope="test",
-        request=_request(ip="10.0.0.1", user_agent="agent"),
-    )
-    assert key_default == key_direct
-
-
-def test_build_anon_rate_limit_key_uses_x_forwarded_for_when_trusted() -> None:
-    """When trust_x_forwarded_for is True, X-Forwarded-For is used.
-
-    With a trusted proxy that overwrites/sanitizes X-Forwarded-For, the
-    leftmost entry is the original client IP.
-    """
-
-    from app.utils.rate_limit import build_anon_rate_limit_key
-
-    req = _request(
-        ip="10.0.0.1",
-        user_agent="agent",
-        x_forwarded_for="1.2.3.4, 10.0.0.1",
-    )
-
-    key_trusted = build_anon_rate_limit_key(
-        scope="test", request=req, trust_x_forwarded_for=True
-    )
-
-    # Key should be based on the leftmost X-Forwarded-For IP (1.2.3.4)
-    # which represents the original client.
-    key_xff_ip = build_anon_rate_limit_key(
-        scope="test",
-        request=_request(ip="1.2.3.4", user_agent="agent"),
-    )
-    assert key_trusted == key_xff_ip

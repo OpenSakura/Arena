@@ -88,12 +88,10 @@ def _settings(**overrides: object) -> SimpleNamespace:
         "battle_strict_targets": {},
         "battle_outage_models": [],
         "battle_sampling_boost_models": [],
-        "anon_battle_create_rate_limit_window_seconds": 60,
-        "anon_battle_stream_rate_limit_window_seconds": 60,
-        "anon_ip_hash_salt": "ip-salt",
         "trust_x_forwarded_for": False,
         "turnstile_secret_key": None,
         "turnstile_verify_url": "https://turnstile.example/siteverify",
+        "leaderboard_refresh_daily_vote_cap": 0,
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -296,60 +294,6 @@ def test_battle_task_snapshot_returns_none_for_invalid_payloads(
     assert battles._battle_task_snapshot(cast(Battle, battle)) is None
 
 
-def test_enforce_anon_battle_rate_limit_allows_request_below_threshold(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, object] = {}
-
-    class _Limiter:
-        def __init__(self) -> None:
-            self.seen_keys: list[str] = []
-
-        def is_limited(self, key: str) -> bool:
-            self.seen_keys.append(key)
-            return False
-
-    limiter = _Limiter()
-    monkeypatch.setattr(battles, "_get_battle_create_rate_limiter", lambda: limiter)
-
-    def fake_key_builder(**kwargs: object) -> str:
-        captured.update(kwargs)
-        return "anon-key"
-
-    monkeypatch.setattr(battles, "build_anon_rate_limit_key", fake_key_builder)
-
-    battles._enforce_anon_battle_rate_limit(
-        request=_request(),
-        settings=cast(Settings, _settings()),
-    )
-
-    assert captured["scope"] == "anon_battle_create"
-    assert limiter.seen_keys == ["anon-key"]
-
-
-def test_enforce_anon_battle_rate_limit_raises_429_when_limited(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _Limiter:
-        def is_limited(self, _key: str) -> bool:
-            return True
-
-    monkeypatch.setattr(battles, "_get_battle_create_rate_limiter", lambda: _Limiter())
-    monkeypatch.setattr(battles, "build_anon_rate_limit_key", lambda **_kwargs: "anon")
-
-    settings = _settings(anon_battle_create_rate_limit_window_seconds=45)
-
-    with pytest.raises(HTTPException) as exc_info:
-        battles._enforce_anon_battle_rate_limit(
-            request=_request(),
-            settings=cast(Settings, settings),
-        )
-
-    assert exc_info.value.status_code == 429
-    assert exc_info.value.detail == "Too many anonymous battle creation requests"
-    assert exc_info.value.headers == {"Retry-After": "45"}
-
-
 class _FakeScalar:
     """Mimics the result of ``db.execute(select(func.count(...))).scalar_one()``."""
 
@@ -390,7 +334,6 @@ def _creator_principal_and_battle(
             "target_lang": "zh",
         },
         "requester_user_id": user_id,
-        "requester_anon_id": None,
     }
     battle = SimpleNamespace(
         id=uuid.uuid4(),
@@ -411,7 +354,6 @@ def test_enforce_daily_vote_cap_allows_when_disabled() -> None:
     battles._enforce_daily_vote_cap(
         db=_CountDB(999),  # type: ignore[arg-type]
         principal=cast(Principal, _principal()),
-        request=_request(),
         settings=cast(Settings, _settings(leaderboard_refresh_daily_vote_cap=0)),
     )
 
@@ -422,13 +364,9 @@ def test_enforce_daily_vote_cap_allows_when_under_limit() -> None:
         principal=cast(
             Principal, _principal(authenticated=True, user_id=str(uuid.uuid4()))
         ),
-        request=_request(),
         settings=cast(
             Settings,
-            _settings(
-                leaderboard_refresh_daily_vote_cap=5,
-                anon_user_agent_hash_salt="ua-salt",
-            ),
+            _settings(leaderboard_refresh_daily_vote_cap=5),
         ),
     )
 
@@ -440,14 +378,7 @@ def test_enforce_daily_vote_cap_raises_429_at_limit() -> None:
             principal=cast(
                 Principal, _principal(authenticated=True, user_id=str(uuid.uuid4()))
             ),
-            request=_request(),
-            settings=cast(
-                Settings,
-                _settings(
-                    leaderboard_refresh_daily_vote_cap=5,
-                    anon_user_agent_hash_salt="ua-salt",
-                ),
-            ),
+            settings=cast(Settings, _settings(leaderboard_refresh_daily_vote_cap=5)),
         )
 
     assert exc_info.value.status_code == 429
@@ -455,37 +386,11 @@ def test_enforce_daily_vote_cap_raises_429_at_limit() -> None:
     assert "(5 votes per day)" in exc_info.value.detail
 
 
-def test_enforce_daily_vote_cap_anonymous_allows_when_unidentifiable() -> None:
-    """When we can't identify the anonymous user, allow through (rate limiter
-    catches truly anonymous traffic anyway)."""
-    # Create a request with no cookies, no user-agent, and no client IP.
-    scope = {
-        "type": "http",
-        "http_version": "1.1",
-        "method": "GET",
-        "scheme": "http",
-        "path": "/",
-        "raw_path": b"/",
-        "query_string": b"",
-        "headers": [],
-        "client": None,
-        "server": ("testserver", 80),
-    }
-    req = Request(scope)
-
-    # Should not raise even though the cap is 1, because the user is
-    # unidentifiable — no anon_id cookie, no IP, no user-agent.
+def test_enforce_daily_vote_cap_skips_unauthenticated_requests() -> None:
     battles._enforce_daily_vote_cap(
         db=_CountDB(999),  # type: ignore[arg-type]
-        principal=cast(Principal, _principal()),
-        request=req,
-        settings=cast(
-            Settings,
-            _settings(
-                leaderboard_refresh_daily_vote_cap=1,
-                anon_user_agent_hash_salt="ua-salt",
-            ),
-        ),
+        principal=cast(Principal, _principal(authenticated=False, user_id=None)),
+        settings=cast(Settings, _settings(leaderboard_refresh_daily_vote_cap=1)),
     )
 
 
@@ -840,87 +745,36 @@ def test_stats_visible_after_vote() -> None:
     assert response.run_b.stats == {"request_id": "req-b"}
 
 
-def _request_with_cookie(cookie_value: str) -> Request:
-    cookie_header = f"arena_anon_id={cookie_value}".encode("latin-1")
-    scope = {
-        "type": "http",
-        "http_version": "1.1",
-        "method": "GET",
-        "scheme": "http",
-        "path": "/",
-        "raw_path": b"/",
-        "query_string": b"",
-        "headers": [(b"cookie", cookie_header)],
-        "client": ("127.0.0.1", 12345),
-        "server": ("testserver", 80),
-    }
-    return Request(scope)
-
-
-def test_is_battle_creator_uses_anon_id_from_metadata() -> None:
-    anon_id = uuid.uuid4().hex
+def test_is_battle_creator_matches_authenticated_creator() -> None:
+    user_id = str(uuid.uuid4())
     battle = SimpleNamespace(
         metadata_json={
-            "requester_user_id": None,
-            "requester_anon_id": anon_id,
+            "requester_user_id": user_id,
         }
     )
-    principal = SimpleNamespace(is_authenticated=False, user_id=None)
+    principal = SimpleNamespace(is_authenticated=True, user_id=user_id)
 
     assert battles._is_battle_creator(
         cast(Battle, battle),
         principal=cast(Principal, principal),
-        request=_request_with_cookie(anon_id),
     )
 
 
-def test_is_battle_creator_returns_false_when_anon_id_mismatch() -> None:
+def test_is_battle_creator_returns_false_for_non_creator() -> None:
     battle = SimpleNamespace(
         metadata_json={
-            "requester_user_id": None,
-            "requester_anon_id": uuid.uuid4().hex,
+            "requester_user_id": str(uuid.uuid4()),
         }
     )
-    principal = SimpleNamespace(is_authenticated=False, user_id=None)
+    principal = SimpleNamespace(is_authenticated=True, user_id=str(uuid.uuid4()))
 
     assert not battles._is_battle_creator(
         cast(Battle, battle),
         principal=cast(Principal, principal),
-        request=_request_with_cookie(uuid.uuid4().hex),
     )
 
 
-def test_is_battle_creator_returns_false_when_creator_anon_id_is_none() -> None:
-    battle = SimpleNamespace(
-        metadata_json={
-            "requester_user_id": None,
-            "requester_anon_id": None,
-        }
-    )
-    principal = SimpleNamespace(is_authenticated=False, user_id=None)
-
-    assert not battles._is_battle_creator(
-        cast(Battle, battle),
-        principal=cast(Principal, principal),
-        request=_request_with_cookie(uuid.uuid4().hex),
-    )
-
-
-def test_turnstile_failure_does_not_consume_rate_limit_slot(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    limit_checked = []
-
-    class _NeverCalledLimiter:
-        def is_limited(self, key: str) -> bool:
-            limit_checked.append(key)
-            return False
-
-    monkeypatch.setattr(
-        battles, "_get_battle_create_rate_limiter", lambda: _NeverCalledLimiter()
-    )
-    monkeypatch.setattr(battles, "build_anon_rate_limit_key", lambda **_kw: "key")
-
+def test_turnstile_missing_token_is_rejected() -> None:
     settings = _settings(
         turnstile_secret_key="secret",
         turnstile_verify_url="https://turnstile.example/siteverify",
@@ -934,7 +788,6 @@ def test_turnstile_failure_does_not_consume_rate_limit_slot(
         )
 
     assert exc_info.value.status_code == 400
-    assert limit_checked == [], "rate limiter must not be called before Turnstile check"
 
 
 def test_create_battle_records_authenticated_requester_id(
@@ -973,13 +826,11 @@ def test_create_battle_records_authenticated_requester_id(
 
     principal = SimpleNamespace(is_authenticated=True, user_id=str(uuid.uuid4()))
     request = _request()
-    response_obj = SimpleNamespace(set_cookie=lambda **_kw: None)
-    settings = cast(Settings, _settings(anon_id_cookie_secure=False))
+    settings = cast(Settings, _settings())
 
     battles.create_battle(
         payload=BattleCreate(),
         request=request,
-        response=response_obj,  # type: ignore[arg-type]
         db=_FakeDB(),  # type: ignore[arg-type]
         principal=cast(Principal, principal),
         settings=settings,
@@ -988,4 +839,3 @@ def test_create_battle_records_authenticated_requester_id(
     battles_added = [o for o in added_objects if isinstance(o, Battle)]
     assert len(battles_added) == 1
     assert battles_added[0].metadata_json["requester_user_id"] == principal.user_id
-    assert battles_added[0].metadata_json["requester_anon_id"] is None

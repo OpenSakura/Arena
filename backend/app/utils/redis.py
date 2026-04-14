@@ -1,6 +1,6 @@
 """app.utils.redis
 
-Redis helpers used by anonymous rate limiting and shared confidence caching.
+Redis helpers used by Redis-backed rate limiting and shared confidence caching.
 
 Notes:
 - Redis is optional for local/dev; callers should handle ``None`` gracefully.

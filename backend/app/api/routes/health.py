@@ -8,7 +8,6 @@ Notes:
   is running. Load balancers should use this to decide whether to *restart*.
 - ``/readyz`` is a readiness probe — checks critical dependencies (DB, Redis).
   Load balancers should use this to decide whether to *route traffic*.
-- ``/healthz`` is kept as a backward-compatible alias for ``/readyz``.
 """
 
 from __future__ import annotations
@@ -97,12 +96,6 @@ def readyz() -> HealthResponse:
         )
 
     return HealthResponse(ok=True, checks=checks)
-
-
-@router.get("/healthz")
-def healthz() -> HealthResponse:
-    """Backward-compatible alias for ``/readyz``."""
-    return readyz()
 
 
 @router.get("/public-config")

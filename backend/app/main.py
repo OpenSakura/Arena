@@ -47,7 +47,7 @@ def _emit_startup_warnings(settings: Settings) -> None:
     if is_prod and not (settings.rate_limit_redis_url or "").strip():
         logger.warning(
             "RATE_LIMIT_REDIS_URL is not configured in production — "
-            "anonymous rate limiting and shared confidence caching are disabled. "
+            "Redis-backed rate limiting and shared confidence caching are disabled. "
             "Set RATE_LIMIT_REDIS_URL to enable Redis-backed protections."
         )
 

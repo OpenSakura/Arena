@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api.routes import health
+from app.core.config import Settings
 import app.core.config as config_module
 from app.core import logging as app_logging
 import app.main as main
@@ -102,7 +104,7 @@ def test_request_id_reuses_header_value_and_trims_whitespace(monkeypatch) -> Non
 
     with TestClient(app) as client:
         response = client.get(
-            "/api/v1/healthz",
+            "/api/v1/readyz",
             headers={"X-Request-ID": "  req-custom-1  "},
         )
 
@@ -115,7 +117,7 @@ def test_request_id_is_generated_when_header_is_missing(monkeypatch) -> None:
     app = _create_test_app(monkeypatch)
 
     with TestClient(app) as client:
-        response = client.get("/api/v1/healthz")
+        response = client.get("/api/v1/readyz")
 
     request_id = response.headers["X-Request-ID"]
     assert len(request_id) == 32
@@ -143,7 +145,7 @@ def test_access_log_is_not_emitted_when_disabled(monkeypatch) -> None:
     app = _create_test_app(monkeypatch, access_log_enabled=False)
 
     with TestClient(app) as client:
-        response = client.get("/api/v1/healthz")
+        response = client.get("/api/v1/readyz")
 
     assert response.status_code == 200
     assert logger.calls == []
@@ -156,7 +158,7 @@ def test_access_log_emits_structured_fields_when_enabled(monkeypatch) -> None:
 
     with TestClient(app) as client:
         response = client.get(
-            "/api/v1/healthz",
+            "/api/v1/readyz",
             headers={"X-Request-ID": "req-access-1"},
         )
 
@@ -166,13 +168,13 @@ def test_access_log_emits_structured_fields_when_enabled(monkeypatch) -> None:
     _level, message, args, kwargs = logger.calls[0]
     assert message == "%s %s -> %s (%sms)"
     assert args[0] == "GET"
-    assert args[1] == "/api/v1/healthz"
+    assert args[1] == "/api/v1/readyz"
     assert args[2] == 200
 
     extra = kwargs["extra"]
     assert isinstance(extra, dict)
     assert extra["method"] == "GET"
-    assert extra["path"] == "/api/v1/healthz"
+    assert extra["path"] == "/api/v1/readyz"
     assert extra["status_code"] == 200
     assert isinstance(extra["duration_ms"], int)
     assert extra["duration_ms"] >= 0
@@ -200,7 +202,7 @@ def test_warns_without_rate_limit_redis_in_prod(monkeypatch) -> None:
     settings_obj.app_env = "production"
     settings_obj.rate_limit_redis_url = ""
 
-    main._emit_startup_warnings(settings_obj)
+    main._emit_startup_warnings(cast(Settings, settings_obj))
 
     warning_messages = [msg for level, msg, _, _ in logger.calls if level == "warning"]
     assert any("RATE_LIMIT_REDIS_URL" in m for m in warning_messages)
@@ -219,7 +221,7 @@ def test_worker_mode_raises_at_startup_when_web_concurrency_exceeds_one(
     settings_obj.rate_limit_redis_url = "redis://localhost:6379/0"
 
     with pytest.raises(RuntimeError, match="WEB_CONCURRENCY"):
-        main._emit_startup_warnings(settings_obj)
+        main._emit_startup_warnings(cast(Settings, settings_obj))
 
 
 def test_worker_mode_raises_at_startup_in_dev_when_web_concurrency_exceeds_one(
@@ -234,7 +236,7 @@ def test_worker_mode_raises_at_startup_in_dev_when_web_concurrency_exceeds_one(
     settings_obj.app_env = "dev"
 
     with pytest.raises(RuntimeError, match="WEB_CONCURRENCY"):
-        main._emit_startup_warnings(settings_obj)
+        main._emit_startup_warnings(cast(Settings, settings_obj))
 
 
 def test_worker_mode_zero_concurrency_treated_as_one(monkeypatch) -> None:
@@ -244,7 +246,7 @@ def test_worker_mode_zero_concurrency_treated_as_one(monkeypatch) -> None:
     settings_obj = _settings(web_concurrency=0)
     settings_obj.app_env = "dev"
 
-    main._emit_startup_warnings(settings_obj)
+    main._emit_startup_warnings(cast(Settings, settings_obj))
 
     warning_messages = [msg for level, msg, _, _ in logger.calls if level == "warning"]
     assert not any("WEB_CONCURRENCY" in m for m in warning_messages)
@@ -257,7 +259,7 @@ def test_no_startup_warnings_in_dev(monkeypatch) -> None:
     settings_obj = _settings()
     settings_obj.app_env = "dev"
 
-    main._emit_startup_warnings(settings_obj)
+    main._emit_startup_warnings(cast(Settings, settings_obj))
 
     warning_messages = [msg for level, msg, _, _ in logger.calls if level == "warning"]
     assert warning_messages == []
@@ -268,7 +270,7 @@ def test_cors_expose_headers_includes_request_id(monkeypatch) -> None:
 
     with TestClient(app) as client:
         response = client.get(
-            "/api/v1/healthz",
+            "/api/v1/readyz",
             headers={"Origin": "http://localhost:3000"},
         )
 
@@ -343,15 +345,13 @@ def test_livez_unaffected_by_redis_failure(monkeypatch) -> None:
     assert response.json() == {"ok": True}
 
 
-def test_healthz_is_backward_compatible_alias_for_readyz(monkeypatch) -> None:
+def test_healthz_alias_is_removed(monkeypatch) -> None:
     app = _create_test_app(monkeypatch)
 
     with TestClient(app) as client:
-        readyz = client.get("/api/v1/readyz")
         healthz = client.get("/api/v1/healthz")
 
-    assert readyz.status_code == healthz.status_code
-    assert readyz.json() == healthz.json()
+    assert healthz.status_code == 404
 
 
 def test_closes_redis_on_shutdown_exactly_once(monkeypatch) -> None:

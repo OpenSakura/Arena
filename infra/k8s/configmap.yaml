@@ -1,0 +1,148 @@
+# infra/k8s/configmap.yaml
+#
+# All environment settings for the OpenSakura Arena platform.
+#
+# WARNING: This ConfigMap includes secret placeholders for completeness.
+# In production, move values marked [SECRET] into a Kubernetes Secret and
+# reference them via secretKeyRef instead of configMapKeyRef.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: arena-config
+  labels:
+    app.kubernetes.io/name: opensakura-arena
+    app.kubernetes.io/part-of: opensakura
+data:
+  # ──────────────────────────────────────────────
+  # Backend — Core
+  # ──────────────────────────────────────────────
+  APP_ENV: "production"
+  APP_NAME: "OpenSakura Arena API"
+  API_V1_PREFIX: "/api/v1"
+  WEB_CONCURRENCY: "1"
+
+  # ──────────────────────────────────────────────
+  # Backend — Logging / Observability
+  # ──────────────────────────────────────────────
+  LOG_LEVEL: ""
+  LOG_JSON: "true"
+  ACCESS_LOG_ENABLED: "false"
+
+  # ──────────────────────────────────────────────
+  # Backend — Database [SECRET]
+  # ──────────────────────────────────────────────
+  DATABASE_URL: "postgresql+psycopg://postgres:postgres@postgres:5432/arena"
+
+  # ──────────────────────────────────────────────
+  # Backend — CORS
+  # ──────────────────────────────────────────────
+  CORS_ALLOW_ORIGINS: "https://arena.example.com"
+
+  # ──────────────────────────────────────────────
+  # Backend — OIDC (Authentik)
+  # ──────────────────────────────────────────────
+  OIDC_ISSUER: ""                          # [SECRET] e.g. https://auth.example.com/application/o/arena/
+  OIDC_AUDIENCE: ""                        # [SECRET]
+  OIDC_ADMIN_GROUP_CLAIM: "groups"
+  OIDC_ADMIN_GROUP_NAME: "arena_admin"
+  OIDC_JWKS_CACHE_TTL_SECONDS: "300"
+  OIDC_HTTP_TIMEOUT_SECONDS: "5"
+
+  # ──────────────────────────────────────────────
+  # Backend — Cloudflare Turnstile
+  # ──────────────────────────────────────────────
+  TURNSTILE_SECRET_KEY: ""                 # [SECRET]
+  TURNSTILE_VERIFY_URL: "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+
+  # ──────────────────────────────────────────────
+  # Backend — Authenticated Rate Limits
+  # ──────────────────────────────────────────────
+  AUTH_BATTLE_CREATE_RATE_LIMIT: "60"
+  AUTH_BATTLE_CREATE_RATE_LIMIT_WINDOW_SECONDS: "60"
+  AUTH_BATTLE_STREAM_RATE_LIMIT: "90"
+  AUTH_BATTLE_STREAM_RATE_LIMIT_WINDOW_SECONDS: "60"
+  AUTH_VOTE_SUBMIT_RATE_LIMIT: "90"
+  AUTH_VOTE_SUBMIT_RATE_LIMIT_WINDOW_SECONDS: "60"
+
+  # ──────────────────────────────────────────────
+  # Backend — Redis
+  # ──────────────────────────────────────────────
+  RATE_LIMIT_REDIS_URL: ""                 # [SECRET] e.g. redis://redis:6379/0
+  RATE_LIMIT_REDIS_KEY_PREFIX: "arena"
+  RATE_LIMIT_REDIS_TIMEOUT_SECONDS: "0.25"
+
+  # ──────────────────────────────────────────────
+  # Backend — Reverse Proxy
+  # ──────────────────────────────────────────────
+  TRUST_X_FORWARDED_FOR: "true"
+
+  # ──────────────────────────────────────────────
+  # Backend — Encryption Keys [SECRET]
+  # ──────────────────────────────────────────────
+  ARENA_MASTER_KEY: ""                     # [SECRET] base64url-encoded 32-byte key
+
+  # ──────────────────────────────────────────────
+  # Backend — Battle Sampling
+  # ──────────────────────────────────────────────
+  BATTLE_SAMPLING_WEIGHTS: "{}"
+  BATTLE_TARGETS: "{}"
+  BATTLE_STRICT_TARGETS: "{}"
+  BATTLE_OUTAGE_MODELS: "[]"
+  BATTLE_SAMPLING_BOOST_MODELS: "[]"
+  BATTLE_RUNNING_WAIT_TIMEOUT_SECONDS: "600"
+
+  # ──────────────────────────────────────────────
+  # Backend — Leaderboard Refresh
+  # ──────────────────────────────────────────────
+  LEADERBOARD_REFRESH_ENABLED: "true"
+  LEADERBOARD_REFRESH_INTERVAL_SECONDS: "300"
+  LEADERBOARD_REFRESH_DAILY_VOTE_CAP: "0"
+  LEADERBOARD_REFRESH_ELO_K: "32"
+
+  # ──────────────────────────────────────────────
+  # Backend — Leaderboard Confidence (throttled)
+  # ──────────────────────────────────────────────
+  LEADERBOARD_CONFIDENCE_CACHE_TTL_SECONDS: "15"
+  LEADERBOARD_CONFIDENCE_RATE_LIMIT: "6"
+  LEADERBOARD_CONFIDENCE_RATE_LIMIT_WINDOW_SECONDS: "60"
+
+  # ──────────────────────────────────────────────
+  # Backend — Elo Bootstrap / Confidence
+  # ──────────────────────────────────────────────
+  LEADERBOARD_ELO_BOOTSTRAP_ROUNDS: "200"
+  LEADERBOARD_ELO_BOOTSTRAP_SEED: "0"
+  LEADERBOARD_ELO_CONFIDENCE_LEVEL: "0.95"
+  LEADERBOARD_ELO_SHUFFLE_ROUNDS: "5"
+  LEADERBOARD_ELO_SHUFFLE_SEED: "0"
+
+  # ──────────────────────────────────────────────
+  # Backend — Bradley-Terry Leaderboard
+  # ──────────────────────────────────────────────
+  LEADERBOARD_BT_MAX_ITERATIONS: "200"
+  LEADERBOARD_BT_TOLERANCE: "1e-6"
+  LEADERBOARD_BT_BOOTSTRAP_ROUNDS: "200"
+  LEADERBOARD_BT_BOOTSTRAP_SEED: "0"
+  LEADERBOARD_BT_PRIOR: "1e-6"
+  LEADERBOARD_BT_CONFIDENCE_LEVEL: "0.95"
+
+  # ──────────────────────────────────────────────
+  # Frontend — Next.js
+  # ──────────────────────────────────────────────
+  NEXT_PUBLIC_BACKEND_URL: "https://arena.example.com/api/v1"
+  # Optional: internal URL for SSR when Next.js can't reach the public URL
+  # BACKEND_INTERNAL_URL: "http://backend:8000/api/v1"
+  NEXTAUTH_URL: "https://arena.example.com"
+  NEXTAUTH_SECRET: ""                      # [SECRET] min 32 chars
+
+  # ──────────────────────────────────────────────
+  # Frontend — Authentik OIDC [SECRET]
+  # ──────────────────────────────────────────────
+  AUTHENTIK_ISSUER: ""                     # [SECRET] e.g. https://auth.example.com/application/o/arena/
+  AUTHENTIK_CLIENT_ID: ""                  # [SECRET]
+  AUTHENTIK_CLIENT_SECRET: ""              # [SECRET]
+
+  # ──────────────────────────────────────────────
+  # Frontend — CSP / OIDC Origins
+  # ──────────────────────────────────────────────
+  # NEXT_PUBLIC_OIDC_ORIGINS: "https://auth.example.com"

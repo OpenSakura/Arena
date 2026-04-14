@@ -177,8 +177,8 @@ def _run_backend_migrations() -> None:
 
 
 def _reset_backend_singletons() -> None:
-    from app.api.routes.battles import _get_battle_create_rate_limiter
-    from app.api.routes.votes import _get_vote_submit_rate_limiter
+    from app.api.routes.battles import _get_auth_battle_create_rate_limiter
+    from app.api.routes.votes import _get_auth_vote_submit_rate_limiter
     from app.core.config import get_settings
     from app.services.oidc import get_oidc_verifier
     from app.utils.redis import get_rate_limit_redis_client
@@ -188,8 +188,8 @@ def _reset_backend_singletons() -> None:
     get_settings.cache_clear()
     get_oidc_verifier.cache_clear()
     get_rate_limit_redis_client.cache_clear()
-    _get_battle_create_rate_limiter.cache_clear()
-    _get_vote_submit_rate_limiter.cache_clear()
+    _get_auth_battle_create_rate_limiter.cache_clear()
+    _get_auth_vote_submit_rate_limiter.cache_clear()
 
     session_module._engine = None
     session_module._SessionLocal = None
@@ -241,11 +241,6 @@ def configured_backend_env(
     monkeypatch.setenv("RATE_LIMIT_REDIS_URL", RATE_LIMIT_REDIS_URL)
     monkeypatch.setenv("OIDC_ISSUER", AUTHENTIK_ISSUER)
     monkeypatch.setenv("OIDC_AUDIENCE", AUTHENTIK_CLIENT_ID)
-    monkeypatch.setenv("ANON_ID_COOKIE_SECURE", "false")
-    monkeypatch.setenv("ANON_BATTLE_CREATE_RATE_LIMIT", "1")
-    monkeypatch.setenv("ANON_BATTLE_CREATE_RATE_LIMIT_WINDOW_SECONDS", "60")
-    monkeypatch.setenv("ANON_VOTE_SUBMIT_RATE_LIMIT", "1")
-    monkeypatch.setenv("ANON_VOTE_SUBMIT_RATE_LIMIT_WINDOW_SECONDS", "60")
     monkeypatch.setenv("AUTH_BATTLE_CREATE_RATE_LIMIT", "1")
     monkeypatch.setenv("AUTH_BATTLE_CREATE_RATE_LIMIT_WINDOW_SECONDS", "60")
     monkeypatch.setenv("AUTH_VOTE_SUBMIT_RATE_LIMIT", "1")

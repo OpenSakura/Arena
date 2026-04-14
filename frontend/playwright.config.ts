@@ -57,7 +57,7 @@ const liveStackServers = [
       `uv run python tests/e2e/seed_frontend_playwright.py && ` +
       `uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port ${BACKEND_PORT}`,
     cwd: BACKEND_DIR,
-    url: `${BACKEND_BASE_URL}/healthz`,
+    url: `${BACKEND_BASE_URL}/readyz`,
     timeout: 240_000,
     reuseExistingServer: false,
     env: {
@@ -72,13 +72,6 @@ const liveStackServers = [
       CORS_ALLOW_ORIGINS: FRONTEND_ORIGIN,
       OIDC_ISSUER: `http://localhost:${PLAYWRIGHT_AUTHENTIK_PORT}/application/o/arena-e2e/`,
       OIDC_AUDIENCE: "arena-e2e-client",
-      ANON_ID_COOKIE_SECURE: "false",
-      ANON_BATTLE_CREATE_RATE_LIMIT: "1000",
-      ANON_BATTLE_CREATE_RATE_LIMIT_WINDOW_SECONDS: "60",
-      ANON_VOTE_SUBMIT_RATE_LIMIT: "1000",
-      ANON_VOTE_SUBMIT_RATE_LIMIT_WINDOW_SECONDS: "60",
-      ANON_IP_HASH_SALT: "arena-frontend-e2e-ip-salt",
-      ANON_USER_AGENT_HASH_SALT: "arena-frontend-e2e-ua-salt",
       ARENA_MASTER_KEY: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
       PLAYWRIGHT_MOCK_LLM_BASE_URL: `http://127.0.0.1:${MOCK_LLM_PORT}`,
     },

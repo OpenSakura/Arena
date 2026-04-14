@@ -93,7 +93,7 @@ def test_json_log_formatter_includes_expected_fields_and_exception() -> None:
     )
     record.request_id = "req-json"
     record.method = "GET"
-    record.path = "/healthz"
+    record.path = "/readyz"
     record.status_code = 200
     record.duration_ms = 9
     record.client_ip = None
@@ -105,7 +105,7 @@ def test_json_log_formatter_includes_expected_fields_and_exception() -> None:
     assert payload["message"] == "handled request"
     assert payload["request_id"] == "req-json"
     assert payload["method"] == "GET"
-    assert payload["path"] == "/healthz"
+    assert payload["path"] == "/readyz"
     assert payload["status_code"] == 200
     assert payload["duration_ms"] == 9
     assert "client_ip" not in payload

@@ -12,7 +12,6 @@ from app.services.leaderboard_refresh import (
     limit_votes_per_judge_per_day,
     load_vote_samples,
 )
-from app.utils.requester_identity import RequesterIdentity
 
 
 def _vote(
@@ -44,7 +43,7 @@ def test_limit_votes_per_judge_per_day_caps_votes() -> None:
             winner="A",
             model_a_id=model_a,
             model_b_id=model_b,
-            judge_key="anon:judge-1",
+            judge_key="user:judge-1",
         )
         for idx in range(5)
     ]
@@ -65,21 +64,21 @@ def test_compute_elo_ratings_counts_games_and_updates_ratings() -> None:
             winner="A",
             model_a_id=model_a,
             model_b_id=model_b,
-            judge_key="anon:1",
+            judge_key="user:1",
         ),
         _vote(
             at=start + timedelta(minutes=1),
             winner="B",
             model_a_id=model_a,
             model_b_id=model_b,
-            judge_key="anon:2",
+            judge_key="user:2",
         ),
         _vote(
             at=start + timedelta(minutes=2),
             winner="tie",
             model_a_id=model_a,
             model_b_id=model_c,
-            judge_key="anon:3",
+            judge_key="user:3",
         ),
     ]
 
@@ -110,7 +109,7 @@ def test_compute_elo_ratings_tie_keeps_equal_models_stable() -> None:
             winner="tie",
             model_a_id=model_a,
             model_b_id=model_b,
-            judge_key="anon:1",
+            judge_key="user:1",
         )
     ]
 
@@ -132,7 +131,7 @@ def test_compute_elo_confidence_intervals_are_deterministic_for_seed() -> None:
                 winner="A",
                 model_a_id=model_a,
                 model_b_id=model_b,
-                judge_key=f"anon:{idx}",
+                judge_key=f"user:{idx}",
             )
             for idx in range(12)
         ],
@@ -142,7 +141,7 @@ def test_compute_elo_confidence_intervals_are_deterministic_for_seed() -> None:
                 winner="A",
                 model_a_id=model_b,
                 model_b_id=model_c,
-                judge_key=f"anon:b{idx}",
+                judge_key=f"user:b{idx}",
             )
             for idx in range(9)
         ],
@@ -185,73 +184,12 @@ def test_compute_elo_confidence_intervals_without_votes_return_point_estimate() 
     assert intervals[model_b] == (1000.0, 1000.0)
 
 
-def test_judge_key_prefers_user_id_when_both_identities_exist() -> None:
+def test_judge_key_is_user_scoped() -> None:
     user_id = uuid.uuid4()
-    key = RequesterIdentity(
-        voter_user_id=user_id,
-        ip_hash="ip-hash",
-        user_agent_hash="ua-hash",
-        voter_anon_id="anon-123",
-    ).judge_key(fallback_vote_id=uuid.uuid4())
+    from app.utils.requester_identity import RequesterIdentity
 
+    key = RequesterIdentity(voter_user_id=user_id).judge_key()
     assert key == f"user:{user_id}"
-
-
-def test_judge_key_falls_back_to_user_id_without_anon_id() -> None:
-    user_id = uuid.uuid4()
-    key = RequesterIdentity(
-        voter_user_id=user_id,
-        ip_hash="ip-hash",
-        user_agent_hash="ua-hash",
-        voter_anon_id=None,
-    ).judge_key(fallback_vote_id=uuid.uuid4())
-
-    assert key == f"user:{user_id}"
-
-
-def test_judge_key_prefers_fingerprint_over_anon_cookie_for_anonymous_votes() -> None:
-    key = RequesterIdentity(
-        voter_user_id=None,
-        ip_hash="ip-hash",
-        user_agent_hash="ua-hash",
-        voter_anon_id="anon-123",
-    ).judge_key(fallback_vote_id=uuid.uuid4())
-
-    assert key == "fp:ip-hash:ua-hash"
-
-
-def test_judge_key_falls_back_to_ip_only_when_user_agent_missing() -> None:
-    key = RequesterIdentity(
-        voter_user_id=None,
-        ip_hash="ip-hash",
-        user_agent_hash=None,
-        voter_anon_id="anon-123",
-    ).judge_key(fallback_vote_id=uuid.uuid4())
-
-    assert key == "ip:ip-hash"
-
-
-def test_judge_key_falls_back_to_anon_cookie_without_network_fingerprint() -> None:
-    key = RequesterIdentity(
-        voter_user_id=None,
-        ip_hash=None,
-        user_agent_hash=None,
-        voter_anon_id="anon-123",
-    ).judge_key(fallback_vote_id=uuid.uuid4())
-
-    assert key == "anon:anon-123"
-
-
-def test_judge_key_uses_explicit_unknown_fallback_when_unidentifiable() -> None:
-    vote_id = uuid.uuid4()
-    key = RequesterIdentity(
-        voter_user_id=None,
-        ip_hash=None,
-        user_agent_hash=None,
-        voter_anon_id=None,
-    ).judge_key(fallback_vote_id=vote_id)
-
-    assert key == f"unknown:{vote_id}"
 
 
 def test_refresh_locked_serializes_ratings_before_loading_votes() -> None:
@@ -371,9 +309,7 @@ def test_refresh_once_uses_transaction_scoped_lock_without_manual_unlock(
 
 
 class TestLimitVotesPerJudgeUsesSharedJudgeKey:
-    """Prove that ``limit_votes_per_judge_per_day`` treats each identity
-    type via the canonical ``RequesterIdentity.judge_key()`` semantics.
-    """
+    """Prove that ``limit_votes_per_judge_per_day`` treats each user as one judge."""
 
     MODEL_A = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
     MODEL_B = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
@@ -393,126 +329,30 @@ class TestLimitVotesPerJudgeUsesSharedJudgeKey:
 
     def test_user_requester_capped_by_user_judge_key(self) -> None:
         user_id = uuid.uuid4()
-        identity = RequesterIdentity(
-            voter_user_id=user_id,
-            ip_hash="ip",
-            user_agent_hash="ua",
-            voter_anon_id="anon",
-        )
-        key = identity.judge_key(fallback_vote_id=uuid.uuid4())
+        from app.utils.requester_identity import RequesterIdentity
+
+        key = RequesterIdentity(voter_user_id=user_id).judge_key()
         assert key == f"user:{user_id}"
 
         votes = self._votes_for_key(key, 5)
         kept = limit_votes_per_judge_per_day(votes, daily_vote_cap=2)
         assert len(kept) == 2
 
-    def test_fingerprint_requester_capped_by_fingerprint_judge_key(self) -> None:
-        identity = RequesterIdentity(
-            voter_user_id=None,
-            ip_hash="ip-hash",
-            user_agent_hash="ua-hash",
-            voter_anon_id="anon-123",
-        )
-        key = identity.judge_key(fallback_vote_id=uuid.uuid4())
-        assert key == "fp:ip-hash:ua-hash"
+    def test_different_users_are_independent_judges(self) -> None:
+        from app.utils.requester_identity import RequesterIdentity
 
-        votes = self._votes_for_key(key, 5)
-        kept = limit_votes_per_judge_per_day(votes, daily_vote_cap=3)
-        assert len(kept) == 3
-
-    def test_ip_only_requester_capped_by_ip_judge_key(self) -> None:
-        identity = RequesterIdentity(
-            voter_user_id=None,
-            ip_hash="ip-hash",
-            user_agent_hash=None,
-            voter_anon_id="anon-123",
-        )
-        key = identity.judge_key(fallback_vote_id=uuid.uuid4())
-        assert key == "ip:ip-hash"
-
-        votes = self._votes_for_key(key, 4)
-        kept = limit_votes_per_judge_per_day(votes, daily_vote_cap=2)
-        assert len(kept) == 2
-
-    def test_anon_cookie_requester_capped_by_anon_judge_key(self) -> None:
-        identity = RequesterIdentity(
-            voter_user_id=None,
-            ip_hash=None,
-            user_agent_hash=None,
-            voter_anon_id="anon-123",
-        )
-        key = identity.judge_key(fallback_vote_id=uuid.uuid4())
-        assert key == "anon:anon-123"
-
-        votes = self._votes_for_key(key, 5)
-        kept = limit_votes_per_judge_per_day(votes, daily_vote_cap=1)
-        assert len(kept) == 1
-
-    def test_unknown_requester_gets_unique_key_per_vote(self) -> None:
-        vote_id_1 = uuid.uuid4()
-        vote_id_2 = uuid.uuid4()
-
-        identity = RequesterIdentity(
-            voter_user_id=None,
-            ip_hash=None,
-            user_agent_hash=None,
-            voter_anon_id=None,
-        )
-        key1 = identity.judge_key(fallback_vote_id=vote_id_1)
-        key2 = identity.judge_key(fallback_vote_id=vote_id_2)
-
-        assert key1 == f"unknown:{vote_id_1}"
-        assert key2 == f"unknown:{vote_id_2}"
-        assert key1 != key2
-
-        votes = [
-            _vote(
-                at=self.START,
-                winner="A",
-                model_a_id=self.MODEL_A,
-                model_b_id=self.MODEL_B,
-                judge_key=key1,
-            ),
-            _vote(
-                at=self.START + timedelta(minutes=1),
-                winner="B",
-                model_a_id=self.MODEL_A,
-                model_b_id=self.MODEL_B,
-                judge_key=key2,
-            ),
-        ]
-        kept = limit_votes_per_judge_per_day(votes, daily_vote_cap=1)
-        assert len(kept) == 2
-
-    def test_different_identity_types_are_independent_judges(self) -> None:
         user_id = uuid.uuid4()
-        user_key = RequesterIdentity(
-            voter_user_id=user_id, ip_hash="ip", user_agent_hash="ua", voter_anon_id="a"
-        ).judge_key(fallback_vote_id=uuid.uuid4())
+        user_key = RequesterIdentity(voter_user_id=user_id).judge_key()
+        other_user_key = RequesterIdentity(voter_user_id=uuid.uuid4()).judge_key()
 
-        fp_key = RequesterIdentity(
-            voter_user_id=None, ip_hash="ip", user_agent_hash="ua", voter_anon_id="a"
-        ).judge_key(fallback_vote_id=uuid.uuid4())
-
-        ip_key = RequesterIdentity(
-            voter_user_id=None, ip_hash="ip", user_agent_hash=None, voter_anon_id="a"
-        ).judge_key(fallback_vote_id=uuid.uuid4())
-
-        anon_key = RequesterIdentity(
-            voter_user_id=None, ip_hash=None, user_agent_hash=None, voter_anon_id="a"
-        ).judge_key(fallback_vote_id=uuid.uuid4())
-
-        votes = (
-            self._votes_for_key(user_key, 2)
-            + self._votes_for_key(fp_key, 2)
-            + self._votes_for_key(ip_key, 2)
-            + self._votes_for_key(anon_key, 2)
+        votes = self._votes_for_key(user_key, 2) + self._votes_for_key(
+            other_user_key, 2
         )
 
         kept = limit_votes_per_judge_per_day(votes, daily_vote_cap=1)
         kept_keys = {v.judge_key for v in kept}
-        assert kept_keys == {user_key, fp_key, ip_key, anon_key}
-        assert len(kept) == 4
+        assert kept_keys == {user_key, other_user_key}
+        assert len(kept) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -591,6 +431,7 @@ def test_load_vote_samples_day_cap_uses_db_side_utc_boundaries() -> None:
     day1_vote_1 = uuid.uuid4()
     day1_vote_2 = uuid.uuid4()
     day2_vote_1 = uuid.uuid4()
+    voter_user_id = uuid.uuid4()
 
     day1 = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
     day2 = datetime(2026, 3, 2, 9, 30, tzinfo=timezone.utc)
@@ -619,10 +460,7 @@ def test_load_vote_samples_day_cap_uses_db_side_utc_boundaries() -> None:
                             day1_vote_1,
                             day1,
                             "A",
-                            None,
-                            "anon-1",
-                            None,
-                            None,
+                            voter_user_id,
                             model_a,
                             model_b,
                         ),
@@ -630,10 +468,7 @@ def test_load_vote_samples_day_cap_uses_db_side_utc_boundaries() -> None:
                             day1_vote_2,
                             day1 + timedelta(minutes=5),
                             "B",
-                            None,
-                            "anon-1",
-                            None,
-                            None,
+                            voter_user_id,
                             model_a,
                             model_b,
                         ),
@@ -645,10 +480,7 @@ def test_load_vote_samples_day_cap_uses_db_side_utc_boundaries() -> None:
                             day2_vote_1,
                             day2,
                             "A",
-                            None,
-                            "anon-1",
-                            None,
-                            None,
+                            voter_user_id,
                             model_a,
                             model_b,
                         )
@@ -690,7 +522,7 @@ def test_compute_elo_ratings_shuffle_single_round_matches_original_path() -> Non
             winner="A" if i % 2 == 0 else "B",
             model_a_id=model_a,
             model_b_id=model_b,
-            judge_key=f"anon:{i}",
+            judge_key=f"user:{i}",
         )
         for i in range(8)
     ]
@@ -719,7 +551,7 @@ def test_compute_elo_ratings_shuffle_is_deterministic_for_seed() -> None:
                 winner="A",
                 model_a_id=model_a,
                 model_b_id=model_b,
-                judge_key=f"anon:{i}",
+                judge_key=f"user:{i}",
             )
             for i in range(10)
         ],
@@ -729,7 +561,7 @@ def test_compute_elo_ratings_shuffle_is_deterministic_for_seed() -> None:
                 winner="B",
                 model_a_id=model_b,
                 model_b_id=model_c,
-                judge_key=f"anon:b{i}",
+                judge_key=f"user:b{i}",
             )
             for i in range(7)
         ],
@@ -758,7 +590,7 @@ def test_compute_elo_ratings_shuffle_different_seeds_give_different_ratings() ->
             winner="A" if i < 15 else "B",
             model_a_id=model_a,
             model_b_id=model_b,
-            judge_key=f"anon:{i}",
+            judge_key=f"user:{i}",
         )
         for i in range(30)
     ]
@@ -784,7 +616,7 @@ def test_compute_elo_ratings_shuffle_games_played_matches_single_pass() -> None:
             winner="A",
             model_a_id=model_a,
             model_b_id=model_b,
-            judge_key=f"anon:{i}",
+            judge_key=f"user:{i}",
         )
         for i in range(6)
     ]
@@ -864,7 +696,7 @@ def test_compute_elo_confidence_intervals_shuffle_is_deterministic_for_seed() ->
             winner="A" if i % 3 else "B",
             model_a_id=model_a,
             model_b_id=model_b,
-            judge_key=f"anon:{i}",
+            judge_key=f"user:{i}",
         )
         for i in range(18)
     ]
@@ -909,7 +741,7 @@ def test_limit_votes_per_judge_per_day_utc_boundary() -> None:
             winner="A",
             model_a_id=model_a,
             model_b_id=model_b,
-            judge_key="anon:same",
+            judge_key="user:same",
         )
         for i in range(3)
     ]
@@ -919,7 +751,7 @@ def test_limit_votes_per_judge_per_day_utc_boundary() -> None:
             winner="B",
             model_a_id=model_a,
             model_b_id=model_b,
-            judge_key="anon:same",
+            judge_key="user:same",
         )
         for i in range(3)
     ]

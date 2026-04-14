@@ -2,7 +2,21 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.prompting import build_chat_messages, render_prompt_template
+from app.services.prompting import (
+    build_chat_messages,
+    normalize_optional_prompt_text,
+    render_prompt_template,
+)
+
+
+def test_normalize_optional_prompt_text_returns_none_for_blank_values() -> None:
+    assert normalize_optional_prompt_text(None) is None
+    assert normalize_optional_prompt_text("") is None
+    assert normalize_optional_prompt_text(" \n\t ") is None
+
+
+def test_normalize_optional_prompt_text_preserves_non_blank_content() -> None:
+    assert normalize_optional_prompt_text("  keep spacing  ") == "  keep spacing  "
 
 
 def test_render_prompt_template_substitutes_named_tokens() -> None:

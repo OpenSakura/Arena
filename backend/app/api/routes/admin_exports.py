@@ -122,9 +122,6 @@ def export_votes(db: Session = Depends(get_db)) -> StreamingResponse:
                 "voter_user_id": str(vote.voter_user_id)
                 if vote.voter_user_id
                 else None,
-                "voter_anon_id": vote.voter_anon_id,
-                "ip_hash": vote.ip_hash,
-                "user_agent_hash": vote.user_agent_hash,
                 "created_at": vote.created_at,
             }
 

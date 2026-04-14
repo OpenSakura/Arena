@@ -9,7 +9,6 @@ import pytest
 from app.api.routes import leaderboard
 from app.schemas.leaderboard import LeaderboardResponse
 from app.services.leaderboard_bt import PairwiseVote
-from app.utils.requester_identity import RequesterIdentity
 
 
 class _FakeRedis:
@@ -780,78 +779,15 @@ def test_confidence_cache_redis_failures_fall_back_to_recompute(
 
 
 class TestSharedIdentityContractConsistency:
-    """Battle daily cap (``primary_vote_filter``) and leaderboard per-judge
-    limiting (``judge_key``) must resolve identity through the same shared
-    ``RequesterIdentity`` precedence.
-    """
+    """Battle caps and leaderboard limiting share a user-id contract."""
 
     def test_user_requester_has_cap_filter_and_judge_key(self) -> None:
+        from app.utils.requester_identity import RequesterIdentity
+
         user_id = uuid.uuid4()
-        identity = RequesterIdentity(
-            voter_user_id=user_id,
-            ip_hash="ip",
-            user_agent_hash="ua",
-            voter_anon_id="anon",
-        )
-        assert identity.primary_kind == "user"
-        assert identity.primary_vote_filter() is not None
-        assert identity.judge_key(fallback_vote_id=uuid.uuid4()) == f"user:{user_id}"
-
-    def test_fingerprint_requester_has_cap_filter_and_judge_key(self) -> None:
-        identity = RequesterIdentity(
-            voter_user_id=None,
-            ip_hash="ip-hash",
-            user_agent_hash="ua-hash",
-            voter_anon_id="anon-123",
-        )
-        assert identity.primary_kind == "fingerprint"
-        assert identity.primary_vote_filter() is not None
-        assert identity.judge_key(fallback_vote_id=uuid.uuid4()) == "fp:ip-hash:ua-hash"
-
-    def test_ip_only_requester_has_cap_filter_and_judge_key(self) -> None:
-        identity = RequesterIdentity(
-            voter_user_id=None,
-            ip_hash="ip-hash",
-            user_agent_hash=None,
-            voter_anon_id="anon-123",
-        )
-        assert identity.primary_kind == "ip"
-        assert identity.primary_vote_filter() is not None
-        assert identity.judge_key(fallback_vote_id=uuid.uuid4()) == "ip:ip-hash"
-
-    def test_anon_cookie_requester_has_cap_filter_and_judge_key(self) -> None:
-        identity = RequesterIdentity(
-            voter_user_id=None,
-            ip_hash=None,
-            user_agent_hash=None,
-            voter_anon_id="anon-123",
-        )
-        assert identity.primary_kind == "anon"
-        assert identity.primary_vote_filter() is not None
-        assert identity.judge_key(fallback_vote_id=uuid.uuid4()) == "anon:anon-123"
-
-    def test_unknown_requester_skips_cap_and_gets_per_vote_judge_key(self) -> None:
-        identity = RequesterIdentity(
-            voter_user_id=None,
-            ip_hash=None,
-            user_agent_hash=None,
-            voter_anon_id=None,
-        )
-        assert identity.primary_kind == "unknown"
-        assert identity.primary_vote_filter() is None
-        vote_id = uuid.uuid4()
-        assert identity.judge_key(fallback_vote_id=vote_id) == f"unknown:{vote_id}"
-
-    def test_precedence_order_matches_shared_contract(self) -> None:
-        from app.utils.requester_identity import REQUESTER_IDENTITY_PRECEDENCE
-
-        assert REQUESTER_IDENTITY_PRECEDENCE == (
-            "user",
-            "fingerprint",
-            "ip",
-            "anon",
-            "unknown",
-        )
+        identity = RequesterIdentity(voter_user_id=user_id)
+        assert identity.battle_lookup_filter() is not None
+        assert identity.judge_key() == f"user:{user_id}"
 
 
 # ---------------------------------------------------------------------------

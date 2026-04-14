@@ -15,6 +15,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.services.prompting import normalize_optional_prompt_text
+
 
 _MAX_JSON_DICT_BYTES = 65_536  # 64 KB
 
@@ -43,8 +45,9 @@ class ModelAdmin(BaseModel):
     temperature: float | None = None
     frequency_penalty: float | None = None
     presence_penalty: float | None = None
+    system_prompt: str | None = None
+    user_prompt: str | None = None
     params: dict[str, Any] | None = None
-    prompt_template_id: str | None = None
     has_api_key: bool
     created_at: datetime
     updated_at: datetime
@@ -69,10 +72,11 @@ class ModelCreate(BaseModel):
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
     presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    system_prompt: str | None = None
+    user_prompt: str | None = None
 
     params: dict[str, Any] | None = None
 
-    prompt_template_id: str | None = None
     api_key: str | None = None
 
     @field_validator("tags")
@@ -84,6 +88,13 @@ class ModelCreate(BaseModel):
     @classmethod
     def _validate_params_size(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
         return _validate_json_dict_size(v, "params")
+
+    @field_validator("system_prompt", "user_prompt", mode="before")
+    @classmethod
+    def _normalize_prompt_text(cls, v: Any) -> Any:
+        if isinstance(v, str) or v is None:
+            return normalize_optional_prompt_text(v)
+        return v
 
 
 class ModelUpdate(BaseModel):
@@ -99,10 +110,11 @@ class ModelUpdate(BaseModel):
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
     presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    system_prompt: str | None = None
+    user_prompt: str | None = None
 
     params: dict[str, Any] | None = None
 
-    prompt_template_id: str | None = None
     api_key: str | None = None
 
     @field_validator("tags")
@@ -118,3 +130,10 @@ class ModelUpdate(BaseModel):
         cls, v: dict[str, Any] | None
     ) -> dict[str, Any] | None:
         return _validate_json_dict_size(v, "params")
+
+    @field_validator("system_prompt", "user_prompt", mode="before")
+    @classmethod
+    def _normalize_update_prompt_text(cls, v: Any) -> Any:
+        if isinstance(v, str) or v is None:
+            return normalize_optional_prompt_text(v)
+        return v

@@ -16,7 +16,6 @@ from app.api.routes import (
     admin_exports,
     admin_leaderboard,
     admin_models,
-    admin_prompts,
     admin_tasks,
     battles,
     health,
@@ -34,7 +33,6 @@ api_router.include_router(votes.router)
 api_router.include_router(leaderboard.router)
 
 api_router.include_router(admin_models.router)
-api_router.include_router(admin_prompts.router)
 api_router.include_router(admin_tasks.router)
 api_router.include_router(admin_exports.router)
 api_router.include_router(admin_leaderboard.router)

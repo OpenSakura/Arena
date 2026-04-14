@@ -19,7 +19,6 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     Float,
-    ForeignKey,
     Index,
     String,
     Text,
@@ -37,7 +36,6 @@ class Model(Base):
     __tablename__ = "models"
     __table_args__ = (
         Index("ix_models_enabled_visibility", "enabled", "visibility"),
-        Index("ix_models_prompt_template_id", "prompt_template_id"),
         Index("ix_models_model_name", "model_name"),
         UniqueConstraint(
             "provider_type", "model_name", name="uq_models_provider_model"
@@ -85,14 +83,10 @@ class Model(Base):
     frequency_penalty: Mapped[float | None] = mapped_column(Float, nullable=True)
     presence_penalty: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    params: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    user_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Prompt binding (nullable for MVP)
-    prompt_template_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("prompt_templates.id", ondelete="SET NULL"),
-        nullable=True,
-    )
+    params: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     # Encrypted provider token (optional). Store ciphertext here.
     encrypted_api_key: Mapped[str | None] = mapped_column(Text, nullable=True)

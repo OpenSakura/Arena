@@ -191,10 +191,7 @@ def test_export_battles_and_votes_capture_expected_fields() -> None:
         winner="A",
         rubric=["accuracy"],
         comment="clear winner",
-        voter_user_id=None,
-        voter_anon_id="anon-123",
-        ip_hash="ip-hash",
-        user_agent_hash="ua-hash",
+        voter_user_id=uuid.uuid4(),
         created_at=created_at,
     )
 
@@ -213,8 +210,7 @@ def test_export_battles_and_votes_capture_expected_fields() -> None:
     assert vote_record["record_type"] == "vote"
     assert vote_record["battle_id"] == str(battle.id)
     assert vote_record["winner"] == "A"
-    assert vote_record["voter_user_id"] is None
-    assert vote_record["voter_anon_id"] == "anon-123"
+    assert vote_record["voter_user_id"] == str(vote.voter_user_id)
     assert vote_record["created_at"] == created_at.isoformat()
 
 

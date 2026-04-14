@@ -695,12 +695,11 @@ def test_execute_runs_synced_emits_deltas_in_lockstep(
     assert outputs_by_run[run_b_id] == "B1B2"
 
 
-def test_build_system_prompt_uses_default_prompt_when_model_has_no_template() -> None:
+def test_build_system_prompt_uses_default_prompt() -> None:
     orchestrator = BattleOrchestrator()
-    model = SimpleNamespace(prompt_template_id=None)
+    model = SimpleNamespace(system_prompt=None)
 
     prompt = orchestrator._build_system_prompt(
-        db=object(),  # type: ignore[arg-type]
         model=model,  # type: ignore[arg-type]
         source_text="JP text",
         source_lang="ja",
@@ -711,70 +710,164 @@ def test_build_system_prompt_uses_default_prompt_when_model_has_no_template() ->
     assert "Output policy" not in prompt
 
 
-def test_build_system_prompt_renders_bound_template(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_build_system_prompt_uses_model_prompt_when_present() -> None:
     orchestrator = BattleOrchestrator()
-    template_id = uuid.uuid4()
-    model_id = uuid.uuid4()
-    model = SimpleNamespace(id=model_id, prompt_template_id=template_id)
-    captured: dict[str, object] = {}
-
-    class _PromptDB:
-        def __init__(self) -> None:
-            self.calls: list[tuple[type[object], uuid.UUID]] = []
-
-        def get(self, model_type: type[object], key: uuid.UUID) -> object | None:
-            self.calls.append((model_type, key))
-            return SimpleNamespace(template_text="Template: {source_text}")
-
-    def fake_render(template_text: str, inputs: dict[str, object]) -> str:
-        captured["template_text"] = template_text
-        captured["inputs"] = inputs
-        return "Rendered prompt"
-
-    db = _PromptDB()
-    monkeypatch.setattr(orchestrator_module, "render_prompt_template", fake_render)
+    model = SimpleNamespace(
+        system_prompt="Translate {{ source_lang }} to {{ target_lang }} for {{ source_text }}"
+    )
 
     prompt = orchestrator._build_system_prompt(
-        db=db,  # type: ignore[arg-type]
         model=model,  # type: ignore[arg-type]
         source_text="JP text",
         source_lang="ja",
         target_lang="zh",
     )
 
-    assert db.calls == [(orchestrator_module.PromptTemplate, template_id)]
-    assert captured == {
-        "template_text": "Template: {source_text}",
-        "inputs": {
-            "source_text": "JP text",
-            "source_lang": "ja",
-            "target_lang": "zh",
-        },
-    }
-    assert prompt == "Rendered prompt"
+    assert prompt == "Translate ja to zh for JP text"
 
 
-def test_build_system_prompt_raises_when_bound_template_is_missing() -> None:
+def test_build_user_prompt_falls_back_to_source_text_when_blank() -> None:
     orchestrator = BattleOrchestrator()
-    template_id = uuid.uuid4()
-    model_id = uuid.uuid4()
-    model = SimpleNamespace(id=model_id, prompt_template_id=template_id)
-    db = SimpleNamespace(get=lambda _model, _key: None)
+    model = SimpleNamespace(user_prompt="   ")
 
-    with pytest.raises(RuntimeError) as exc_info:
-        orchestrator._build_system_prompt(
-            db=db,  # type: ignore[arg-type]
-            model=model,  # type: ignore[arg-type]
-            source_text="JP text",
-            source_lang="ja",
-            target_lang="zh",
-        )
+    prompt = orchestrator._build_user_prompt(
+        model=model,  # type: ignore[arg-type]
+        source_text="JP text",
+        source_lang="ja",
+        target_lang="zh",
+    )
 
-    detail = str(exc_info.value)
-    assert str(template_id) in detail
-    assert str(model_id) in detail
+    assert prompt == "JP text"
+
+
+def test_build_user_prompt_uses_model_prompt_when_present() -> None:
+    orchestrator = BattleOrchestrator()
+    model = SimpleNamespace(user_prompt="Source ({{ source_lang }}): {{ source_text }}")
+
+    prompt = orchestrator._build_user_prompt(
+        model=model,  # type: ignore[arg-type]
+        source_text="JP text",
+        source_lang="ja",
+        target_lang="zh",
+    )
+
+    assert prompt == "Source (ja): JP text"
+
+
+def test_prepare_runs_for_execution_applies_independent_prompt_fallbacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = BattleOrchestrator()
+    battle_id = uuid.uuid4()
+    task_id = uuid.uuid4()
+    model_a_id = uuid.uuid4()
+    model_b_id = uuid.uuid4()
+    run_a_id = uuid.uuid4()
+    run_b_id = uuid.uuid4()
+
+    battle = BattleSnapshot(
+        id=battle_id,
+        task_id=task_id,
+        status="running",
+        metadata_json={
+            "task_snapshot": {
+                "source_text": "JP text",
+                "source_lang": "ja",
+                "target_lang": "zh",
+            }
+        },
+    )
+    runs = [
+        RunSnapshot(id=run_a_id, battle_id=battle_id, side="A", model_id=model_a_id),
+        RunSnapshot(id=run_b_id, battle_id=battle_id, side="B", model_id=model_b_id),
+    ]
+
+    model_a = SimpleNamespace(
+        id=model_a_id,
+        base_url="https://gateway.example/v1",
+        model_name="model-a",
+        encrypted_api_key=None,
+        params=None,
+        temperature=None,
+        frequency_penalty=None,
+        presence_penalty=None,
+        system_prompt="System {{ source_lang }} -> {{ target_lang }}",
+        user_prompt=None,
+    )
+    model_b = SimpleNamespace(
+        id=model_b_id,
+        base_url="https://gateway.example/v1",
+        model_name="model-b",
+        encrypted_api_key=None,
+        params=None,
+        temperature=None,
+        frequency_penalty=None,
+        presence_penalty=None,
+        system_prompt=None,
+        user_prompt="User prompt: {{ source_text }}",
+    )
+
+    class _FakeDB:
+        def get(self, model_type: type[object], key: uuid.UUID) -> object | None:
+            if model_type is orchestrator_module.Model:
+                if key == model_a_id:
+                    return model_a
+                if key == model_b_id:
+                    return model_b
+            return None
+
+        def rollback(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    orchestrator._SessionLocal = lambda: _FakeDB()  # type: ignore[assignment]
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_model_params",
+        lambda _model: {},
+    )
+
+    prepared = orchestrator._prepare_runs_for_execution(
+        battle=battle,
+        runs=runs,
+        request_id="req-123",
+    )
+
+    prepared_by_side = {item.side: item for item in prepared}
+    assert prepared_by_side["A"].messages == [
+        {"role": "system", "content": "System ja -> zh"},
+        {"role": "user", "content": "JP text"},
+    ]
+    assert prepared_by_side["A"].prompt_rendered == {
+        "system_prompt": "System ja -> zh",
+        "user_prompt": "JP text",
+        "source_lang": "ja",
+        "target_lang": "zh",
+    }
+
+    assert prepared_by_side["B"].messages == [
+        {
+            "role": "system",
+            "content": (
+                "You are a professional literary translator. "
+                "Translate the user input from ja to zh while preserving tone, nuance, "
+                "style, and character voice."
+            ),
+        },
+        {"role": "user", "content": "User prompt: JP text"},
+    ]
+    assert prepared_by_side["B"].prompt_rendered == {
+        "system_prompt": (
+            "You are a professional literary translator. "
+            "Translate the user input from ja to zh while preserving tone, nuance, "
+            "style, and character voice."
+        ),
+        "user_prompt": "User prompt: JP text",
+        "source_lang": "ja",
+        "target_lang": "zh",
+    }
 
 
 def test_replay_finished_runs_emits_terminal_event_for_completed_battle(

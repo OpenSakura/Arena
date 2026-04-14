@@ -46,27 +46,14 @@ class Settings(BaseSettings):
     oidc_jwks_cache_ttl_seconds: int = 300
     oidc_http_timeout_seconds: float = 5.0
 
-    # SECURITY: Empty salt defaults are insecure. Set these to random values
-    # in production to prevent rainbow-table attacks on hashed identifiers.
-    anon_ip_hash_salt: str = ""
-    anon_user_agent_hash_salt: str = ""
-
     turnstile_secret_key: str = ""
     turnstile_verify_url: str = (
         "https://challenges.cloudflare.com/turnstile/v0/siteverify"
     )
 
-    # Anonymous anti-abuse throttles.
-    # Set limit <= 0 to disable that limiter.
     anon_rate_limit_bucket_seconds: int = 10
-    anon_battle_create_rate_limit: int = 20
-    anon_battle_create_rate_limit_window_seconds: int = 60
-    anon_battle_stream_rate_limit: int = 30
-    anon_battle_stream_rate_limit_window_seconds: int = 60
-    anon_vote_submit_rate_limit: int = 30
-    anon_vote_submit_rate_limit_window_seconds: int = 60
 
-    # Authenticated user rate limits (higher thresholds than anonymous).
+    # Authenticated user rate limits.
     # Set limit <= 0 to disable that limiter.
     auth_battle_create_rate_limit: int = 60
     auth_battle_create_rate_limit_window_seconds: int = 60
@@ -74,9 +61,6 @@ class Settings(BaseSettings):
     auth_battle_stream_rate_limit_window_seconds: int = 60
     auth_vote_submit_rate_limit: int = 90
     auth_vote_submit_rate_limit_window_seconds: int = 60
-    # Default True so cookies are only sent over HTTPS in production.
-    # Set to False explicitly for local HTTP development.
-    anon_id_cookie_secure: bool = True
 
     # Redis backend for rate limiting (anonymous and authenticated) and shared
     # confidence-interval result caching. Leave empty to disable both.
@@ -93,6 +77,9 @@ class Settings(BaseSettings):
     trust_x_forwarded_for: bool = False
 
     arena_master_key: str = ""
+    # Optional previous master key for zero-downtime key rotation.
+    # When set, decryption will attempt the current key first, then fall back
+    # to this key.  Leave empty when no rotation is in progress.
     arena_master_key_old: str = ""
 
     # FastChat-inspired model pairing controls (model_name keyed).
@@ -157,21 +144,11 @@ class Settings(BaseSettings):
 
         errors: list[str] = []
 
-        if not self.anon_ip_hash_salt:
-            errors.append(
-                "ANON_IP_HASH_SALT is empty in production — "
-                "IP hashes are trivially reversible without a salt"
-            )
-        if not self.anon_user_agent_hash_salt:
-            errors.append(
-                "ANON_USER_AGENT_HASH_SALT is empty in production — "
-                "user-agent hashes are insecure without a salt"
-            )
         if not self.oidc_issuer:
             errors.append(
                 "OIDC_ISSUER is empty in production — "
                 "OIDC authentication is disabled; all requests will be "
-                "treated as anonymous"
+                "treated as unauthenticated"
             )
         if self.oidc_issuer and not self.oidc_audience:
             errors.append(
@@ -199,13 +176,6 @@ class Settings(BaseSettings):
                 "safe with a single API worker. Set WEB_CONCURRENCY=1."
             )
 
-        if not self.anon_id_cookie_secure:
-            errors.append(
-                "ANON_ID_COOKIE_SECURE is False in production — "
-                "the anonymous identity cookie will be sent over plain HTTP, "
-                "allowing session hijacking via network interception"
-            )
-
         # Reject wildcard CORS origins when credentials are enabled.
         if any(origin.strip() == "*" for origin in self.cors_allow_origins):
             errors.append(
@@ -225,7 +195,7 @@ class Settings(BaseSettings):
         if not self.rate_limit_redis_url.strip():
             _config_logger.warning(
                 "RATE_LIMIT_REDIS_URL is not configured in production — "
-                "anonymous rate limiting and shared confidence caching are "
+                "Redis-backed rate limiting and shared confidence caching are "
                 "disabled"
             )
 

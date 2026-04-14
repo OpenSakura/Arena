@@ -17,7 +17,7 @@ import datetime
 from functools import lru_cache
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 import httpx
 from sqlalchemy import func, select
@@ -42,13 +42,10 @@ from app.models.vote import Vote
 from app.schemas.battles import BattleCreate, BattlePublic, RunPublic
 from app.services.battle_orchestrator import BattleOrchestrator, get_battle_orchestrator
 from app.services.sampling import CandidateModel, SamplingPolicy, select_battle_pair
-from app.utils.anon import get_or_set_anon_id
 from app.utils.client_ip import get_client_ip
 from app.utils.id import parse_uuid_or_422
-from app.utils.requester_identity import RequesterIdentity
 from app.utils.rate_limit import (
     RollingWindowRateLimiter,
-    build_anon_rate_limit_key,
     build_auth_rate_limit_key,
 )
 from app.utils.redis import get_rate_limit_redis_client
@@ -60,14 +57,10 @@ router = APIRouter(prefix="/battles", tags=["battles"])
 def create_battle(
     payload: BattleCreate,
     request: Request,
-    response: Response,
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal_required),
     settings: Settings = Depends(get_settings),
 ) -> BattlePublic:
-    _ = (request, response)
-    anon_id: str | None = None
-
     _enforce_auth_battle_rate_limit(
         principal=principal,
         settings=settings,
@@ -79,7 +72,6 @@ def create_battle(
     _enforce_daily_vote_cap(
         db=db,
         principal=principal,
-        request=request,
         settings=settings,
     )
 
@@ -101,7 +93,6 @@ def create_battle(
                 "models": "fastchat_weighted_v2",
             },
             "requester_user_id": principal.user_id,
-            "requester_anon_id": anon_id,
         },
     )
     db.add(battle)
@@ -197,7 +188,7 @@ async def stream_battle(
         raise HTTPException(status_code=404, detail="Battle not found")
 
     # Only the battle creator (or an admin) may connect to the stream.
-    if not _is_battle_creator(battle, principal=principal, request=request):
+    if not _is_battle_creator(battle, principal=principal):
         settings_for_admin = get_settings()
         claim_value = claim_by_path(
             principal.claims, settings_for_admin.oidc_admin_group_claim
@@ -213,16 +204,9 @@ async def stream_battle(
                 detail="Only the battle creator may connect to this stream",
             )
 
-    # Anonymous stream connections are rate-limited to prevent resource
-    # exhaustion via many concurrent SSE connections.
+    # Battle mutation/stream ownership is authenticated-user scoped.
     # Run the sync Redis call in a thread to avoid blocking the event loop.
-    if not principal.is_authenticated:
-        await asyncio.to_thread(
-            _enforce_anon_battle_stream_rate_limit,
-            request=request,
-            settings=settings,
-        )
-    else:
+    if principal.is_authenticated:
         await asyncio.to_thread(
             _enforce_auth_battle_stream_rate_limit,
             principal=principal,
@@ -266,7 +250,7 @@ def retry_battle(
     if battle is None:
         raise HTTPException(status_code=404, detail="Battle not found")
 
-    is_creator = _is_battle_creator(battle, principal=principal, request=request)
+    is_creator = _is_battle_creator(battle, principal=principal)
     if not is_creator:
         settings_for_admin = get_settings()
         claim_value = claim_by_path(
@@ -490,14 +474,10 @@ def _is_battle_creator(
     battle: Battle,
     *,
     principal: Principal,
-    request: Request,
 ) -> bool:
     """Check whether the requester is the user who created this battle.
 
-    Matches on ``requester_user_id`` (authenticated) or
-    ``requester_anon_id`` (anonymous cookie) stored at creation time.
-    Returns ``False`` when there is no identifiable creator signal
-    (e.g. legacy battles created before anon_id tracking was added).
+    Matches on ``requester_user_id`` stored at creation time.
     """
     metadata = battle.metadata_json
     if not isinstance(metadata, dict):
@@ -512,53 +492,7 @@ def _is_battle_creator(
     ):
         return True
 
-    # Fallback to anonymous cookie.
-    creator_anon_id = metadata.get("requester_anon_id")
-    anon_id = request.cookies.get("arena_anon_id")
-    if (
-        creator_anon_id is not None
-        and anon_id is not None
-        and creator_anon_id == anon_id
-    ):
-        return True
-
     return False
-
-
-@lru_cache(maxsize=1)
-def _get_battle_create_rate_limiter() -> RollingWindowRateLimiter:
-    settings = get_settings()
-    return RollingWindowRateLimiter(
-        limit=settings.anon_battle_create_rate_limit,
-        window_seconds=settings.anon_battle_create_rate_limit_window_seconds,
-        bucket_seconds=settings.anon_rate_limit_bucket_seconds,
-        redis_client=get_rate_limit_redis_client(),
-        redis_prefix=settings.rate_limit_redis_key_prefix,
-    )
-
-
-def _enforce_anon_battle_rate_limit(
-    *,
-    request: Request,
-    settings: Settings,
-) -> None:
-    limiter = _get_battle_create_rate_limiter()
-    key = build_anon_rate_limit_key(
-        scope="anon_battle_create",
-        request=request,
-        trust_x_forwarded_for=settings.trust_x_forwarded_for,
-        ip_hash_salt=settings.anon_ip_hash_salt,
-    )
-    if limiter.is_limited(key):
-        raise HTTPException(
-            status_code=429,
-            detail="Too many anonymous battle creation requests",
-            headers={
-                "Retry-After": str(
-                    settings.anon_battle_create_rate_limit_window_seconds
-                )
-            },
-        )
 
 
 @lru_cache(maxsize=1)
@@ -592,42 +526,6 @@ def _enforce_auth_battle_rate_limit(
             headers={
                 "Retry-After": str(
                     settings.auth_battle_create_rate_limit_window_seconds
-                )
-            },
-        )
-
-
-@lru_cache(maxsize=1)
-def _get_battle_stream_rate_limiter() -> RollingWindowRateLimiter:
-    settings = get_settings()
-    return RollingWindowRateLimiter(
-        limit=settings.anon_battle_stream_rate_limit,
-        window_seconds=settings.anon_battle_stream_rate_limit_window_seconds,
-        bucket_seconds=settings.anon_rate_limit_bucket_seconds,
-        redis_client=get_rate_limit_redis_client(),
-        redis_prefix=settings.rate_limit_redis_key_prefix,
-    )
-
-
-def _enforce_anon_battle_stream_rate_limit(
-    *,
-    request: Request,
-    settings: Settings,
-) -> None:
-    limiter = _get_battle_stream_rate_limiter()
-    key = build_anon_rate_limit_key(
-        scope="anon_battle_stream",
-        request=request,
-        trust_x_forwarded_for=settings.trust_x_forwarded_for,
-        ip_hash_salt=settings.anon_ip_hash_salt,
-    )
-    if limiter.is_limited(key):
-        raise HTTPException(
-            status_code=429,
-            detail="Too many anonymous battle stream requests",
-            headers={
-                "Retry-After": str(
-                    settings.anon_battle_stream_rate_limit_window_seconds
                 )
             },
         )
@@ -721,51 +619,26 @@ def _enforce_daily_vote_cap(
     *,
     db: Session,
     principal: Principal,
-    request: Request,
     settings: Settings,
 ) -> None:
     """Block battle creation when the daily vote cap is reached.
 
-    Uses the shared ``RequesterIdentity`` contract (see
-    ``app.utils.requester_identity``) to count today's votes via the
-    requester's *primary* identity filter.  This prevents wasting LLM
-    inference on battles whose votes would be silently excluded from
-    ratings anyway.
-
-    The primary-filter approach is intentionally stricter than the
-    battle-lookup fallback chain: an ip-only requester only counts
-    ip-only historical votes, and an unknown requester (primary_kind ==
-    "unknown") is explicitly allowed through.
+    Battle creation is authenticated-only, so the cap applies per user id.
     """
     cap = settings.leaderboard_refresh_daily_vote_cap
     if cap <= 0:
         return
 
+    if not principal.is_authenticated or principal.user_id is None:
+        return
+
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
-
-    voter_user_id: uuid.UUID | None = None
-    if principal.is_authenticated and principal.user_id is not None:
-        voter_user_id = uuid.UUID(principal.user_id)
-
-    requester_identity = RequesterIdentity.from_request(
-        request,
-        voter_user_id=voter_user_id,
-        voter_anon_id=request.cookies.get("arena_anon_id"),
-        ip_hash_salt=settings.anon_ip_hash_salt,
-        user_agent_hash_salt=settings.anon_user_agent_hash_salt,
-        trust_x_forwarded_for=settings.trust_x_forwarded_for,
-    )
-    identity_filter = requester_identity.primary_vote_filter()
-    if identity_filter is None:
-        # primary_kind == "unknown": no identifiable signal at all.
-        # Allow through — Turnstile + rate limiter already throttle
-        # truly anonymous traffic.
-        return
+    voter_user_id = uuid.UUID(principal.user_id)
 
     count = db.execute(
         select(func.count(Vote.id)).where(
-            identity_filter,
+            Vote.voter_user_id == voter_user_id,
             Vote.created_at >= today_start,
         )
     ).scalar_one()

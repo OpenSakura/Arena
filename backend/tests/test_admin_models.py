@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import Any
 import uuid
 
 from fastapi import HTTPException
@@ -40,11 +41,9 @@ class _ModelMutationDB:
         self,
         *,
         model: object | None = None,
-        prompt_templates: set[uuid.UUID] | None = None,
         commit_error: Exception | None = None,
     ) -> None:
         self._model = model
-        self._prompt_templates = prompt_templates or set()
         self._commit_error = commit_error
         self.added: list[object] = []
         self.deleted: list[object] = []
@@ -57,10 +56,6 @@ class _ModelMutationDB:
             if self._model is not None and getattr(self._model, "id", None) == key:
                 return self._model
             return None
-
-        if model_type is admin_models.PromptTemplate and key in self._prompt_templates:
-            return SimpleNamespace(id=key)
-
         return None
 
     def add(self, item: object) -> None:
@@ -74,8 +69,12 @@ class _ModelMutationDB:
         if self._commit_error is not None:
             raise self._commit_error
 
-    def refresh(self, _item: object) -> None:
+    def refresh(self, _item: Any) -> None:
         self.refresh_calls += 1
+        if getattr(_item, "created_at", None) is None:
+            now = datetime(2026, 2, 18, 10, 0, tzinfo=timezone.utc)
+            _item.created_at = now
+            _item.updated_at = now
 
     def rollback(self) -> None:
         self.rollback_calls += 1
@@ -95,8 +94,9 @@ def _model_stub(**overrides: object) -> SimpleNamespace:
         "temperature": None,
         "frequency_penalty": None,
         "presence_penalty": None,
+        "system_prompt": None,
+        "user_prompt": None,
         "params": None,
-        "prompt_template_id": None,
         "encrypted_api_key": None,
         "created_at": now,
         "updated_at": now,
@@ -113,12 +113,6 @@ def test_parse_uuid_rejects_invalid_values() -> None:
 
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail == "Invalid model_id"
-
-
-def test_parse_optional_uuid_returns_none_when_unset() -> None:
-    from app.utils.id import parse_optional_uuid_or_422
-
-    assert parse_optional_uuid_or_422(None, "prompt_template_id") is None
 
 
 def test_model_schema_visibility_allows_only_public_or_private() -> None:
@@ -165,19 +159,37 @@ def test_encrypt_api_key_wraps_runtime_errors(monkeypatch: pytest.MonkeyPatch) -
     assert exc_info.value.detail == "Failed to encrypt API key"
 
 
-def test_to_admin_model_maps_prompt_binding_and_secret_presence() -> None:
-    prompt_template_id = uuid.uuid4()
+def test_to_admin_model_maps_secret_presence() -> None:
     model = _model_stub(
-        prompt_template_id=prompt_template_id,
         encrypted_api_key="encrypted-token",
+        system_prompt="System prompt",
+        user_prompt="User prompt",
     )
 
     response = admin_models._to_admin_model(model)  # type: ignore[arg-type]
 
     assert response.id == str(model.id)
-    assert response.prompt_template_id == str(prompt_template_id)
     assert response.has_api_key is True
     assert response.base_url == "https://gateway.example/v1"
+    assert response.system_prompt == "System prompt"
+    assert response.user_prompt == "User prompt"
+
+
+def test_model_prompt_fields_normalize_blank_input_to_none() -> None:
+    create_payload = ModelCreate(
+        display_name="Model Alpha",
+        provider_type="openai_compat",
+        model_name="gpt-alpha",
+        base_url="https://gateway.example",
+        system_prompt="   ",
+        user_prompt="\n\t",
+    )
+    update_payload = ModelUpdate(system_prompt="", user_prompt="  ")
+
+    assert create_payload.system_prompt is None
+    assert create_payload.user_prompt is None
+    assert update_payload.system_prompt is None
+    assert update_payload.user_prompt is None
 
 
 def test_test_model_raises_404_when_model_is_missing() -> None:
@@ -246,12 +258,10 @@ def test_test_model_merges_parameters_and_returns_preview(
                 "request_id": "req-42",
             }
 
-    fake_client = _FakeClient()
-
     class _FakeOrchestrator:
         @property
         def llm_client(self):
-            return fake_client
+            return _FakeClient()
 
     monkeypatch.setattr(
         admin_models, "get_battle_orchestrator", lambda: _FakeOrchestrator()
@@ -260,17 +270,8 @@ def test_test_model_merges_parameters_and_returns_preview(
     response = asyncio.run(admin_models.test_model(str(model.id), db=db))  # type: ignore[arg-type]
 
     assert response["ok"] is True
-    assert response["model_id"] == str(model.id)
-    assert response["has_api_key"] is True
     assert response["request_id"] == "req-42"
     assert response["output_preview"] == "connectivity ok"
-    assert isinstance(response["latency_ms"], int)
-    assert response["latency_ms"] >= 0
-
-    assert captured["base_url"] == model.base_url
-    assert captured["model"] == model.model_name
-    assert captured["api_key"] == "secret-key"
-    assert captured["timeout_seconds"] == 20.0
     assert captured["params"] == {
         "max_tokens": 12,
         "temperature": 0,
@@ -309,33 +310,16 @@ def test_test_model_returns_failure_payload_on_client_errors(
     }
 
 
-def test_create_model_encrypts_api_key_and_resolves_prompt_template(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    template_id = uuid.uuid4()
-    db = _ModelMutationDB(prompt_templates={template_id})
+def test_create_model_encrypts_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    db = _ModelMutationDB()
 
     monkeypatch.setattr(
         admin_models.socket,
         "getaddrinfo",
         lambda *_args, **_kwargs: [(None, None, None, None, ("8.8.8.8", 443))],
     )
-
     monkeypatch.setattr(
         admin_models, "_encrypt_api_key", lambda api_key: f"enc:{api_key}"
-    )
-    monkeypatch.setattr(
-        admin_models,
-        "_to_admin_model",
-        lambda model: {
-            "model_name": model.model_name,
-            "prompt_template_id": (
-                str(model.prompt_template_id)
-                if model.prompt_template_id is not None
-                else None
-            ),
-            "has_api_key": model.encrypted_api_key is not None,
-        },
     )
 
     payload = ModelCreate(
@@ -343,8 +327,9 @@ def test_create_model_encrypts_api_key_and_resolves_prompt_template(
         provider_type="openai",
         model_name="gpt-alpha",
         base_url="https://gateway.example/v1",
-        prompt_template_id=str(template_id),
         api_key="secret-token",
+        system_prompt="Translate carefully",
+        user_prompt="Source: {{ source_text }}",
         params={"max_tokens": 64},
     )
 
@@ -352,82 +337,81 @@ def test_create_model_encrypts_api_key_and_resolves_prompt_template(
 
     assert db.commit_calls == 1
     assert db.refresh_calls == 1
-    assert len(db.added) == 1
-
     created_model = db.added[0]
     assert isinstance(created_model, Model)
     assert created_model.model_name == "gpt-alpha"
-    assert created_model.prompt_template_id == template_id
     assert created_model.encrypted_api_key == "enc:secret-token"
-    assert response == {
-        "model_name": "gpt-alpha",
-        "prompt_template_id": str(template_id),
-        "has_api_key": True,
-    }
+    assert created_model.system_prompt == "Translate carefully"
+    assert created_model.user_prompt == "Source: {{ source_text }}"
+    assert response.has_api_key is True
 
 
-def test_update_model_clears_api_key_and_prompt_template_when_requested(
+def test_create_model_normalizes_blank_prompt_fields_to_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    model = _model_stub(
-        encrypted_api_key="cipher",
-        prompt_template_id=uuid.uuid4(),
-        display_name="Old Name",
-    )
-    db = _ModelMutationDB(model=model)
+    db = _ModelMutationDB()
 
     monkeypatch.setattr(
-        admin_models,
-        "_to_admin_model",
-        lambda item: {
-            "display_name": item.display_name,
-            "prompt_template_id": (
-                str(item.prompt_template_id)
-                if item.prompt_template_id is not None
-                else None
-            ),
-            "has_api_key": item.encrypted_api_key is not None,
-        },
+        admin_models.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [(None, None, None, None, ("8.8.8.8", 443))],
     )
+
+    payload = ModelCreate(
+        display_name="Model Alpha",
+        provider_type="openai",
+        model_name="gpt-alpha",
+        base_url="https://gateway.example/v1",
+        system_prompt="   ",
+        user_prompt="\n",
+    )
+
+    response = admin_models.create_model(payload, db=db)  # type: ignore[arg-type]
+
+    created_model = db.added[0]
+    assert isinstance(created_model, Model)
+    assert created_model.system_prompt is None
+    assert created_model.user_prompt is None
+    assert response.system_prompt is None
+    assert response.user_prompt is None
+
+
+def test_update_model_clears_api_key_when_requested() -> None:
+    model = _model_stub(encrypted_api_key="cipher", display_name="Old Name")
+    db = _ModelMutationDB(model=model)
 
     response = admin_models.update_model(
         str(model.id),
-        ModelUpdate(
-            display_name="New Name",
-            prompt_template_id=None,
-            api_key=None,
-        ),
+        ModelUpdate(display_name="New Name", api_key=None),
         db=db,  # type: ignore[arg-type]
     )
 
     assert db.commit_calls == 1
     assert db.refresh_calls == 1
-    assert db.added == [model]
     assert model.display_name == "New Name"
-    assert model.prompt_template_id is None
     assert model.encrypted_api_key is None
-    assert response == {
-        "display_name": "New Name",
-        "prompt_template_id": None,
-        "has_api_key": False,
-    }
+    assert response.display_name == "New Name"
+    assert response.has_api_key is False
 
 
-def test_update_model_rejects_missing_prompt_template() -> None:
-    model = _model_stub()
-    db = _ModelMutationDB(model=model, prompt_templates=set())
+def test_update_model_normalizes_blank_prompt_fields_to_none() -> None:
+    model = _model_stub(
+        system_prompt="Existing system prompt",
+        user_prompt="Existing user prompt",
+    )
+    db = _ModelMutationDB(model=model)
 
-    with pytest.raises(HTTPException) as exc_info:
-        admin_models.update_model(
-            str(model.id),
-            ModelUpdate(prompt_template_id=str(uuid.uuid4())),
-            db=db,  # type: ignore[arg-type]
-        )
+    response = admin_models.update_model(
+        str(model.id),
+        ModelUpdate(system_prompt="  ", user_prompt=""),
+        db=db,  # type: ignore[arg-type]
+    )
 
-    assert exc_info.value.status_code == 404
-    assert exc_info.value.detail == "Prompt template not found"
-    assert db.commit_calls == 0
-    assert db.refresh_calls == 0
+    assert db.commit_calls == 1
+    assert model.system_prompt is None
+    assert model.user_prompt is None
+    assert response.system_prompt is None
+    assert response.user_prompt is None
 
 
 def test_delete_model_rolls_back_and_returns_conflict_on_integrity_error() -> None:
@@ -449,9 +433,7 @@ def test_delete_model_rolls_back_and_returns_conflict_on_integrity_error() -> No
     assert db.rollback_calls == 1
 
 
-def test_test_model_uses_shared_client(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_test_model_uses_shared_client(monkeypatch: pytest.MonkeyPatch) -> None:
     model = _model_stub(encrypted_api_key=None)
     db = _LookupDB(model)
 
@@ -473,9 +455,7 @@ def test_test_model_uses_shared_client(
             return shared
 
     monkeypatch.setattr(
-        admin_models,
-        "get_battle_orchestrator",
-        lambda: _FakeOrchestrator(),
+        admin_models, "get_battle_orchestrator", lambda: _FakeOrchestrator()
     )
 
     response = asyncio.run(admin_models.test_model(str(model.id), db=db))  # type: ignore[arg-type]

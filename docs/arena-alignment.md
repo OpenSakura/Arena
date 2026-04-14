@@ -37,15 +37,15 @@ Non-goals for MVP (explicit):
 - Task: A single JP source passage to translate.
 - TaskSet: A curated collection of tasks used for sampling and filtering.
 - Model: A callable entry in the model registry.
-- PromptTemplate: A versioned prompt definition used to build request messages.
+- PromptConfig: A per-model prompt configuration (system/user prompt text, plain-text, not DB-versioned) used to build request messages.
 - Run: One model execution on one task (request + output + stats).
 - Battle: One A/B comparison built from two runs on the same task.
 - Vote: A judgment selecting A, B, or tie (+ rubric tags + optional comment).
 
 Important nuance:
 
-- If each model can bind to its own full PromptTemplate, leaderboards are comparing
-  (model + prompt_template + params) as a system. This is OK, but must be explicit in
+- If each model uses its own prompt configuration, leaderboards are comparing
+  (model + prompt_config + params) as a system. This is OK, but must be explicit in
   exports and leaderboard filtering.
 
 ## Stack + Scope (MVP)
@@ -105,13 +105,13 @@ Notes:
 
 ### Prompt Standardization
 
-- Per-model full prompt template binding is allowed (each model can have its own template).
+- Per-model prompt configuration is allowed (each model can use its own system/user prompt).
 - Battles are still A/B blind; model identities are hidden until after vote.
 
 Notes:
 
 - This means the arena measures system performance, not just the raw base model.
-- Plan to slice leaderboards/exports by prompt template name/version so results stay interpretable.
+- Plan to slice leaderboards/exports by prompt config so results stay interpretable.
 
 ### Battle Pairing
 
@@ -184,7 +184,6 @@ Additional recommended fields:
 
 - upstream request id / trace id (if provided)
 - full upstream request payload snapshot (messages + params + extra_body)
-- prompt template name/version/hash
 - model config snapshot hash
 - preprocessing/postprocessing version strings if text normalization is added later
 
@@ -311,5 +310,3 @@ Operational:
 - Exact upstream gateway streaming format and how usage stats are returned.
 - Admin UX: whether to expose `base_url` publicly (likely no, to avoid leaking internals).
 - Authentik claims mapping details for admin gating (which claim contains groups/roles).
-- Decide how to present leaderboards when per-model full PromptTemplates are enabled (variant
-  leaderboards vs template-sliced leaderboards).

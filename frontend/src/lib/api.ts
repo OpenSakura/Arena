@@ -6,7 +6,7 @@
  * Notes:
  * - This file centralizes request wiring so pages/components stay clean.
  * - Attach OIDC access token when available (caller provides Authorization).
- * - Use `credentials: "include"` so anonymous cookies (arena_anon_id) persist.
+ * - Use `credentials: "include"` so cookies persist.
  */
 
 import { toHeaderObject } from "@/lib/sse";

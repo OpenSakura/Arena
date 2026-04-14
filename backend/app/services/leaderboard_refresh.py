@@ -35,7 +35,6 @@ from app.models.model_registry import Model
 from app.models.rating import ModelRating
 from app.models.vote import Vote
 from app.services.ratings import elo_update
-from app.utils.requester_identity import RequesterIdentity
 from app.utils.stats import percentile as _percentile
 
 logger = logging.getLogger(__name__)
@@ -330,9 +329,6 @@ def _vote_sample_stmt(
             Vote.created_at,
             Vote.winner,
             Vote.voter_user_id,
-            Vote.voter_anon_id,
-            Vote.ip_hash,
-            Vote.user_agent_hash,
             run_a.model_id,
             run_b.model_id,
         )
@@ -379,9 +375,6 @@ _VoteSampleRow: TypeAlias = tuple[
     datetime,
     str,
     uuid.UUID | None,
-    str | None,
-    str | None,
-    str | None,
     uuid.UUID,
     uuid.UUID,
 ]
@@ -391,19 +384,21 @@ def _rows_to_vote_samples(rows: list[tuple[Any, ...]]) -> list[VoteSample]:
     samples: list[VoteSample] = []
     for raw_row in rows:
         row = cast(_VoteSampleRow, raw_row)
+        voter_user_id = row[3]
+        if voter_user_id is None:
+            logger.warning(
+                "Skipping vote %s without voter_user_id during leaderboard refresh",
+                row[0],
+            )
+            continue
         samples.append(
             VoteSample(
                 vote_id=row[0],
                 created_at=_ensure_utc(row[1]),
                 winner=row[2],
-                judge_key=RequesterIdentity(
-                    voter_user_id=row[3],
-                    ip_hash=row[5],
-                    user_agent_hash=row[6],
-                    voter_anon_id=row[4],
-                ).judge_key(fallback_vote_id=row[0]),
-                model_a_id=row[7],
-                model_b_id=row[8],
+                judge_key=f"user:{voter_user_id}",
+                model_a_id=row[4],
+                model_b_id=row[5],
             )
         )
 
@@ -445,11 +440,7 @@ def compute_elo_ratings(
     reduces the order-dependent variance inherent in a single linear Elo pass
     (FastChat shuffle-and-average approach).
 
-    ``shuffle_rounds`` of 0 or 1 falls back to the original single-pass path
-    (no shuffling, no averaging) for backwards compatibility.
-
-    ``shuffle_seed`` controls the RNG used for shuffling.  A value of 0 means
-    use ``shuffle_seed=0`` as the literal seed (still deterministic).
+    ``shuffle_rounds`` is clamped to at least one pass.
     """
 
     events = _build_elo_events(vote_samples)
@@ -598,12 +589,14 @@ def _compute_shuffled_average_elo_from_events(
     shuffle_rng: random.Random | None,
     sampled_indices: list[int] | None = None,
 ) -> tuple[dict[uuid.UUID, float], dict[uuid.UUID, int]]:
-    if shuffle_rounds <= 1 or not events:
+    if not events:
         return _compute_elo_ratings_from_events(
             events=events,
             k=k,
             sampled_indices=sampled_indices,
         )
+
+    rounds = max(int(shuffle_rounds), 1)
 
     base_indices = (
         list(sampled_indices)
@@ -612,7 +605,7 @@ def _compute_shuffled_average_elo_from_events(
     )
 
     accumulated: dict[uuid.UUID, float] = {}
-    for _ in range(shuffle_rounds):
+    for _ in range(rounds):
         round_indices = list(base_indices)
         if shuffle_rng is not None:
             shuffle_rng.shuffle(round_indices)
@@ -630,7 +623,7 @@ def _compute_shuffled_average_elo_from_events(
         sampled_indices=base_indices,
     )
     averaged_ratings = {
-        model_id: total / shuffle_rounds for model_id, total in accumulated.items()
+        model_id: total / rounds for model_id, total in accumulated.items()
     }
     return averaged_ratings, games_played
 

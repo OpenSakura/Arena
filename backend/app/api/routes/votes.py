@@ -4,9 +4,7 @@ Vote ingestion endpoints.
 
 Notes:
 - Vote submission and reveal are authenticated-only operations.
-- Vote rows still keep the legacy anonymous/session identity fields so
-  authenticated callers can reconcile and upgrade older votes created before
-  this contract changed.
+- Authenticated voters are identified by user id only.
 """
 
 from __future__ import annotations
@@ -15,7 +13,7 @@ from functools import lru_cache
 from typing import Any, Literal, cast
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -27,12 +25,10 @@ from app.models.battle import Battle, Run
 from app.models.model_registry import Model
 from app.models.vote import Vote
 from app.schemas.votes import VoteCreate, VoteSubmitResponse
-from app.utils.anon import get_or_set_anon_id
 from app.utils.id import parse_uuid_or_422
 from app.utils.requester_identity import RequesterIdentity, find_existing_battle_vote
 from app.utils.rate_limit import (
     RollingWindowRateLimiter,
-    build_anon_rate_limit_key,
     build_auth_rate_limit_key,
 )
 from app.utils.redis import get_rate_limit_redis_client
@@ -44,7 +40,6 @@ router = APIRouter(prefix="/battles", tags=["votes"])
 def submit_vote(
     battle_id: str,
     payload: VoteCreate,
-    request: Request,
     response: Response,
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal_required),
@@ -89,24 +84,7 @@ def submit_vote(
             )
 
     voter_user_id = uuid.UUID(principal.user_id)
-
-    # Keep binding a stable anonymous session id even for authenticated voters
-    # so legacy anonymous votes can still be found and upgraded instead of
-    # creating duplicate rows for the same battle.
-    voter_anon_id = get_or_set_anon_id(
-        request=request,
-        response=response,
-        secure=settings.anon_id_cookie_secure,
-    )
-
-    requester_identity = RequesterIdentity.from_request(
-        request,
-        voter_user_id=voter_user_id,
-        voter_anon_id=voter_anon_id,
-        ip_hash_salt=settings.anon_ip_hash_salt,
-        user_agent_hash_salt=settings.anon_user_agent_hash_salt,
-        trust_x_forwarded_for=settings.trust_x_forwarded_for,
-    )
+    requester_identity = RequesterIdentity(voter_user_id=voter_user_id)
 
     existing_vote = find_existing_battle_vote(
         db,
@@ -115,11 +93,6 @@ def submit_vote(
     )
     if existing_vote is not None:
         response.status_code = 200
-        _upgrade_vote_identity(
-            existing_vote,
-            voter_user_id=voter_user_id,
-            requester_identity=requester_identity,
-        )
 
         if existing_vote.revealed:
             # Vote has been revealed — no more changes allowed.
@@ -167,9 +140,6 @@ def submit_vote(
         rubric=(payload.rubric.model_dump() if payload.rubric else None),
         comment=payload.comment,
         voter_user_id=voter_user_id,
-        voter_anon_id=requester_identity.voter_anon_id,
-        ip_hash=requester_identity.ip_hash,
-        user_agent_hash=requester_identity.user_agent_hash,
     )
     db.add(vote)
     try:
@@ -183,7 +153,6 @@ def submit_vote(
             winner=winner,
             rubric=(payload.rubric.model_dump() if payload.rubric else None),
             comment=payload.comment,
-            voter_user_id=voter_user_id,
             requester_identity=requester_identity,
             model_a_id=run_a.model_id,
             model_b_id=run_b.model_id,
@@ -204,7 +173,6 @@ def submit_vote(
             winner=winner,
             rubric=(payload.rubric.model_dump() if payload.rubric else None),
             comment=payload.comment,
-            voter_user_id=voter_user_id,
             requester_identity=requester_identity,
             model_a_id=run_a.model_id,
             model_b_id=run_b.model_id,
@@ -221,11 +189,8 @@ def submit_vote(
 @router.post("/{battle_id}/vote/reveal")
 def reveal_vote(
     battle_id: str,
-    request: Request,
-    response: Response,
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal_required),
-    settings: Settings = Depends(get_settings),
 ) -> VoteSubmitResponse:
     """Lock the vote and reveal model identities.
 
@@ -237,21 +202,7 @@ def reveal_vote(
     if battle is None:
         raise HTTPException(status_code=404, detail="Battle not found")
 
-    voter_user_id = uuid.UUID(principal.user_id)
-
-    voter_anon_id = get_or_set_anon_id(
-        request=request,
-        response=response,
-        secure=settings.anon_id_cookie_secure,
-    )
-    requester_identity = RequesterIdentity.from_request(
-        request,
-        voter_user_id=voter_user_id,
-        voter_anon_id=voter_anon_id,
-        ip_hash_salt=settings.anon_ip_hash_salt,
-        user_agent_hash_salt=settings.anon_user_agent_hash_salt,
-        trust_x_forwarded_for=settings.trust_x_forwarded_for,
-    )
+    requester_identity = RequesterIdentity(voter_user_id=uuid.UUID(principal.user_id))
 
     existing_vote = find_existing_battle_vote(
         db,
@@ -260,12 +211,6 @@ def reveal_vote(
     )
     if existing_vote is None:
         raise HTTPException(status_code=404, detail="No vote found for this battle")
-
-    _upgrade_vote_identity(
-        existing_vote,
-        voter_user_id=voter_user_id,
-        requester_identity=requester_identity,
-    )
 
     # Mark as revealed (locks the vote).
     if not existing_vote.revealed:
@@ -294,35 +239,6 @@ def reveal_vote(
     )
 
 
-def _upgrade_vote_identity(
-    vote: Vote,
-    *,
-    voter_user_id: uuid.UUID | None,
-    requester_identity: RequesterIdentity,
-) -> bool:
-    changed = False
-
-    if voter_user_id is not None and vote.voter_user_id != voter_user_id:
-        vote.voter_user_id = voter_user_id
-        changed = True
-
-    # Back-fill NULL identity fields so future lookups via other tiers
-    # (anon-cookie, fingerprint) still resolve to this same row.
-    if requester_identity.voter_anon_id and vote.voter_anon_id is None:
-        vote.voter_anon_id = requester_identity.voter_anon_id
-        changed = True
-
-    if requester_identity.ip_hash and vote.ip_hash is None:
-        vote.ip_hash = requester_identity.ip_hash
-        changed = True
-
-    if requester_identity.user_agent_hash and vote.user_agent_hash is None:
-        vote.user_agent_hash = requester_identity.user_agent_hash
-        changed = True
-
-    return changed
-
-
 def _resolve_duplicate_vote_conflict(
     db: Session,
     *,
@@ -331,7 +247,6 @@ def _resolve_duplicate_vote_conflict(
     winner: str,
     rubric: dict[str, Any] | None = None,
     comment: str | None = None,
-    voter_user_id: uuid.UUID | None,
     requester_identity: RequesterIdentity,
     model_a_id: uuid.UUID,
     model_b_id: uuid.UUID,
@@ -345,11 +260,6 @@ def _resolve_duplicate_vote_conflict(
         raise HTTPException(status_code=500, detail="Failed to persist vote")
 
     response.status_code = 200
-    _upgrade_vote_identity(
-        existing_vote,
-        voter_user_id=voter_user_id,
-        requester_identity=requester_identity,
-    )
 
     if existing_vote.revealed and existing_vote.winner != winner:
         raise HTTPException(
@@ -404,40 +314,6 @@ def _build_vote_submit_response(
             "B": {"model_id": str(model_b.id), "display_name": model_b.display_name},
         },
     )
-
-
-@lru_cache(maxsize=1)
-def _get_vote_submit_rate_limiter() -> RollingWindowRateLimiter:
-    settings = get_settings()
-    return RollingWindowRateLimiter(
-        limit=settings.anon_vote_submit_rate_limit,
-        window_seconds=settings.anon_vote_submit_rate_limit_window_seconds,
-        bucket_seconds=settings.anon_rate_limit_bucket_seconds,
-        redis_client=get_rate_limit_redis_client(),
-        redis_prefix=settings.rate_limit_redis_key_prefix,
-    )
-
-
-def _enforce_anon_vote_rate_limit(
-    *,
-    request: Request,
-    settings: Settings,
-) -> None:
-    limiter = _get_vote_submit_rate_limiter()
-    key = build_anon_rate_limit_key(
-        scope="anon_vote_submit",
-        request=request,
-        trust_x_forwarded_for=settings.trust_x_forwarded_for,
-        ip_hash_salt=settings.anon_ip_hash_salt,
-    )
-    if limiter.is_limited(key):
-        raise HTTPException(
-            status_code=429,
-            detail="Too many anonymous vote submissions",
-            headers={
-                "Retry-After": str(settings.anon_vote_submit_rate_limit_window_seconds)
-            },
-        )
 
 
 @lru_cache(maxsize=1)

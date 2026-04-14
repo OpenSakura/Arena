@@ -29,8 +29,9 @@ type ModelAdmin = {
   temperature: number | null;
   frequency_penalty: number | null;
   presence_penalty: number | null;
+  system_prompt: string | null;
+  user_prompt: string | null;
   params: Record<string, unknown> | null;
-  prompt_template_id: string | null;
   has_api_key: boolean;
   created_at: string;
   updated_at: string;
@@ -57,8 +58,9 @@ type EditState = {
   temperatureText: string;
   frequencyPenaltyText: string;
   presencePenaltyText: string;
+  systemPromptText: string;
+  userPromptText: string;
   paramsText: string;
-  promptTemplateId: string;
   apiKeyText: string;
   clearApiKey: boolean;
 };
@@ -71,10 +73,11 @@ type CreateFormState = {
   enabled: boolean;
   visibility: string;
   apiKey: string;
-  promptTemplateId: string;
   temperature: string;
   frequencyPenalty: string;
   presencePenalty: string;
+  systemPrompt: string;
+  userPrompt: string;
   tagsText: string;
   paramsText: string;
 };
@@ -118,10 +121,11 @@ const INITIAL_CREATE_FORM: CreateFormState = {
   enabled: true,
   visibility: "public",
   apiKey: "",
-  promptTemplateId: "",
   temperature: "",
   frequencyPenalty: "",
   presencePenalty: "",
+  systemPrompt: "",
+  userPrompt: "",
   tagsText: "",
   paramsText: "",
 };
@@ -225,8 +229,9 @@ function isModelAdmin(value: unknown): value is ModelAdmin {
     (typeof value.temperature === "number" || value.temperature === null) &&
     (typeof value.frequency_penalty === "number" || value.frequency_penalty === null) &&
     (typeof value.presence_penalty === "number" || value.presence_penalty === null) &&
+    (typeof value.system_prompt === "string" || value.system_prompt === null) &&
+    (typeof value.user_prompt === "string" || value.user_prompt === null) &&
     (value.params === null || isRecord(value.params)) &&
-    (typeof value.prompt_template_id === "string" || value.prompt_template_id === null) &&
     typeof value.has_api_key === "boolean" &&
     typeof value.created_at === "string" &&
     typeof value.updated_at === "string"
@@ -287,8 +292,9 @@ function toEditState(model: ModelAdmin): EditState {
       model.frequency_penalty === null ? "" : String(model.frequency_penalty),
     presencePenaltyText:
       model.presence_penalty === null ? "" : String(model.presence_penalty),
+    systemPromptText: model.system_prompt || "",
+    userPromptText: model.user_prompt || "",
     paramsText: model.params ? JSON.stringify(model.params, null, 2) : "",
-    promptTemplateId: model.prompt_template_id ?? "",
     apiKeyText: "",
     clearApiKey: false,
   };
@@ -347,9 +353,6 @@ export default function AdminModelsPage() {
       };
 
       if (state.create.apiKey.trim()) payload.api_key = state.create.apiKey.trim();
-      if (state.create.promptTemplateId.trim()) {
-        payload.prompt_template_id = state.create.promptTemplateId.trim();
-      }
 
       const temp = parseNumberOrNull(state.create.temperature);
       const fp = parseNumberOrNull(state.create.frequencyPenalty);
@@ -362,6 +365,9 @@ export default function AdminModelsPage() {
       const params = parseJsonObjectOrNull(state.create.paramsText);
       if (tags) payload.tags = tags;
       if (params) payload.params = params;
+
+      payload.system_prompt = state.create.systemPrompt.trim() || null;
+      payload.user_prompt = state.create.userPrompt.trim() || null;
 
       const created = parseModelAdmin(await apiPost("/admin/models", payload, { headers }));
       dispatch({ type: "CREATE_SUCCESS", created });
@@ -390,12 +396,13 @@ export default function AdminModelsPage() {
         base_url: state.edit.base_url.trim(),
         enabled: state.edit.enabled,
         visibility: state.edit.visibility,
-        prompt_template_id: state.edit.promptTemplateId.trim() ? state.edit.promptTemplateId.trim() : null,
       };
 
       patch.temperature = parseNumberOrNull(state.edit.temperatureText);
       patch.frequency_penalty = parseNumberOrNull(state.edit.frequencyPenaltyText);
       patch.presence_penalty = parseNumberOrNull(state.edit.presencePenaltyText);
+      patch.system_prompt = state.edit.systemPromptText.trim() || null;
+      patch.user_prompt = state.edit.userPromptText.trim() || null;
       patch.tags = parseJsonObjectOrNull(state.edit.tagsText);
       patch.params = parseJsonObjectOrNull(state.edit.paramsText);
 
@@ -525,7 +532,7 @@ export default function AdminModelsPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="create-api-key">
                   API key (optional)
@@ -537,18 +544,6 @@ export default function AdminModelsPage() {
                   onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "apiKey", value: e.target.value })}
                   className="input-premium"
                   placeholder="stored encrypted at rest"
-                />
-              </div>
-              <div className="grid gap-1.5">
-                <label className="label-premium" htmlFor="create-prompt-template-id">
-                  Prompt template id (optional)
-                </label>
-                <input
-                  id="create-prompt-template-id"
-                  value={create.promptTemplateId}
-                  onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "promptTemplateId", value: e.target.value })}
-                  className="input-premium"
-                  placeholder="uuid"
                 />
               </div>
             </div>
@@ -591,6 +586,42 @@ export default function AdminModelsPage() {
                 />
               </div>
             </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid gap-1.5">
+                <label className="label-premium" htmlFor="create-system-prompt">
+                  system_prompt (leave blank for default)
+                </label>
+                <textarea
+                  id="create-system-prompt"
+                  value={create.systemPrompt}
+                  onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "systemPrompt", value: e.target.value })}
+                  className="textarea-premium"
+                  rows={4}
+                  placeholder="You are an expert translator..."
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <label className="label-premium" htmlFor="create-user-prompt">
+                  user_prompt (leave blank for default)
+                </label>
+                <textarea
+                  id="create-user-prompt"
+                  value={create.userPrompt}
+                  onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "userPrompt", value: e.target.value })}
+                  className="textarea-premium"
+                  rows={4}
+                  placeholder={"Translate the following from {{ source_lang }} to {{ target_lang }}:\n{{ source_text }}"}
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Supported prompt tokens:{" "}
+              <code className="font-mono">{"{{ source_text }}"}</code>,{" "}
+              <code className="font-mono">{"{{ source_lang }}"}</code>,{" "}
+              <code className="font-mono">{"{{ target_lang }}"}</code>.
+              Leave both prompts blank to use the built-in defaults.
+            </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="grid gap-1.5">
@@ -777,7 +808,7 @@ export default function AdminModelsPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="edit-visibility">
                   visibility
@@ -791,18 +822,6 @@ export default function AdminModelsPage() {
                   <option value="public">public</option>
                   <option value="private">private</option>
                 </select>
-              </div>
-              <div className="grid gap-1.5">
-                <label className="label-premium" htmlFor="edit-prompt-template-id">
-                  prompt_template_id
-                </label>
-                <input
-                  id="edit-prompt-template-id"
-                  value={edit.promptTemplateId}
-                  onChange={(e) => dispatch({ type: "SET_EDIT_FIELD", field: "promptTemplateId", value: e.target.value })}
-                  className="input-premium"
-                  placeholder="uuid or blank"
-                />
               </div>
             </div>
 
@@ -851,6 +870,40 @@ export default function AdminModelsPage() {
                 />
               </div>
             </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid gap-1.5">
+                <label className="label-premium" htmlFor="edit-system-prompt">
+                  system_prompt (leave blank for default)
+                </label>
+                <textarea
+                  id="edit-system-prompt"
+                  value={edit.systemPromptText}
+                  onChange={(e) => dispatch({ type: "SET_EDIT_FIELD", field: "systemPromptText", value: e.target.value })}
+                  rows={4}
+                  className="textarea-premium"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <label className="label-premium" htmlFor="edit-user-prompt">
+                  user_prompt (leave blank for default)
+                </label>
+                <textarea
+                  id="edit-user-prompt"
+                  value={edit.userPromptText}
+                  onChange={(e) => dispatch({ type: "SET_EDIT_FIELD", field: "userPromptText", value: e.target.value })}
+                  rows={4}
+                  className="textarea-premium"
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Supported prompt tokens:{" "}
+              <code className="font-mono">{"{{ source_text }}"}</code>,{" "}
+              <code className="font-mono">{"{{ source_lang }}"}</code>,{" "}
+              <code className="font-mono">{"{{ target_lang }}"}</code>.
+              Leave both prompts blank to use the built-in defaults.
+            </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="grid gap-1.5">

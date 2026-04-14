@@ -19,7 +19,6 @@ from app.db.base import Base
 # Import all models so Base.metadata is fully populated.
 import app.models.battle  # noqa: F401
 import app.models.model_registry  # noqa: F401
-import app.models.prompt_template  # noqa: F401
 import app.models.rating  # noqa: F401
 import app.models.task  # noqa: F401
 import app.models.user  # noqa: F401

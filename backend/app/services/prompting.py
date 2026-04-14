@@ -3,7 +3,7 @@
 Prompt rendering and normalization.
 
 Notes:
-- Prompt templates should be versioned (DB) and rendered deterministically.
+- Templates are rendered deterministically from plain-text strings.
 - The rendered prompt/messages must be stored on each Run for reproducibility.
 """
 
@@ -14,6 +14,16 @@ from typing import Any
 
 
 _TOKEN_PATTERN = re.compile(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}")
+
+
+def normalize_optional_prompt_text(value: str | None) -> str | None:
+    """Normalize blank prompt input to ``None`` while preserving content."""
+
+    if value is None:
+        return None
+    if not value.strip():
+        return None
+    return value
 
 
 def render_prompt_template(template_text: str, inputs: dict[str, Any]) -> str:

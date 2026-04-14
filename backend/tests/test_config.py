@@ -32,14 +32,11 @@ def test_settings_accepts_json_array_cors_origins() -> None:
 def _production_settings(**overrides) -> dict:
     defaults = dict(
         app_env="production",
-        anon_ip_hash_salt="salt1",
-        anon_user_agent_hash_salt="salt2",
         oidc_issuer="https://auth.example",
         oidc_audience="arena",
         arena_master_key="secret-key",
         database_url="postgresql+psycopg://prod:prod@db:5432/arena",
         turnstile_secret_key="turnstile-secret",
-        anon_id_cookie_secure=True,
         cors_allow_origins="https://arena.example",
         web_concurrency=1,
     )

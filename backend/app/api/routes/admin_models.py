@@ -23,10 +23,9 @@ from app.core.crypto import decrypt_secret, encrypt_secret
 from app.core.security import require_admin
 from app.db.session import get_db
 from app.models.model_registry import Model
-from app.models.prompt_template import PromptTemplate
 from app.schemas.models import ModelAdmin, ModelCreate, ModelUpdate
 from app.services.battle_orchestrator import get_battle_orchestrator
-from app.utils.id import parse_optional_uuid_or_422, parse_uuid_or_422
+from app.utils.id import parse_uuid_or_422
 
 router = APIRouter(
     prefix="/admin/models",
@@ -56,14 +55,6 @@ def get_model(model_id: str, db: Session = Depends(get_db)) -> ModelAdmin:
 
 @router.post("", response_model=ModelAdmin, status_code=status.HTTP_201_CREATED)
 def create_model(payload: ModelCreate, db: Session = Depends(get_db)) -> ModelAdmin:
-    prompt_template_uuid = parse_optional_uuid_or_422(
-        payload.prompt_template_id, "prompt_template_id"
-    )
-    if prompt_template_uuid is not None:
-        template = db.get(PromptTemplate, prompt_template_uuid)
-        if template is None:
-            raise HTTPException(status_code=404, detail="Prompt template not found")
-
     encrypted_api_key: str | None = None
     if payload.api_key is not None:
         encrypted_api_key = _encrypt_api_key(payload.api_key)
@@ -81,8 +72,9 @@ def create_model(payload: ModelCreate, db: Session = Depends(get_db)) -> ModelAd
         temperature=payload.temperature,
         frequency_penalty=payload.frequency_penalty,
         presence_penalty=payload.presence_penalty,
+        system_prompt=payload.system_prompt,
+        user_prompt=payload.user_prompt,
         params=payload.params,
-        prompt_template_id=prompt_template_uuid,
         encrypted_api_key=encrypted_api_key,
     )
     db.add(model)
@@ -111,16 +103,6 @@ def update_model(
 
     patch = payload.model_dump(exclude_unset=True)
 
-    if "prompt_template_id" in patch:
-        prompt_template_id = parse_optional_uuid_or_422(
-            patch.pop("prompt_template_id"), "prompt_template_id"
-        )
-        if prompt_template_id is not None:
-            template = db.get(PromptTemplate, prompt_template_id)
-            if template is None:
-                raise HTTPException(status_code=404, detail="Prompt template not found")
-        model.prompt_template_id = prompt_template_id
-
     if "api_key" in patch:
         api_key = patch.pop("api_key")
         if api_key is None:
@@ -139,6 +121,8 @@ def update_model(
         "temperature",
         "frequency_penalty",
         "presence_penalty",
+        "system_prompt",
+        "user_prompt",
         "params",
     }
     # Fields that must never be set to NULL (NOT NULL in the DB).
@@ -341,12 +325,9 @@ def _to_admin_model(model: Model) -> ModelAdmin:
         temperature=model.temperature,
         frequency_penalty=model.frequency_penalty,
         presence_penalty=model.presence_penalty,
+        system_prompt=model.system_prompt,
+        user_prompt=model.user_prompt,
         params=model.params,
-        prompt_template_id=(
-            str(model.prompt_template_id)
-            if model.prompt_template_id is not None
-            else None
-        ),
         has_api_key=model.encrypted_api_key is not None,
         created_at=model.created_at,
         updated_at=model.updated_at,

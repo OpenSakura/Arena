@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -59,8 +59,9 @@ function modelRecord(overrides: Record<string, unknown> = {}) {
     temperature: null,
     frequency_penalty: null,
     presence_penalty: null,
+    system_prompt: null,
+    user_prompt: null,
     params: null,
-    prompt_template_id: null,
     has_api_key: true,
     created_at: "2026-02-18T00:00:00Z",
     updated_at: "2026-02-18T00:00:00Z",
@@ -127,6 +128,8 @@ describe("AdminModelsPage", () => {
           base_url: "https://gateway-two.example/v1",
           enabled: true,
           visibility: "public",
+          system_prompt: null,
+          user_prompt: null,
         },
         {
           headers: { Authorization: "Bearer admin-token" },
@@ -189,10 +192,11 @@ describe("AdminModelsPage", () => {
           base_url: "https://gateway.example/v1",
           enabled: true,
           visibility: "public",
-          prompt_template_id: null,
           temperature: null,
           frequency_penalty: 0.25,
           presence_penalty: null,
+          system_prompt: null,
+          user_prompt: null,
           tags: null,
           params: null,
         }),
@@ -276,6 +280,98 @@ describe("AdminModelsPage", () => {
       expect(apiPostMock).toHaveBeenCalledWith(
         "/admin/models/model-1/test",
         {},
+        { headers: { Authorization: "Bearer admin-token" } },
+      );
+    });
+  });
+
+  it("includes non-blank system_prompt and user_prompt in the create payload", async () => {
+    authenticatedSession();
+    apiGetMock.mockResolvedValue({ models: [] });
+    apiPostMock.mockResolvedValue(
+      modelRecord({
+        id: "model-3",
+        display_name: "Prompt Model",
+        model_name: "gpt-prompt",
+        system_prompt: "You are an expert translator.",
+        user_prompt: "Translate from {{ source_lang }} to {{ target_lang }}:\n{{ source_text }}",
+      }),
+    );
+
+    render(<AdminModelsPage />);
+    await screen.findByText("No models yet.");
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Display name"), "Prompt Model");
+    await user.type(screen.getByLabelText("Model name"), "gpt-prompt");
+    await user.type(screen.getByLabelText("Base URL"), "https://gateway.example/v1");
+
+    const systemPromptTextarea = document.getElementById("create-system-prompt");
+    if (!(systemPromptTextarea instanceof HTMLTextAreaElement)) {
+      throw new Error("create-system-prompt textarea not found");
+    }
+    fireEvent.change(systemPromptTextarea, {
+      target: { value: "You are an expert translator." },
+    });
+
+    const userPromptTextarea = document.getElementById("create-user-prompt");
+    if (!(userPromptTextarea instanceof HTMLTextAreaElement)) {
+      throw new Error("create-user-prompt textarea not found");
+    }
+    fireEvent.change(userPromptTextarea, {
+      target: {
+        value: "Translate from {{ source_lang }} to {{ target_lang }}:\n{{ source_text }}",
+      },
+    });
+
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith(
+        "/admin/models",
+        expect.objectContaining({
+          system_prompt: "You are an expert translator.",
+          user_prompt:
+            "Translate from {{ source_lang }} to {{ target_lang }}:\n{{ source_text }}",
+        }),
+        { headers: { Authorization: "Bearer admin-token" } },
+      );
+    });
+  });
+
+  it("includes non-blank system_prompt and user_prompt in the edit payload", async () => {
+    authenticatedSession();
+    apiGetMock.mockResolvedValue({
+      models: [
+        modelRecord({
+          system_prompt: "You are an expert translator.",
+          user_prompt: "Translate from {{ source_lang }} to {{ target_lang }}:\n{{ source_text }}",
+        }),
+      ],
+    });
+    apiPutMock.mockResolvedValue(
+      modelRecord({
+        system_prompt: "You are an expert translator.",
+        user_prompt: "Translate from {{ source_lang }} to {{ target_lang }}:\n{{ source_text }}",
+      }),
+    );
+
+    render(<AdminModelsPage />);
+    await screen.findByText("Model One");
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(apiPutMock).toHaveBeenCalledWith(
+        "/admin/models/model-1",
+        expect.objectContaining({
+          system_prompt: "You are an expert translator.",
+          user_prompt:
+            "Translate from {{ source_lang }} to {{ target_lang }}:\n{{ source_text }}",
+        }),
         { headers: { Authorization: "Bearer admin-token" } },
       );
     });

@@ -206,7 +206,6 @@ test("admin models page performs a basic authenticated create flow", async ({ pa
           frequency_penalty: null,
           presence_penalty: null,
           params: null,
-          prompt_template_id: null,
           has_api_key: false,
           created_at: "2026-02-19T00:00:00.000Z",
           updated_at: "2026-02-19T00:00:00.000Z",
