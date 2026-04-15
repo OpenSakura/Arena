@@ -68,7 +68,7 @@ export default async function globalSetup(): Promise<void> {
       "from authentik.providers.oauth2.models import OAuth2Provider",
       "provider = OAuth2Provider.objects.get(name=\"arena-e2e-provider\")",
       "provider._redirect_uris = [",
-      `    {\"matching_mode\": \"strict\", \"url\": \"http://localhost:${FRONTEND_PORT}/api/auth/callback/authentik\"},`,
+      `    {\"matching_mode\": \"strict\", \"url\": \"http://localhost:${FRONTEND_PORT}/api/auth/callback/oidc\"},`,
       "]",
       "provider.save()",
       "admin = User.objects.get(username=\"akadmin\")",

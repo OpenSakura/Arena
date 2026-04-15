@@ -19,7 +19,7 @@ function SessionErrorBanner() {
       <span>Your session has expired.</span>
       <button
         type="button"
-        onClick={() => void signIn("authentik")}
+        onClick={() => void signIn("oidc")}
         className="underline underline-offset-2 font-medium hover:opacity-80"
       >
         Sign in again

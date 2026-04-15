@@ -136,11 +136,11 @@ data:
   NEXTAUTH_SECRET: ""                      # [SECRET] min 32 chars
 
   # ──────────────────────────────────────────────
-  # Frontend — Authentik OIDC [SECRET]
+  # Frontend — OIDC [SECRET]
   # ──────────────────────────────────────────────
-  AUTHENTIK_ISSUER: ""                     # [SECRET] e.g. https://auth.example.com/application/o/arena/
-  AUTHENTIK_CLIENT_ID: ""                  # [SECRET]
-  AUTHENTIK_CLIENT_SECRET: ""              # [SECRET]
+  OIDC_ISSUER: ""                          # [SECRET] e.g. https://auth.example.com/application/o/arena/
+  OIDC_CLIENT_ID: ""                       # [SECRET]
+  OIDC_CLIENT_SECRET: ""                   # [SECRET]
 
   # ──────────────────────────────────────────────
   # Frontend — CSP / OIDC Origins

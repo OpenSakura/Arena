@@ -1,7 +1,7 @@
 /**
  * frontend/src/app/api/auth/[...nextauth]/route.ts
  *
- * NextAuth route handler (Auth.js) for OIDC login via Authentik.
+ * NextAuth route handler (Auth.js) for generic OIDC login.
  *
  * Notes:
  * - Anonymous usage is allowed; this exists to optionally enrich votes.
@@ -11,7 +11,16 @@
  */
 
 import NextAuth from "next-auth";
-import AuthentikProvider from "next-auth/providers/authentik";
+
+type OIDCProfile = {
+  sub: string;
+  name?: string | null;
+  preferred_username?: string | null;
+  email?: string | null;
+  picture?: string | null;
+};
+
+type OIDCCheck = "pkce" | "state";
 
 const nextAuthSecret = process.env.NEXTAUTH_SECRET;
 if (
@@ -23,27 +32,50 @@ if (
   );
 }
 
-const authentikClientId = process.env.AUTHENTIK_CLIENT_ID;
-const authentikClientSecret = process.env.AUTHENTIK_CLIENT_SECRET;
+const oidcIssuer = process.env.OIDC_ISSUER ?? process.env.AUTHENTIK_ISSUER;
+const oidcClientId = process.env.OIDC_CLIENT_ID ?? process.env.AUTHENTIK_CLIENT_ID;
+const oidcClientSecret =
+  process.env.OIDC_CLIENT_SECRET ?? process.env.AUTHENTIK_CLIENT_SECRET;
 if (
   process.env.NODE_ENV === "production" &&
-  (!authentikClientId || !authentikClientSecret)
+  (!oidcClientId || !oidcClientSecret)
 ) {
   throw new Error(
-    "AUTHENTIK_CLIENT_ID and AUTHENTIK_CLIENT_SECRET must be set in production",
+    "OIDC_CLIENT_ID and OIDC_CLIENT_SECRET must be set in production",
   );
 }
 
+const oidcChecks: OIDCCheck[] = ["pkce", "state"];
+
+const oidcProvider = {
+  id: "oidc",
+  name: "OIDC",
+  type: "oauth" as const,
+  issuer: oidcIssuer,
+  wellKnown: oidcIssuer
+    ? `${oidcIssuer.replace(/\/$/, "")}/.well-known/openid-configuration`
+    : undefined,
+  clientId: oidcClientId ?? "",
+  clientSecret: oidcClientSecret ?? "",
+  authorization: { params: { scope: "openid email profile offline_access" } },
+  checks: oidcChecks,
+  profile(profile: OIDCProfile) {
+    return {
+      id: profile.sub,
+      name:
+        profile.name ??
+        profile.preferred_username ??
+        profile.email ??
+        profile.sub,
+      email: profile.email,
+      image: profile.picture,
+    };
+  },
+};
+
 const handler = NextAuth({
   secret: nextAuthSecret,
-  providers: [
-    AuthentikProvider({
-      issuer: process.env.AUTHENTIK_ISSUER,
-      clientId: authentikClientId ?? "",
-      clientSecret: authentikClientSecret ?? "",
-      authorization: { params: { scope: "openid email profile offline_access" } },
-    }),
-  ],
+  providers: [oidcProvider],
   callbacks: {
     async jwt({ token, account }) {
       // Persist tokens on initial sign-in.
@@ -102,9 +134,9 @@ async function getTokenEndpoint(issuer: string): Promise<string | null> {
 }
 
 async function refreshAccessToken(token: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const issuer = process.env.AUTHENTIK_ISSUER;
-  const clientId = process.env.AUTHENTIK_CLIENT_ID ?? "";
-  const clientSecret = process.env.AUTHENTIK_CLIENT_SECRET ?? "";
+  const issuer = oidcIssuer;
+  const clientId = oidcClientId ?? "";
+  const clientSecret = oidcClientSecret ?? "";
 
   function expiredToken(error: string): Record<string, unknown> {
     return {

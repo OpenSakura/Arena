@@ -31,9 +31,9 @@ const frontendServer = {
     ...process.env,
     NEXTAUTH_URL: FRONTEND_ORIGIN,
     NEXTAUTH_SECRET: "arena-frontend-e2e-nextauth-secret",
-    AUTHENTIK_ISSUER: `http://localhost:${PLAYWRIGHT_AUTHENTIK_PORT}/application/o/arena-e2e`,
-    AUTHENTIK_CLIENT_ID: "arena-e2e-client",
-    AUTHENTIK_CLIENT_SECRET: "arena-e2e-secret",
+    OIDC_ISSUER: `http://localhost:${PLAYWRIGHT_AUTHENTIK_PORT}/application/o/arena-e2e`,
+    OIDC_CLIENT_ID: "arena-e2e-client",
+    OIDC_CLIENT_SECRET: "arena-e2e-secret",
     NEXT_PUBLIC_BACKEND_URL: BACKEND_BASE_URL,
   },
 };

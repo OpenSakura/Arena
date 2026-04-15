@@ -1,19 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const nextAuthMock = vi.fn();
-const authentikProviderMock = vi.fn();
 
 vi.mock("next-auth", () => ({
   default: nextAuthMock,
 }));
 
-vi.mock("next-auth/providers/authentik", () => ({
-  default: authentikProviderMock,
-}));
-
 afterEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
+  delete process.env.OIDC_ISSUER;
+  delete process.env.OIDC_CLIENT_ID;
+  delete process.env.OIDC_CLIENT_SECRET;
   delete process.env.AUTHENTIK_ISSUER;
   delete process.env.AUTHENTIK_CLIENT_ID;
   delete process.env.AUTHENTIK_CLIENT_SECRET;
@@ -21,15 +19,13 @@ afterEach(() => {
 
 beforeEach(() => {
   nextAuthMock.mockReset();
-  authentikProviderMock.mockReset();
-  authentikProviderMock.mockImplementation((config) => ({ id: "authentik", config }));
 });
 
 describe("nextauth route", () => {
-  it("configures the Authentik provider from env vars", async () => {
-    process.env.AUTHENTIK_ISSUER = "https://auth.example/application/o/arena/";
-    process.env.AUTHENTIK_CLIENT_ID = "arena-client";
-    process.env.AUTHENTIK_CLIENT_SECRET = "super-secret";
+  it("configures the generic OIDC provider from env vars", async () => {
+    process.env.OIDC_ISSUER = "https://auth.example/application/o/arena/";
+    process.env.OIDC_CLIENT_ID = "arena-client";
+    process.env.OIDC_CLIENT_SECRET = "super-secret";
 
     const handler = vi.fn();
     nextAuthMock.mockReturnValue(handler);
@@ -39,11 +35,42 @@ describe("nextauth route", () => {
     expect(route.GET).toBe(handler);
     expect(route.POST).toBe(handler);
 
-    expect(authentikProviderMock).toHaveBeenCalledWith({
+    const config = nextAuthMock.mock.calls[0][0] as {
+      providers: Array<Record<string, unknown>>;
+    };
+
+    expect(config.providers).toHaveLength(1);
+    expect(config.providers[0]).toMatchObject({
+      id: "oidc",
+      name: "OIDC",
+      type: "oauth",
       issuer: "https://auth.example/application/o/arena/",
+      wellKnown: "https://auth.example/application/o/arena/.well-known/openid-configuration",
       clientId: "arena-client",
       clientSecret: "super-secret",
       authorization: { params: { scope: "openid email profile offline_access" } },
+      checks: ["pkce", "state"],
+    });
+    expect(config.providers[0].profile).toEqual(expect.any(Function));
+  });
+
+  it("falls back to legacy Authentik env vars when generic OIDC env vars are absent", async () => {
+    process.env.AUTHENTIK_ISSUER = "https://auth.example/application/o/arena/";
+    process.env.AUTHENTIK_CLIENT_ID = "legacy-client";
+    process.env.AUTHENTIK_CLIENT_SECRET = "legacy-secret";
+
+    nextAuthMock.mockReturnValue(vi.fn());
+
+    await import("./route");
+    const config = nextAuthMock.mock.calls[0][0] as {
+      providers: Array<Record<string, unknown>>;
+    };
+
+    expect(config.providers[0]).toMatchObject({
+      id: "oidc",
+      issuer: "https://auth.example/application/o/arena/",
+      clientId: "legacy-client",
+      clientSecret: "legacy-secret",
     });
   });
 
@@ -147,7 +174,7 @@ describe("jwt refresh paths", () => {
   };
 
   it("returns RefreshTokenMissing when refreshToken is absent", async () => {
-    process.env.AUTHENTIK_ISSUER = "https://auth.example/";
+    process.env.OIDC_ISSUER = "https://auth.example/";
     const jwt = await getJwtCallback();
 
     const result = await jwt({
@@ -159,7 +186,8 @@ describe("jwt refresh paths", () => {
     expect(result.accessTokenExpires).toBe(0);
   });
 
-  it("returns RefreshTokenMissing when AUTHENTIK_ISSUER is absent", async () => {
+  it("returns RefreshTokenMissing when OIDC_ISSUER is absent", async () => {
+    delete process.env.OIDC_ISSUER;
     delete process.env.AUTHENTIK_ISSUER;
     const jwt = await getJwtCallback();
 
@@ -171,9 +199,9 @@ describe("jwt refresh paths", () => {
   });
 
   it("returns RefreshDiscoveryFailed when OIDC discovery endpoint returns non-ok", async () => {
-    process.env.AUTHENTIK_ISSUER = "https://auth.example/application/o/arena/";
-    process.env.AUTHENTIK_CLIENT_ID = "arena-client";
-    process.env.AUTHENTIK_CLIENT_SECRET = "super-secret";
+    process.env.OIDC_ISSUER = "https://auth.example/application/o/arena/";
+    process.env.OIDC_CLIENT_ID = "arena-client";
+    process.env.OIDC_CLIENT_SECRET = "super-secret";
 
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response("not found", { status: 404 }),
@@ -187,9 +215,9 @@ describe("jwt refresh paths", () => {
   });
 
   it("returns RefreshTokenExpired when token endpoint returns an error", async () => {
-    process.env.AUTHENTIK_ISSUER = "https://auth.example/application/o/arena/";
-    process.env.AUTHENTIK_CLIENT_ID = "arena-client";
-    process.env.AUTHENTIK_CLIENT_SECRET = "super-secret";
+    process.env.OIDC_ISSUER = "https://auth.example/application/o/arena/";
+    process.env.OIDC_CLIENT_ID = "arena-client";
+    process.env.OIDC_CLIENT_SECRET = "super-secret";
 
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockResolvedValueOnce(
@@ -213,9 +241,9 @@ describe("jwt refresh paths", () => {
   });
 
   it("returns RefreshTokenError when fetch throws a network error", async () => {
-    process.env.AUTHENTIK_ISSUER = "https://auth.example/application/o/arena/";
-    process.env.AUTHENTIK_CLIENT_ID = "arena-client";
-    process.env.AUTHENTIK_CLIENT_SECRET = "super-secret";
+    process.env.OIDC_ISSUER = "https://auth.example/application/o/arena/";
+    process.env.OIDC_CLIENT_ID = "arena-client";
+    process.env.OIDC_CLIENT_SECRET = "super-secret";
 
     vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("network failure"));
 
@@ -226,9 +254,9 @@ describe("jwt refresh paths", () => {
   });
 
   it("rotates tokens on a successful refresh", async () => {
-    process.env.AUTHENTIK_ISSUER = "https://auth.example/application/o/arena/";
-    process.env.AUTHENTIK_CLIENT_ID = "arena-client";
-    process.env.AUTHENTIK_CLIENT_SECRET = "super-secret";
+    process.env.OIDC_ISSUER = "https://auth.example/application/o/arena/";
+    process.env.OIDC_CLIENT_ID = "arena-client";
+    process.env.OIDC_CLIENT_SECRET = "super-secret";
 
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockResolvedValueOnce(
@@ -262,9 +290,9 @@ describe("jwt refresh paths", () => {
   });
 
   it("preserves old refresh token when server does not return a new one", async () => {
-    process.env.AUTHENTIK_ISSUER = "https://auth.example/application/o/arena/";
-    process.env.AUTHENTIK_CLIENT_ID = "arena-client";
-    process.env.AUTHENTIK_CLIENT_SECRET = "super-secret";
+    process.env.OIDC_ISSUER = "https://auth.example/application/o/arena/";
+    process.env.OIDC_CLIENT_ID = "arena-client";
+    process.env.OIDC_CLIENT_SECRET = "super-secret";
 
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockResolvedValueOnce(

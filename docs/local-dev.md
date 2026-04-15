@@ -93,12 +93,12 @@ The arena needs at least:
 
 Recommended workflow:
 
-1. Configure Authentik OIDC and admin group claim.
+1. Configure OIDC and the admin group claim.
 2. Login in the UI.
 3. Use the admin pages:
    - `http://localhost:3000/admin/models`
    - `http://localhost:3000/admin/tasks`
 
-If you do not have Authentik available in local dev, you can still run the
+If you do not have an OIDC provider available in local dev, you can still run the
 public UI routes, but you will not be able to use admin endpoints to seed the
 database.

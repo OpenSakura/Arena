@@ -127,7 +127,7 @@ export function Header() {
               variant="default"
               size="sm"
               className="h-7 rounded-full px-4 text-xs"
-              onClick={() => void signIn("authentik")}
+              onClick={() => void signIn("oidc")}
             >
               Login
             </Button>
@@ -205,7 +205,7 @@ export function Header() {
                   variant="default"
                   size="sm"
                   className="w-full rounded-full text-xs"
-                  onClick={() => void signIn("authentik")}
+                  onClick={() => void signIn("oidc")}
                 >
                   Login
                 </Button>

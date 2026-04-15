@@ -4,7 +4,7 @@
     "Node project manifest for the Arena frontend.",
     "Notes:",
     "- This scaffold uses Next.js + TypeScript.",
-    "- Auth uses NextAuth with an Authentik OIDC connector."
+    "- Auth uses NextAuth with a generic OIDC connector."
   ],
   "name": "opensakura-arena-frontend",
   "private": true,

@@ -1,7 +1,8 @@
-# Authentik OIDC Setup
+# OIDC Setup (Authentik Example)
 
-This repo uses Authentik as the OIDC provider for login (frontend) and
-JWT verification (backend). Login is required for all mutations (creating
+This repo uses OIDC for login (frontend) and JWT verification (backend). The
+local example below uses Authentik as the identity provider. Login is required
+for all mutations (creating
 battles, voting, retrying battles, revealing votes). Public read pages remain
 accessible without login. Key details:
 
@@ -11,9 +12,10 @@ accessible without login. Key details:
 
 ## URLs And Redirects
 
-NextAuth (frontend) uses the callback URL:
+NextAuth (frontend) uses the generic OIDC provider id `oidc`, so the callback
+URL is:
 
-- `http://localhost:3000/api/auth/callback/authentik`
+- `http://localhost:3000/api/auth/callback/oidc`
 
 Make sure your Authentik OAuth2/OIDC Provider includes that redirect URI.
 
@@ -24,7 +26,7 @@ High-level steps (names vary slightly by Authentik version):
 1. Create an **OAuth2/OpenID Provider** (authorization code flow).
 2. Create an **Application** and bind it to the provider.
 3. Add a **Redirect URI** for NextAuth:
-   - `http://localhost:3000/api/auth/callback/authentik`
+   - `http://localhost:3000/api/auth/callback/oidc`
 4. Ensure the provider issues a **JWT access token** (the backend validates the
    bearer token via the issuer JWKS).
 
@@ -50,9 +52,9 @@ Frontend (`frontend/.env.local`):
 - `NEXT_PUBLIC_BACKEND_URL=http://localhost:8000/api/v1`
 - `NEXTAUTH_URL=http://localhost:3000`
 - `NEXTAUTH_SECRET=...`
-- `AUTHENTIK_ISSUER=...` (must support OIDC discovery)
-- `AUTHENTIK_CLIENT_ID=...`
-- `AUTHENTIK_CLIENT_SECRET=...`
+- `OIDC_ISSUER=...` (must support OIDC discovery)
+- `OIDC_CLIENT_ID=...`
+- `OIDC_CLIENT_SECRET=...`
 
 No admin-specific frontend env vars are needed. The frontend determines admin
 status from the `/me` endpoint's `is_admin` field (see above).
@@ -74,7 +76,7 @@ Backend (`backend/.env`):
   - Your access token does not contain the configured group claim, or the user
      is not in the configured admin group.
 - OIDC discovery errors:
-  - Double-check `AUTHENTIK_ISSUER` / `OIDC_ISSUER`. It must match the issuer in
+  - Double-check `OIDC_ISSUER`. It must match the issuer in
      `/.well-known/openid-configuration`.
 
 Issuer note:

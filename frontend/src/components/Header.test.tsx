@@ -75,7 +75,7 @@ describe("Header", () => {
     expect(screen.queryByRole("button", { name: "Login" })).toBeNull();
   });
 
-  it("starts Authentik sign-in when login is clicked", async () => {
+  it("starts OIDC sign-in when login is clicked", async () => {
     useSessionMock.mockReturnValue({ data: null, status: "unauthenticated" });
 
     renderHeader();
@@ -83,7 +83,7 @@ describe("Header", () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Login" }));
 
-    expect(signInMock).toHaveBeenCalledWith("authentik");
+    expect(signInMock).toHaveBeenCalledWith("oidc");
   });
 
   it("shows session identity and calls signOut for authenticated users", async () => {

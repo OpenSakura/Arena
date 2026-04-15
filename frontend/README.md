@@ -3,7 +3,7 @@
 Next.js (TypeScript) web app for the translation arena.
 
 Notes:
-- Integrates with Authentik via OIDC (Auth.js / NextAuth).
+- Integrates with a generic OIDC provider via Auth.js / NextAuth.
 - Anonymous users can browse public pages (battles, leaderboards, results).
   Login is required to create battles, retry battles, submit votes, and reveal
   votes. Logged-in users can also fill an optional profile for downstream
@@ -16,7 +16,7 @@ Local quickstart (dev):
 
 ## Auth E2E smoke
 
-This frontend includes a Playwright smoke test for NextAuth + Authentik login/logout.
+This frontend includes a Playwright smoke test for NextAuth + OIDC login/logout.
 
 Run from `frontend/`:
 
