@@ -13,12 +13,13 @@ type NavLink = {
   label: string;
   prefix?: string;
   adminRequired?: boolean;
+  authRequired?: boolean;
 };
 
 const NAV_LINKS: NavLink[] = [
-  { href: "/battle/new", label: "Battle", prefix: "/battle" },
+  { href: "/battle/new", label: "Battle", prefix: "/battle", authRequired: true },
   { href: "/leaderboard", label: "Leaderboard" },
-  { href: "/onboarding", label: "Profile" },
+  { href: "/onboarding", label: "Profile", authRequired: true },
   { href: "/admin/models", label: "Admin", prefix: "/admin", adminRequired: true },
 ];
 
@@ -115,7 +116,8 @@ export function Header() {
 
         <nav className="hidden md:flex items-center gap-1 text-sm font-medium">
           {NAV_LINKS.filter((link) => {
-            if (link.adminRequired) return isAdmin === true;
+            if (link.adminRequired && !isAdmin) return false;
+            if (link.authRequired && auth.authStatus !== "authenticated") return false;
             return true;
           }).map((link) => (
             <Link
@@ -173,7 +175,8 @@ export function Header() {
           >
             <div className="px-6 py-4 space-y-1">
               {NAV_LINKS.filter((link) => {
-                if (link.adminRequired) return isAdmin === true;
+                if (link.adminRequired && !isAdmin) return false;
+                if (link.authRequired && auth.authStatus !== "authenticated") return false;
                 return true;
               }).map((link) => (
                 <Link

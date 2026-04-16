@@ -21,6 +21,8 @@ export type SessionErrorCode =
   | "RefreshTokenExpired"
   | "RefreshTokenError";
 
+export const SESSION_EXPIRED_MESSAGE = "Your session has expired. Please log in again.";
+
 function toText(value: unknown): string {
   if (value == null) return "";
   if (typeof value === "string") return value;

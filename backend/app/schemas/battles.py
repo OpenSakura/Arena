@@ -46,6 +46,7 @@ class BattlePublic(BaseModel):
     target_lang: str
     mode: str
     status: Literal["pending", "running", "completed", "failed"]
+    retry_allowed: bool
     # Keep model identities hidden until after vote.
     run_a: RunPublic | None = None
     run_b: RunPublic | None = None

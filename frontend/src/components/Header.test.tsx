@@ -116,10 +116,10 @@ describe("Header", () => {
     expect(signoutRedirect).toHaveBeenCalledWith({ state: { returnTo: "/" } });
   });
 
-  it("shows Battle nav link for anonymous users", () => {
+  it("hides Battle nav link for anonymous users", () => {
     renderHeader();
 
-    expect(screen.getAllByText("Battle").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText("Battle")).toBeNull();
   });
 
   it("shows Admin nav link for authenticated admin users", () => {

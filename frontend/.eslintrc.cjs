@@ -25,12 +25,6 @@ module.exports = {
     "e2e/",
     "playwright-report/",
     "test-results/",
-    "src/app/**",
-    "src/components/**",
-    "src/hooks/**",
-    "src/lib/**",
-    "src/middleware.ts",
-    "src/types/**",
   ],
   overrides: [
     {

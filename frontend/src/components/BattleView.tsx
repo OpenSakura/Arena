@@ -7,6 +7,8 @@
 
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
+import { SESSION_EXPIRED_MESSAGE } from "@/auth/oidc";
+
 import { useBattle } from "@/hooks/useBattle";
 
 const RUBRIC_TAGS = [
@@ -26,15 +28,12 @@ export function BattleView({ battleId }: { battleId: string }) {
     state,
     dispatch,
     isAuthed,
-    authStatus,
     hasRefreshError,
     canVote,
-    canReveal,
     canRetry,
     voteSubmitted,
     statusLabel,
     handleVoteSubmit,
-    handleReveal,
     handleRetry,
     handleStartAnotherBattle,
   } = useBattle(battleId);
@@ -52,9 +51,7 @@ export function BattleView({ battleId }: { battleId: string }) {
     rubricTags,
     comment,
     submittingVote,
-    voteId,
     reveal,
-    revealLoading,
   } = state;
 
 
@@ -120,7 +117,7 @@ export function BattleView({ battleId }: { battleId: string }) {
                   </svg>
                   <h3 className="text-lg font-semibold text-foreground">Login to Vote</h3>
                   <p className="text-sm text-muted-foreground max-w-md mx-auto">
-                    You&apos;re viewing this battle anonymously. To cast a vote and reveal which models were used, please log in.
+                    You&apos;re viewing this battle anonymously. To cast a vote and see which models were used, please log in.
                   </p>
                 </div>
               </div>
@@ -132,7 +129,7 @@ export function BattleView({ battleId }: { battleId: string }) {
                   </svg>
                   <h3 className="text-lg font-semibold text-foreground">Session Expired</h3>
                   <p className="text-sm text-muted-foreground max-w-md mx-auto">
-                    Your session has expired. Please log in again to cast a vote and reveal which models were used.
+                    {SESSION_EXPIRED_MESSAGE}
                   </p>
                 </div>
               </div>
@@ -142,7 +139,7 @@ export function BattleView({ battleId }: { battleId: string }) {
                 <h3 className="mb-2 text-xl font-bold heading-gradient">Cast Your Vote</h3>
                 <p className="mb-5 text-sm text-muted-foreground">
                   {voteSubmitted && !reveal
-                    ? "Vote recorded. You can change your vote or reveal the models."
+                    ? "Vote recorded."
                     : "Which translation is better?"}
                 </p>
                 <div className="flex flex-wrap justify-center gap-3">
@@ -219,20 +216,6 @@ export function BattleView({ battleId }: { battleId: string }) {
                         : "Submit Vote"}
                   </Button>
                 </>
-              )}
-
-              {/* Reveal Models button — appears after vote submit, before reveal */}
-              {voteSubmitted && !reveal && status === "done" && (
-                <Button
-                  type="button"
-                  onClick={() => void handleReveal()}
-                  disabled={!canReveal}
-                  variant="outline"
-                  size="lg"
-                  className="h-12 w-full max-w-md rounded-full text-lg border-emerald-500/30 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 hover:border-emerald-500/40 transition-all duration-200"
-                >
-                  {revealLoading ? "Revealing..." : "Reveal Models"}
-                </Button>
               )}
 
               {(reveal || status === "failed" || status === "error") && (

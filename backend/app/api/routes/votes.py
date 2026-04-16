@@ -5,6 +5,7 @@ Vote ingestion endpoints.
 Notes:
 - Vote submission and reveal are authenticated-only operations.
 - Authenticated voters are identified by user id only.
+- Vote submission immediately reveals model identities and locks the vote.
 """
 
 from __future__ import annotations
@@ -105,10 +106,18 @@ def submit_vote(
                 vote_id=str(existing_vote.id),
                 battle_id=str(battle_uuid),
                 winner=existing_vote.winner,
-                reveal=None,
+                reveal=_build_vote_submit_response(
+                    db,
+                    vote_id=existing_vote.id,
+                    battle_id=battle_uuid,
+                    winner=existing_vote.winner,
+                    model_a_id=run_a.model_id,
+                    model_b_id=run_b.model_id,
+                ).reveal,
             )
 
-        # Vote exists but not yet revealed — allow updating.
+        # Compatibility-safe path: unrevealed historical votes are updated,
+        # then revealed immediately to match the current contract.
         if (
             existing_vote.winner != winner
             or existing_vote.rubric
@@ -120,12 +129,16 @@ def submit_vote(
                 payload.rubric.model_dump() if payload.rubric else None
             )
             existing_vote.comment = payload.comment
+        existing_vote.revealed = True
+        db.commit()
 
-        return VoteSubmitResponse(
-            vote_id=str(existing_vote.id),
-            battle_id=str(battle_uuid),
+        return _build_vote_submit_response(
+            db,
+            vote_id=existing_vote.id,
+            battle_id=battle_uuid,
             winner=existing_vote.winner,
-            reveal=None,
+            model_a_id=run_a.model_id,
+            model_b_id=run_b.model_id,
         )
 
     _enforce_auth_vote_rate_limit(
@@ -140,6 +153,7 @@ def submit_vote(
         rubric=(payload.rubric.model_dump() if payload.rubric else None),
         comment=payload.comment,
         voter_user_id=voter_user_id,
+        revealed=True,
     )
     db.add(vote)
     try:
@@ -178,11 +192,13 @@ def submit_vote(
             model_b_id=run_b.model_id,
         )
 
-    return VoteSubmitResponse(
-        vote_id=str(vote.id),
-        battle_id=str(battle_uuid),
+    return _build_vote_submit_response(
+        db,
+        vote_id=vote.id,
+        battle_id=battle_uuid,
         winner=winner,
-        reveal=None,
+        model_a_id=run_a.model_id,
+        model_b_id=run_b.model_id,
     )
 
 
@@ -212,9 +228,11 @@ def reveal_vote(
     if existing_vote is None:
         raise HTTPException(status_code=404, detail="No vote found for this battle")
 
-    # Mark as revealed (locks the vote).
+    # Mark as revealed (locks the vote). This remains idempotent so older
+    # clients that still call /vote/reveal after submit continue to work.
     if not existing_vote.revealed:
         existing_vote.revealed = True
+        db.commit()
 
     runs = (
         db.execute(

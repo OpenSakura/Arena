@@ -165,6 +165,17 @@ class BattleOrchestrator:
         """Public accessor for the LLM client (used during shutdown cleanup)."""
         return self._llm_client
 
+    @staticmethod
+    def _automatic_retry_count(metadata_json: dict[str, object] | None) -> int:
+        if not isinstance(metadata_json, dict):
+            return 0
+        value = metadata_json.get("automatic_retry_count")
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return max(value, 0)
+        return 0
+
     async def stream_battle(
         self,
         battle_id: uuid.UUID,
@@ -331,55 +342,70 @@ class BattleOrchestrator:
             )
 
         try:
-            await asyncio.wait_for(
-                self._execute_owned_battle(
-                    battle_id=battle_id,
-                    emit=emit,
-                    request_id=request_id,
-                ),
-                timeout=float(self._battle_running_wait_timeout_seconds),
-            )
-        except asyncio.TimeoutError:
-            logger.error(
-                "Battle owner task timed out for battle_id=%s after %ss",
-                battle_id,
-                self._battle_running_wait_timeout_seconds,
-            )
-            with suppress(Exception):
-                await self._fail_battle_for_timeout(
-                    battle_id=battle_id,
-                    emit=emit,
-                    detail="runtime_timeout",
-                    error_text=(
-                        "Battle runtime exceeded timeout of "
-                        f"{self._battle_running_wait_timeout_seconds}s"
-                    ),
-                )
-        except Exception as exc:  # noqa: BLE001
-            error_text = str(exc)
-            logger.exception("Battle owner task failed for battle_id=%s", battle_id)
-            with suppress(Exception):
-                await asyncio.to_thread(
-                    lambda: self._mark_battle_status(
-                        battle_id=battle_id,
-                        status="failed",
+            while True:
+                try:
+                    await asyncio.wait_for(
+                        self._execute_owned_battle(
+                            battle_id=battle_id,
+                            emit=emit,
+                            request_id=request_id,
+                        ),
+                        timeout=float(self._battle_running_wait_timeout_seconds),
                     )
-                )
-            with suppress(Exception):
-                await asyncio.to_thread(
-                    lambda: self._persist_battle_run_errors(
-                        battle_id=battle_id,
-                        error_text=error_text,
+                    return
+                except asyncio.TimeoutError:
+                    logger.error(
+                        "Battle owner task timed out for battle_id=%s after %ss",
+                        battle_id,
+                        self._battle_running_wait_timeout_seconds,
                     )
-                )
-            with suppress(Exception):
-                await emit(
-                    "battle.failed",
-                    {
-                        "battle_id": str(battle_id),
-                        "detail": "owner_task_failed",
-                    },
-                )
+                    retry_scheduled = await asyncio.to_thread(
+                        lambda: self._schedule_automatic_retry_if_available(
+                            battle_id=battle_id
+                        )
+                    )
+                    if retry_scheduled:
+                        continue
+
+                    with suppress(Exception):
+                        await self._fail_battle_for_timeout(
+                            battle_id=battle_id,
+                            emit=emit,
+                            detail="runtime_timeout",
+                            error_text=(
+                                "Battle runtime exceeded timeout of "
+                                f"{self._battle_running_wait_timeout_seconds}s"
+                            ),
+                        )
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    error_text = str(exc)
+                    logger.exception(
+                        "Battle owner task failed for battle_id=%s", battle_id
+                    )
+                    with suppress(Exception):
+                        await asyncio.to_thread(
+                            lambda: self._mark_battle_status(
+                                battle_id=battle_id,
+                                status="failed",
+                            )
+                        )
+                    with suppress(Exception):
+                        await asyncio.to_thread(
+                            lambda: self._persist_battle_run_errors(
+                                battle_id=battle_id,
+                                error_text=error_text,
+                            )
+                        )
+                    with suppress(Exception):
+                        await emit(
+                            "battle.failed",
+                            {
+                                "battle_id": str(battle_id),
+                                "detail": "owner_task_failed",
+                            },
+                        )
+                    return
         finally:
             await self._close_live_battle(battle_id=battle_id)
 
@@ -508,18 +534,36 @@ class BattleOrchestrator:
                 run_ok.append(bool(result))
 
         desired_status = "completed" if all(run_ok) else "failed"
+        if desired_status == "completed":
+            await asyncio.to_thread(
+                lambda: self._mark_battle_status(
+                    battle_id=battle_id,
+                    status="completed",
+                )
+            )
+            await emit("battle.completed", {"battle_id": str(battle_id)})
+            return
+
+        retry_scheduled = await asyncio.to_thread(
+            lambda: self._schedule_automatic_retry_if_available(battle_id=battle_id)
+        )
+        if retry_scheduled:
+            await self._execute_owned_battle(
+                battle_id=battle_id,
+                emit=emit,
+                request_id=request_id,
+            )
+            return
+
         await asyncio.to_thread(
             lambda: self._mark_battle_status(
                 battle_id=battle_id,
-                status=desired_status,
+                status="failed",
             )
         )
-        if desired_status == "completed":
-            await emit("battle.completed", {"battle_id": str(battle_id)})
-        else:
-            await emit(
-                "battle.failed", {"battle_id": str(battle_id), "detail": "run_failed"}
-            )
+        await emit(
+            "battle.failed", {"battle_id": str(battle_id), "detail": "run_failed"}
+        )
 
     async def _broadcast_live_battle_event(
         self,
@@ -1209,6 +1253,52 @@ class BattleOrchestrator:
                 run.prompt_rendered = prompt_rendered
             db.add(run)
             db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def _schedule_automatic_retry_if_available(self, *, battle_id: uuid.UUID) -> bool:
+        db: Session = self._SessionLocal()
+        try:
+            battle = db.get(Battle, battle_id)
+            if battle is None:
+                return False
+
+            metadata_json = (
+                battle.metadata_json if isinstance(battle.metadata_json, dict) else {}
+            )
+            retry_count = self._automatic_retry_count(metadata_json)
+            if retry_count >= 1:
+                return False
+
+            runs = (
+                db.execute(
+                    select(Run)
+                    .where(Run.battle_id == battle_id)
+                    .order_by(Run.side.asc())
+                )
+                .scalars()
+                .all()
+            )
+            for run in runs:
+                run.output_text = None
+                run.output_text_raw = None
+                run.error_text = None
+                run.stats = None
+                run.request_json = None
+                run.prompt_rendered = None
+                db.add(run)
+
+            battle.metadata_json = {
+                **metadata_json,
+                "automatic_retry_count": retry_count + 1,
+            }
+            battle.status = "pending"
+            db.add(battle)
+            db.commit()
+            return True
         except Exception:
             db.rollback()
             raise

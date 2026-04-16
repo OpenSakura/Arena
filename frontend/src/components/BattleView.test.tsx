@@ -137,7 +137,7 @@ describe("BattleView", () => {
     renderBattleView();
 
     await screen.findByText("Session Expired");
-    expect(screen.getByText(/Please log in again to cast a vote/i)).toBeDefined();
+    expect(screen.getByText(/Your session has expired. Please log in again./i)).toBeDefined();
   });
 
   it("shows retry/start another controls for failed battles", async () => {

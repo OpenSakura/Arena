@@ -90,6 +90,8 @@ data:
   BATTLE_STRICT_TARGETS: "{}"
   BATTLE_OUTAGE_MODELS: "[]"
   BATTLE_SAMPLING_BOOST_MODELS: "[]"
+  # Owner-task timeouts consume the one-shot automatic retry budget before
+  # the backend records a final timeout failure.
   BATTLE_RUNNING_WAIT_TIMEOUT_SECONDS: "600"
 
   # ──────────────────────────────────────────────

@@ -6,6 +6,7 @@
 
 import { Link } from "react-router-dom";
 import { SakuraIcon } from "@/components/icons/SakuraIcon";
+import { useArenaAuth } from "@/hooks/useArenaAuth";
 
 function GitHubIcon({ className = "" }: { className?: string }) {
   return (
@@ -16,6 +17,9 @@ function GitHubIcon({ className = "" }: { className?: string }) {
 }
 
 export function Footer() {
+  const auth = useArenaAuth();
+  const isAuthed = auth.authStatus === "authenticated";
+
   return (
     <footer className="mt-auto border-t border-border/30 bg-background/30 backdrop-blur-sm">
       {/* Gradient separator */}
@@ -47,15 +51,19 @@ export function Footer() {
               Navigation
             </div>
             <nav aria-label="Footer navigation" className="grid gap-2 text-sm text-muted-foreground">
-              <Link to="/battle/new" className="transition-colors hover:text-foreground w-fit">
-                Battle
-              </Link>
+              {isAuthed ? (
+                <Link to="/battle/new" className="transition-colors hover:text-foreground w-fit">
+                  Battle
+                </Link>
+              ) : null}
               <Link to="/leaderboard" className="transition-colors hover:text-foreground w-fit">
                 Leaderboard
               </Link>
-              <Link to="/onboarding" className="transition-colors hover:text-foreground w-fit">
-                Profile
-              </Link>
+              {isAuthed ? (
+                <Link to="/onboarding" className="transition-colors hover:text-foreground w-fit">
+                  Profile
+                </Link>
+              ) : null}
             </nav>
           </div>
 

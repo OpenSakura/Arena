@@ -85,6 +85,7 @@ function createBattle(overrides: Record<string, unknown> = {}) {
     target_lang: "zh",
     mode: "jp2zh_ab",
     status,
+    retry_allowed: false,
     run_a: hasOutputs
       ? {
           id: "run-a",
@@ -177,7 +178,7 @@ describe("useBattle", () => {
 
     await waitFor(() => {
       expect(resultRef.current?.state.errorText).toBe(
-        "Your session has expired. Please log in again to create a battle.",
+        "Your session has expired. Please log in again.",
       );
     });
 
@@ -292,16 +293,62 @@ describe("useBattle", () => {
     expect(init.getHeaders?.()).toEqual({ Authorization: "Bearer refreshed-token" });
   });
 
+  it("continues streaming across run.error until backend emits the terminal event", async () => {
+    mockedUseArenaAuth.mockReturnValue(createAuthState());
+    mockedLoadOrCreateBattle.mockResolvedValueOnce(
+      createBattle({ id: "battle-stream", status: "pending", run_a: null, run_b: null }),
+    );
+    mockedStreamSSE.mockImplementationOnce(async function* () {
+      yield {
+        event: "run.error",
+        data: { side: "A", error: "temporary failure" },
+      };
+      yield { event: "battle.started", data: { battle_id: "battle-stream" } };
+      yield {
+        event: "run.delta",
+        data: { side: "A", text_delta: "Fresh output" },
+      };
+      yield { event: "battle.completed", data: { battle_id: "battle-stream" } };
+    });
+
+    const { resultRef } = renderUseBattle({ battleId: "battle-stream" });
+
+    await waitFor(() => {
+      expect(resultRef.current?.state.status).toBe("done");
+    });
+
+    expect(resultRef.current?.state.outA).toBe("Fresh output");
+    expect(resultRef.current?.state.errorText).toBeNull();
+  });
+
+  it("refreshes terminal failed battles to pick up backend retry eligibility", async () => {
+    mockedUseArenaAuth.mockReturnValue(createAuthState());
+    mockedLoadOrCreateBattle
+      .mockResolvedValueOnce(
+        createBattle({ id: "battle-failed", status: "pending", run_a: null, run_b: null }),
+      )
+      .mockResolvedValueOnce(
+        createBattle({ id: "battle-failed", status: "failed", retry_allowed: true, run_a: null, run_b: null }),
+      );
+    mockedStreamSSE.mockImplementationOnce(async function* () {
+      yield { event: "battle.failed", data: { detail: "run_failed" } };
+    });
+
+    const { resultRef } = renderUseBattle({ battleId: "battle-failed" });
+
+    await waitFor(() => {
+      expect(resultRef.current?.state.status).toBe("failed");
+      expect(resultRef.current?.canRetry).toBe(true);
+    });
+
+    expect(mockedLoadOrCreateBattle).toHaveBeenCalledTimes(2);
+    expect(mockedLoadOrCreateBattle).toHaveBeenNthCalledWith(2, "battle-failed", "token-123");
+  });
+
   it("attempts reveal immediately after a successful vote submit", async () => {
     mockedUseArenaAuth.mockReturnValue(createAuthState());
     mockedLoadOrCreateBattle.mockResolvedValueOnce(createBattle());
     mockedApiPost
-      .mockResolvedValueOnce({
-        vote_id: "vote-1",
-        battle_id: "battle-1",
-        winner: "A",
-        reveal: null,
-      })
       .mockResolvedValueOnce({
         vote_id: "vote-1",
         battle_id: "battle-1",
@@ -347,13 +394,8 @@ describe("useBattle", () => {
       },
       { headers: { Authorization: "Bearer token-123" } },
     );
-    expect(mockedApiPost).toHaveBeenNthCalledWith(
-      2,
-      "/battles/battle-1/vote/reveal",
-      {},
-      { headers: { Authorization: "Bearer token-123" } },
-    );
-    expect(resultRef.current?.canReveal).toBe(false);
+    expect(mockedApiPost).toHaveBeenCalledTimes(1);
+    expect(resultRef.current?.canVote).toBe(false);
   });
 
   it("navigates start-another-battle actions to /battle/new with a restart nonce", async () => {
@@ -379,6 +421,7 @@ describe("useBattle", () => {
       createBattle({ id: "battle-stream", status: "pending" }),
     );
     mockedStreamSSE.mockImplementationOnce(async function* () {
+      yield* [];
       throw new Error("SSE failed: 401");
     });
 

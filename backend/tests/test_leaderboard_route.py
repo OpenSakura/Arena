@@ -133,6 +133,26 @@ def test_get_leaderboard_dispatches_to_bt_handler(
     assert response is expected
 
 
+def test_get_leaderboard_defaults_to_elo_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = LeaderboardResponse(models=[], method="elo", ci=False)
+
+    monkeypatch.setattr(leaderboard, "_get_leaderboard_elo", lambda **_: expected)
+    monkeypatch.setattr(
+        leaderboard,
+        "_get_leaderboard_bt",
+        lambda **_: pytest.fail("BT handler should not be called for the default path"),
+    )
+
+    response = leaderboard.get_leaderboard(
+        db=object(),  # type: ignore[arg-type]
+        settings=_settings(),  # type: ignore[arg-type]
+    )
+
+    assert response is expected
+
+
 def test_get_leaderboard_dispatches_to_elo_handler(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

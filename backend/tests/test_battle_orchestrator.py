@@ -1032,7 +1032,19 @@ def test_battle_failed_detail_emitted_on_run_failure(
     )
     monkeypatch.setattr(orchestrator, "_prepare_runs_for_execution", fake_prepare)
     monkeypatch.setattr(orchestrator, "_execute_runs_synced", fake_execute_runs)
-    monkeypatch.setattr(orchestrator, "_mark_battle_status", lambda **kwargs: None)
+    mark_calls: list[dict[str, object]] = []
+    retry_calls: list[uuid.UUID] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "_mark_battle_status",
+        lambda **kwargs: mark_calls.append(dict(kwargs)),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_schedule_automatic_retry_if_available",
+        lambda *, battle_id: retry_calls.append(battle_id) or False,
+    )
 
     emitted: list[tuple[str, object]] = []
 
@@ -1051,6 +1063,262 @@ def test_battle_failed_detail_emitted_on_run_failure(
         "battle.failed",
         {"battle_id": str(battle_id), "detail": "run_failed"},
     ) in emitted
+    assert retry_calls == [battle_id]
+    assert mark_calls == [
+        {"battle_id": battle_id, "status": "running"},
+        {"battle_id": battle_id, "status": "failed"},
+    ]
+
+
+def test_execute_owned_battle_performs_single_automatic_retry_before_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = BattleOrchestrator()
+    battle_id = uuid.uuid4()
+    load_calls = 0
+    execute_calls = 0
+    retry_attempts: list[uuid.UUID] = []
+    mark_calls: list[dict[str, object]] = []
+
+    def fake_prepare(*args, **kwargs) -> list[PreparedRun]:
+        return [
+            PreparedRun(
+                battle_id=battle_id,
+                run_id=uuid.uuid4(),
+                side="A",
+                model_id=uuid.uuid4(),
+                base_url="https://gateway.example/v1",
+                model_name="model-a",
+                api_key=None,
+                messages=[],
+                params={},
+                request_id="test",
+            ),
+            PreparedRun(
+                battle_id=battle_id,
+                run_id=uuid.uuid4(),
+                side="B",
+                model_id=uuid.uuid4(),
+                base_url="https://gateway.example/v1",
+                model_name="model-b",
+                api_key=None,
+                messages=[],
+                params={},
+                request_id="test",
+            ),
+        ]
+
+    def fake_load(_battle_id: uuid.UUID):
+        nonlocal load_calls
+        load_calls += 1
+        return (
+            SimpleNamespace(
+                status="pending",
+                id=battle_id,
+                task_id=uuid.uuid4(),
+                metadata_json={"automatic_retry_count": 0},
+            ),
+            [SimpleNamespace(side="A"), SimpleNamespace(side="B")],
+        )
+
+    async def fake_execute_runs(*args, **kwargs) -> list[bool | BaseException]:
+        nonlocal execute_calls
+        execute_calls += 1
+        return [False, False]
+
+    def fake_retry(*, battle_id: uuid.UUID) -> bool:
+        retry_attempts.append(battle_id)
+        return len(retry_attempts) == 1
+
+    monkeypatch.setattr(orchestrator, "_load_battle_and_runs", fake_load)
+    monkeypatch.setattr(orchestrator, "_prepare_runs_for_execution", fake_prepare)
+    monkeypatch.setattr(orchestrator, "_execute_runs_synced", fake_execute_runs)
+    monkeypatch.setattr(
+        orchestrator,
+        "_schedule_automatic_retry_if_available",
+        fake_retry,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_mark_battle_status",
+        lambda **kwargs: mark_calls.append(dict(kwargs)),
+    )
+
+    emitted: list[tuple[str, object]] = []
+
+    async def emit(event: str, data: object) -> None:
+        emitted.append((event, data))
+
+    asyncio.run(
+        orchestrator._execute_owned_battle(
+            battle_id=battle_id,
+            emit=emit,
+            request_id="req-123",
+        )
+    )
+
+    assert execute_calls == 2
+    assert retry_attempts == [battle_id, battle_id]
+    assert [event for event, _ in emitted] == [
+        "battle.started",
+        "battle.started",
+        "battle.failed",
+    ]
+    assert mark_calls == [
+        {"battle_id": battle_id, "status": "running"},
+        {"battle_id": battle_id, "status": "running"},
+        {"battle_id": battle_id, "status": "failed"},
+    ]
+
+
+def test_run_owned_battle_retries_owner_timeout_once_before_succeeding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = BattleOrchestrator()
+    battle_id = uuid.uuid4()
+    wait_for_calls = 0
+    execute_calls = 0
+    retry_attempts: list[uuid.UUID] = []
+    fail_calls: list[dict[str, object]] = []
+    closed_battle_ids: list[uuid.UUID] = []
+
+    async def fake_execute_owned_battle(
+        *,
+        battle_id: uuid.UUID,
+        emit,
+        request_id: str | None,
+    ) -> None:
+        nonlocal execute_calls
+        _ = (battle_id, emit, request_id)
+        execute_calls += 1
+
+    async def fake_wait_for(awaitable, *, timeout: float):
+        nonlocal wait_for_calls
+        _ = timeout
+        wait_for_calls += 1
+        if wait_for_calls == 1:
+            awaitable.close()
+            raise asyncio.TimeoutError
+        return await awaitable
+
+    async def fake_fail_battle_for_timeout(**kwargs: object) -> None:
+        fail_calls.append(dict(kwargs))
+
+    async def fake_close_live_battle(*, battle_id: uuid.UUID) -> None:
+        closed_battle_ids.append(battle_id)
+
+    monkeypatch.setattr(
+        orchestrator, "_execute_owned_battle", fake_execute_owned_battle
+    )
+    monkeypatch.setattr(orchestrator_module.asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(
+        orchestrator,
+        "_schedule_automatic_retry_if_available",
+        lambda *, battle_id: retry_attempts.append(battle_id) or True,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_fail_battle_for_timeout",
+        fake_fail_battle_for_timeout,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_close_live_battle",
+        fake_close_live_battle,
+    )
+
+    asyncio.run(
+        orchestrator._run_owned_battle(
+            battle_id=battle_id,
+            request_id="req-123",
+        )
+    )
+
+    assert wait_for_calls == 2
+    assert execute_calls == 1
+    assert retry_attempts == [battle_id]
+    assert fail_calls == []
+    assert closed_battle_ids == [battle_id]
+
+
+def test_schedule_automatic_retry_clears_persisted_run_artifacts() -> None:
+    orchestrator = BattleOrchestrator()
+    battle_id = uuid.uuid4()
+    run_a = SimpleNamespace(
+        battle_id=battle_id,
+        side="A",
+        output_text="stale",
+        output_text_raw="stale raw",
+        error_text="boom",
+        stats={"latency_ms": 1},
+        request_json={"stream": True},
+        prompt_rendered={"system_prompt": "old"},
+    )
+    run_b = SimpleNamespace(
+        battle_id=battle_id,
+        side="B",
+        output_text="stale",
+        output_text_raw="stale raw",
+        error_text="boom",
+        stats={"latency_ms": 2},
+        request_json={"stream": True},
+        prompt_rendered={"system_prompt": "old"},
+    )
+    battle = SimpleNamespace(
+        id=battle_id,
+        status="running",
+        metadata_json={"automatic_retry_count": 0},
+    )
+
+    class _FakeResult:
+        def __init__(self, rows: list[object]) -> None:
+            self._rows = rows
+
+        def scalars(self) -> "_FakeResult":
+            return self
+
+        def all(self) -> list[object]:
+            return list(self._rows)
+
+    class _FakeDB:
+        def __init__(self) -> None:
+            self.committed = False
+            self.added: list[object] = []
+
+        def get(self, model: type[object], key: uuid.UUID) -> object | None:
+            if model is orchestrator_module.Battle and key == battle_id:
+                return battle
+            return None
+
+        def execute(self, _stmt: object) -> _FakeResult:
+            return _FakeResult([run_a, run_b])
+
+        def add(self, obj: object) -> None:
+            self.added.append(obj)
+
+        def commit(self) -> None:
+            self.committed = True
+
+        def rollback(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    orchestrator._SessionLocal = lambda: _FakeDB()  # type: ignore[assignment]
+
+    scheduled = orchestrator._schedule_automatic_retry_if_available(battle_id=battle_id)
+
+    assert scheduled is True
+    assert battle.status == "pending"
+    assert battle.metadata_json == {"automatic_retry_count": 1}
+    for run in (run_a, run_b):
+        assert run.output_text is None
+        assert run.output_text_raw is None
+        assert run.error_text is None
+        assert run.stats is None
+        assert run.request_json is None
+        assert run.prompt_rendered is None
 
 
 # ── Task 4/5 regression: retry-reset battle gets fresh execution ──

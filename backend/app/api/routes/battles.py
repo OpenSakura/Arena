@@ -8,6 +8,8 @@ Notes:
 - Live execution assumes a single API worker/process owns the cached
   ``BattleOrchestrator`` singleton; additional stream consumers are observers.
 - Battle creation and retry are authenticated-only operations.
+- Completed battle results are public; non-completed battle reads remain
+  authenticated-only.
 """
 
 from __future__ import annotations
@@ -93,6 +95,7 @@ def create_battle(
                 "models": "fastchat_weighted_v2",
             },
             "requester_user_id": principal.user_id,
+            "automatic_retry_count": 0,
         },
     )
     db.add(battle)
@@ -119,18 +122,26 @@ def create_battle(
         source_text=task.source_text,
         source_lang=task.source_lang,
         target_lang=task.target_lang,
+        principal=principal,
         run_a=run_a,
         run_b=run_b,
     )
 
 
 @router.get("/{battle_id}")
-def get_battle(battle_id: str, db: Session = Depends(get_db)) -> BattlePublic:
+def get_battle(
+    battle_id: str,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal_optional),
+) -> BattlePublic:
     battle_uuid = parse_uuid_or_422(battle_id, "battle_id")
 
     battle = db.get(Battle, battle_uuid)
     if battle is None:
         raise HTTPException(status_code=404, detail="Battle not found")
+
+    if battle.status != "completed" and not principal.is_authenticated:
+        raise HTTPException(status_code=401, detail="Authentication required")
 
     snapshot = _battle_task_snapshot(battle)
     if snapshot is None:
@@ -164,8 +175,10 @@ def get_battle(battle_id: str, db: Session = Depends(get_db)) -> BattlePublic:
         source_text=source_text,
         source_lang=source_lang,
         target_lang=target_lang,
+        principal=principal,
         run_a=run_map.get("A"),
         run_b=run_map.get("B"),
+        has_vote=has_vote,
         include_stats=has_vote,
     )
 
@@ -306,6 +319,14 @@ def retry_battle(
         run.request_json = None
         run.prompt_rendered = None
 
+    metadata_json = (
+        battle.metadata_json if isinstance(battle.metadata_json, dict) else {}
+    )
+    battle.metadata_json = {
+        **metadata_json,
+        "automatic_retry_count": 0,
+    }
+
     battle.status = "pending"  # type: ignore[assignment]
     db.add(battle)
     db.commit()
@@ -328,6 +349,7 @@ def retry_battle(
         source_text=source_text,
         source_lang=source_lang,
         target_lang=target_lang,
+        principal=principal,
         run_a=run_map.get("A"),
         run_b=run_map.get("B"),
     )
@@ -431,8 +453,10 @@ def _to_battle_public(
     source_text: str,
     source_lang: str,
     target_lang: str,
+    principal: Principal,
     run_a: Run | None,
     run_b: Run | None,
+    has_vote: bool = False,
     include_stats: bool = False,
 ) -> BattlePublic:
     return BattlePublic(
@@ -443,6 +467,11 @@ def _to_battle_public(
         target_lang=target_lang,
         mode=battle.mode,
         status=battle.status,
+        retry_allowed=_retry_allowed_for_battle(
+            battle=battle,
+            principal=principal,
+            has_vote=has_vote,
+        ),
         run_a=_to_run_public(run_a, include_stats=include_stats),
         run_b=_to_run_public(run_b, include_stats=include_stats),
     )
@@ -493,6 +522,31 @@ def _is_battle_creator(
         return True
 
     return False
+
+
+def _is_admin_principal(principal: Principal) -> bool:
+    if not principal.is_authenticated:
+        return False
+
+    settings = get_settings()
+    claim_value = claim_by_path(principal.claims, settings.oidc_admin_group_claim)
+    groups = normalize_groups(claim_value)
+    return settings.oidc_admin_group_name in groups
+
+
+def _retry_allowed_for_battle(
+    *,
+    battle: Battle,
+    principal: Principal,
+    has_vote: bool,
+) -> bool:
+    if battle.status != "failed" or has_vote:
+        return False
+
+    if _is_battle_creator(battle, principal=principal):
+        return True
+
+    return _is_admin_principal(principal)
 
 
 @lru_cache(maxsize=1)

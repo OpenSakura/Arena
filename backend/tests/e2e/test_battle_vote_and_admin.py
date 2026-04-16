@@ -315,7 +315,7 @@ def test_vote_pipeline_handles_idempotency_and_conflicts(
     )
     auth_headers = {"Authorization": f"Bearer {authentik_token}"}
 
-    # Submit initial vote — returns reveal=null (vote is not yet revealed).
+    # Submit initial vote — immediately reveals and locks the vote.
     first = backend_client.post(
         f"/api/v1/battles/{battle_id}/vote",
         headers=auth_headers,
@@ -325,7 +325,8 @@ def test_vote_pipeline_handles_idempotency_and_conflicts(
     first_payload = first.json()
     assert first_payload["battle_id"] == str(battle_id)
     assert first_payload["winner"] == "A"
-    assert first_payload["reveal"] is None
+    assert first_payload["reveal"]["A"]["model_id"] == str(model_a_id)
+    assert first_payload["reveal"]["B"]["model_id"] == str(model_b_id)
     first_vote_id = first_payload["vote_id"]
 
     # Re-submitting with the same winner is idempotent.
@@ -338,20 +339,10 @@ def test_vote_pipeline_handles_idempotency_and_conflicts(
     second_payload = second.json()
     assert second_payload["vote_id"] == first_vote_id
     assert second_payload["winner"] == "A"
-    assert second_payload["reveal"] is None
+    assert second_payload["reveal"]["A"]["model_id"] == str(model_a_id)
+    assert second_payload["reveal"]["B"]["model_id"] == str(model_b_id)
 
-    # Changing winner BEFORE reveal is allowed (vote update).
-    updated = backend_client.post(
-        f"/api/v1/battles/{battle_id}/vote",
-        headers=auth_headers,
-        json={"winner": "B"},
-    )
-    assert updated.status_code == 200
-    assert updated.json()["vote_id"] == first_vote_id
-    assert updated.json()["winner"] == "B"
-    assert updated.json()["reveal"] is None
-
-    # Reveal the vote — locks it and returns model identities.
+    # Compatibility-safe reveal remains idempotent.
     reveal = backend_client.post(
         f"/api/v1/battles/{battle_id}/vote/reveal",
         headers=auth_headers,
@@ -359,15 +350,15 @@ def test_vote_pipeline_handles_idempotency_and_conflicts(
     assert reveal.status_code == 200
     reveal_payload = reveal.json()
     assert reveal_payload["vote_id"] == first_vote_id
-    assert reveal_payload["winner"] == "B"
+    assert reveal_payload["winner"] == "A"
     assert reveal_payload["reveal"]["A"]["model_id"] == str(model_a_id)
     assert reveal_payload["reveal"]["B"]["model_id"] == str(model_b_id)
 
-    # After reveal, changing winner is rejected.
+    # Changing winner after submit/reveal is rejected.
     conflicting = backend_client.post(
         f"/api/v1/battles/{battle_id}/vote",
         headers=auth_headers,
-        json={"winner": "A"},
+        json={"winner": "B"},
     )
     assert conflicting.status_code == 409
     assert conflicting.json()["detail"] == "Vote already revealed and cannot be changed"
@@ -480,7 +471,8 @@ def test_battle_stream_vote_and_leaderboard_reflect_rating_updates(
     assert vote.status_code == 201
     vote_payload = vote.json()
     assert vote_payload["winner"] == "A"
-    assert vote_payload["reveal"] is None
+    assert vote_payload["reveal"]["A"]["model_id"] == str(run_a.model_id)
+    assert vote_payload["reveal"]["B"]["model_id"] == str(run_b.model_id)
 
     # Reveal models — locks the vote and returns model identities.
     reveal = backend_client.post(

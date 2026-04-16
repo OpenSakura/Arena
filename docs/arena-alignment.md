@@ -53,7 +53,8 @@ Important nuance:
 - Frontend: React + Vite SPA (TypeScript), single app for arena + admin.
 - Backend: FastAPI (Python), Postgres only.
 - Auth: Authentik OIDC. Login required for all mutations (battle creation,
-  voting, retries, reveal). Public read pages remain accessible without login.
+  voting, retries). Public read pages are limited to the leaderboard and
+  completed battle result pages.
 - No worker queue: model calls are performed directly by the API (async).
 - No gateway service in this repo: an upstream gateway already exists.
 
@@ -150,9 +151,10 @@ Notes:
 ### User Accounts and Profiles
 
 - Authentik OIDC is the identity provider.
-- Login is required to create battles, submit votes, retry battles, and reveal
-  votes. Public read pages (battles, leaderboards, completed results) remain
-  accessible without login.
+- Login is required to create battles, submit votes, and retry battles.
+- Successful vote submission immediately reveals model identities.
+- Public read pages are limited to the leaderboard and completed battle result
+  pages.
 - Logged-in users may optionally fill a profile for downstream filtering/analysis:
   - JP capability (e.g., JLPT N1-N5 or other certificates)
   - translation experience per language pair and role (translator/editor/qc/tl/etc.)

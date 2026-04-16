@@ -3,8 +3,7 @@ import { useEffect, useState } from "react";
 import { useAuthHeaders } from "@/hooks/useAuthHeaders";
 import { apiGet } from "@/lib/api";
 import { parseMeResponse } from "@/types/me";
-
-const SESSION_EXPIRED_MESSAGE = "Your session has expired. Please log in again.";
+import { SESSION_EXPIRED_MESSAGE } from "@/auth/oidc";
 
 function isUnauthorizedMeError(error: unknown) {
   return error instanceof Error && /^GET \/me failed: 401\b/.test(error.message);

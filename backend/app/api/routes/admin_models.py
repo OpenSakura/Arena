@@ -4,14 +4,12 @@ Admin endpoints for model registry CRUD.
 
 Notes:
 - Restrict to admins via OIDC roles/claims (Authentik groups).
-- Do NOT allow arbitrary external `base_url` from untrusted users (SSRF risk).
+- Admin-supplied ``base_url`` values may target private/internal services.
 - Store provider tokens encrypted at rest in Postgres.
 """
 
 from __future__ import annotations
 
-import ipaddress
-import socket
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -59,7 +57,7 @@ def create_model(payload: ModelCreate, db: Session = Depends(get_db)) -> ModelAd
     if payload.api_key is not None:
         encrypted_api_key = _encrypt_api_key(payload.api_key)
 
-    _validate_base_url_not_private(payload.base_url)
+    _validate_base_url(payload.base_url)
 
     model = Model(
         display_name=payload.display_name,
@@ -143,7 +141,7 @@ def update_model(
                 detail=f"{field} cannot be null",
             )
         if field == "base_url" and isinstance(value, str):
-            _validate_base_url_not_private(value)
+            _validate_base_url(value)
         setattr(model, field, value)
 
     db.add(model)
@@ -272,35 +270,22 @@ async def test_model(model_id: str, db: Session = Depends(get_db)) -> dict[str, 
         }
 
 
-def _validate_base_url_not_private(base_url: str) -> None:
-    """Reject base_url values that resolve to private/loopback IP ranges.
-
-    Prevents SSRF where an admin-supplied URL causes the backend to make
-    requests to internal services (metadata endpoints, databases, etc.).
-    """
+def _validate_base_url(base_url: str) -> None:
+    """Validate base_url syntax while allowing internal/admin-managed targets."""
     try:
         parsed = urlparse(base_url)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=f"Invalid base_url: {exc}") from exc
 
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(
+            status_code=422,
+            detail="base_url must use http:// or https:// scheme",
+        )
+
     hostname = parsed.hostname
     if not hostname:
         raise HTTPException(status_code=422, detail="base_url has no hostname")
-
-    try:
-        resolved = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
-    except socket.gaierror as exc:
-        raise HTTPException(
-            status_code=422, detail=f"Cannot resolve base_url hostname: {exc}"
-        ) from exc
-
-    for _family, _type, _proto, _canonname, sockaddr in resolved:
-        ip = ipaddress.ip_address(sockaddr[0])
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-            raise HTTPException(
-                status_code=422,
-                detail="base_url must not resolve to a private or reserved IP address",
-            )
 
 
 def _encrypt_api_key(api_key: str) -> str:

@@ -314,11 +314,6 @@ def test_create_model_encrypts_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     db = _ModelMutationDB()
 
     monkeypatch.setattr(
-        admin_models.socket,
-        "getaddrinfo",
-        lambda *_args, **_kwargs: [(None, None, None, None, ("8.8.8.8", 443))],
-    )
-    monkeypatch.setattr(
         admin_models, "_encrypt_api_key", lambda api_key: f"enc:{api_key}"
     )
 
@@ -350,12 +345,6 @@ def test_create_model_normalizes_blank_prompt_fields_to_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db = _ModelMutationDB()
-
-    monkeypatch.setattr(
-        admin_models.socket,
-        "getaddrinfo",
-        lambda *_args, **_kwargs: [(None, None, None, None, ("8.8.8.8", 443))],
-    )
 
     payload = ModelCreate(
         display_name="Model Alpha",
@@ -462,3 +451,28 @@ def test_test_model_uses_shared_client(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert response["ok"] is True
     assert shared.call_count == 1
+
+
+def test_validate_base_url_accepts_private_internal_targets() -> None:
+    admin_models._validate_base_url("http://10.0.0.7:8000/v1")
+    admin_models._validate_base_url("http://localhost:3000")
+    admin_models._validate_base_url("https://gateway.internal.example/v1")
+
+
+@pytest.mark.parametrize(
+    ("base_url", "detail_fragment"),
+    [
+        ("not a url", "must use http:// or https:// scheme"),
+        ("ftp://example.com", "must use http:// or https:// scheme"),
+        ("https:///v1", "base_url has no hostname"),
+    ],
+)
+def test_validate_base_url_rejects_invalid_urls(
+    base_url: str,
+    detail_fragment: str,
+) -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        admin_models._validate_base_url(base_url)
+
+    assert exc_info.value.status_code == 422
+    assert detail_fragment in str(exc_info.value.detail)

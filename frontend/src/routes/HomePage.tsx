@@ -272,7 +272,7 @@ export default function HomePage() {
           <div
             className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-4"
           >
-            {FEATURES.map((feature, i) => (
+            {FEATURES.map((feature) => (
               <FeatureCard
                 key={feature.title}
                 title={feature.title}
@@ -296,7 +296,7 @@ export default function HomePage() {
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {STEPS.map((step, i) => (
+          {STEPS.map((step) => (
             <div
               key={step.step}
               className="glass-panel p-5 text-center group hover:border-foreground/[0.12] transition-all duration-300 relative overflow-hidden hover-lift"

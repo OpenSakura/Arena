@@ -5,21 +5,22 @@ FastAPI control-plane API for the translation arena.
 Notes:
 - This backend does not host model inference. It calls your existing LLM gateway
   / provider endpoints via HTTP.
-- Authentication is OIDC (Authentik). Public read endpoints (battles,
-  leaderboard, results) work without login. All mutations (creating battles,
-  retrying battles, submitting votes, revealing votes) require a valid OIDC
-  access token.
+- Authentication is OIDC (Authentik). Public reads are limited to the
+  leaderboard and completed battle results. Battle creation, retrying battles,
+  vote submission, vote reveal compatibility calls, and non-completed battle
+  reads require a valid OIDC access token.
 - **Single-worker requirement**: battle execution relies on in-process singletons
   (orchestrator, leaderboard refresher) that are not safe across multiple OS
   processes. Always run with `WEB_CONCURRENCY=1` (the default). Starting with
   more than one worker is a startup error.
 - Battle model pairing supports FastChat-inspired knobs via env JSON
   (`BATTLE_SAMPLING_WEIGHTS`, `BATTLE_TARGETS`, `BATTLE_STRICT_TARGETS`, etc.).
-- Battle execution is capped by `BATTLE_RUNNING_WAIT_TIMEOUT_SECONDS` — if the
-  owned battle task exceeds this wall-clock limit the battle is force-failed.
+- Battle execution is capped by `BATTLE_RUNNING_WAIT_TIMEOUT_SECONDS`.
+  Owner-task timeouts consume the same one-shot automatic retry budget as run
+  failures before a final timeout failure is recorded.
 - Leaderboard ratings are periodically refreshed in a background job
   (`LEADERBOARD_REFRESH_*`) and can be inspected/refreshed via admin endpoints.
-- `/leaderboard` supports `method=bt` (default) and `method=elo`.
+- `/leaderboard` supports `method=elo` (default) and `method=bt`.
   Bradley-Terry confidence intervals can be enabled via
   `include_confidence=true`.
 - Request correlation IDs are accepted via `X-Request-ID` (or generated when

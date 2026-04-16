@@ -423,7 +423,7 @@ def test_submit_vote_rejects_vote_when_selected_side_has_no_output(
 def test_submit_vote_returns_existing_vote_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    battle, runs, _, _ = _battle_and_runs()
+    battle, runs, model_a_id, model_b_id = _battle_and_runs()
     principal = _authenticated_principal()
     existing_vote = SimpleNamespace(
         id=uuid.uuid4(),
@@ -452,12 +452,19 @@ def test_submit_vote_returns_existing_vote_response(
         battle_id=str(battle.id),
         payload=VoteCreate(winner="A"),
         response=Response(),
-        db=_VoteDB(battle=battle, runs=runs),  # type: ignore[arg-type]
+        db=_VoteDB(
+            battle=battle,
+            runs=runs,
+            model_lookup={
+                model_a_id: SimpleNamespace(id=model_a_id, display_name="Model A"),
+                model_b_id: SimpleNamespace(id=model_b_id, display_name="Model B"),
+            },
+        ),  # type: ignore[arg-type]
         principal=principal,
         settings=_settings(),  # type: ignore[arg-type]
     )
 
-    assert response.reveal is None
+    assert response.reveal is not None
     assert response.winner == "A"
     assert captured["battle_id"] == battle.id
     requester_identity = captured["requester_identity"]
@@ -492,8 +499,15 @@ def test_submit_vote_rejects_conflicting_existing_revealed_vote(
 def test_submit_vote_records_vote_and_uses_auth_rate_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    battle, runs, _, _ = _battle_and_runs()
-    db = _VoteDB(battle=battle, runs=runs)
+    battle, runs, model_a_id, model_b_id = _battle_and_runs()
+    db = _VoteDB(
+        battle=battle,
+        runs=runs,
+        model_lookup={
+            model_a_id: SimpleNamespace(id=model_a_id, display_name="Model A"),
+            model_b_id: SimpleNamespace(id=model_b_id, display_name="Model B"),
+        },
+    )
     principal = _authenticated_principal()
     calls: dict[str, object] = {}
 
@@ -513,13 +527,17 @@ def test_submit_vote_records_vote_and_uses_auth_rate_limit(
         settings=_settings(),  # type: ignore[arg-type]
     )
 
-    assert response.reveal is None
+    assert response.reveal == {
+        "A": {"model_id": str(model_a_id), "display_name": "Model A"},
+        "B": {"model_id": str(model_b_id), "display_name": "Model B"},
+    }
     assert response.winner == "A"
     assert calls["rate_limit"] is True
     assert db.flush_calls == 1
     assert db.commit_calls == 1
     vote_row = next(row for row in db.added if isinstance(row, Vote))
     assert vote_row.voter_user_id == uuid.UUID(principal.user_id)
+    assert vote_row.revealed is True
 
 
 def test_submit_vote_resolves_duplicate_conflict_after_flush_error(
@@ -637,6 +655,97 @@ def test_reveal_vote_marks_vote_revealed_and_returns_model_metadata(
             vote_id=existing_vote.id,
             battle_id=battle.id,
             winner="B",
+            model_a_id=model_a_id,
+            model_b_id=model_b_id,
+        ),
+    )
+
+    response = votes.reveal_vote(
+        battle_id=str(battle.id),
+        db=db,  # type: ignore[arg-type]
+        principal=_authenticated_principal(),
+    )
+
+    assert response.vote_id == str(existing_vote.id)
+    assert response.reveal is not None
+    assert existing_vote.revealed is True
+
+
+def test_submit_vote_reveals_existing_unrevealed_vote_and_updates_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    battle, runs, model_a_id, model_b_id = _battle_and_runs()
+    principal = _authenticated_principal()
+    existing_vote = SimpleNamespace(
+        id=uuid.uuid4(),
+        winner="A",
+        revealed=False,
+        rubric=None,
+        comment=None,
+    )
+    db = _VoteDB(
+        battle=battle,
+        runs=runs,
+        model_lookup={
+            model_a_id: SimpleNamespace(id=model_a_id, display_name="Alpha"),
+            model_b_id: SimpleNamespace(id=model_b_id, display_name="Beta"),
+        },
+    )
+
+    monkeypatch.setattr(
+        votes,
+        "find_existing_battle_vote",
+        lambda *_a, **_kw: existing_vote,
+    )
+    monkeypatch.setattr(
+        votes,
+        "_enforce_auth_vote_rate_limit",
+        lambda **_kw: pytest.fail("Rate-limit checks should not run"),
+    )
+
+    response = votes.submit_vote(
+        battle_id=str(battle.id),
+        payload=VoteCreate(winner="B", comment="new"),
+        response=Response(),
+        db=db,  # type: ignore[arg-type]
+        principal=principal,
+        settings=_settings(),  # type: ignore[arg-type]
+    )
+
+    assert existing_vote.winner == "B"
+    assert existing_vote.comment == "new"
+    assert existing_vote.revealed is True
+    assert response.vote_id == str(existing_vote.id)
+    assert response.winner == "B"
+    assert response.reveal == {
+        "A": {"model_id": str(model_a_id), "display_name": "Alpha"},
+        "B": {"model_id": str(model_b_id), "display_name": "Beta"},
+    }
+
+
+def test_reveal_vote_is_idempotent_for_already_revealed_vote(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    battle, runs, model_a_id, model_b_id = _battle_and_runs()
+    db = _VoteDB(battle=battle, runs=runs)
+    existing_vote = Vote(
+        battle_id=battle.id,
+        winner="A",
+        voter_user_id=uuid.uuid4(),
+        revealed=True,
+    )
+    existing_vote.id = uuid.uuid4()
+
+    monkeypatch.setattr(
+        votes, "find_existing_battle_vote", lambda *_a, **_kw: existing_vote
+    )
+    monkeypatch.setattr(
+        votes,
+        "_build_vote_submit_response",
+        lambda *_a, **_kw: _vote_submit_response(
+            vote_id=existing_vote.id,
+            battle_id=battle.id,
+            winner="A",
             model_a_id=model_a_id,
             model_b_id=model_b_id,
         ),

@@ -247,7 +247,7 @@ def _enforce_confidence_request_rate_limit(*, method: str, settings: Settings) -
 
 @router.get("/leaderboard")
 def get_leaderboard(
-    method: str = Query(default="bt", pattern="^(elo|bt)$"),
+    method: str = Query(default="elo", pattern="^(elo|bt)$"),
     include_confidence: bool = Query(default=False),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
@@ -257,7 +257,7 @@ def get_leaderboard(
     Parameters
     ----------
     method:
-        Rating method — ``"bt"`` (default) or ``"elo"``.
+        Rating method — ``"elo"`` (default) or ``"bt"``.
     include_confidence:
         When ``True``, compute bootstrap confidence intervals.  This is
         CPU-expensive and is therefore cached and rate-limited.

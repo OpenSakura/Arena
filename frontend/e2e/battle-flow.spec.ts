@@ -12,6 +12,7 @@ type BattlePublic = {
   target_lang: string;
   mode: string;
   status: string;
+  retry_allowed: boolean;
   run_a: {
     id: string;
     side: Side;
@@ -37,6 +38,7 @@ function makeBattle(id: string, sourceText: string): BattlePublic {
     target_lang: "zh",
     mode: "jp2zh_ab",
     status: "pending",
+    retry_allowed: false,
     run_a: {
       id: `${id}-run-a`,
       side: "A",
@@ -194,24 +196,6 @@ test("streams outputs, reveals models after vote, and restarts cleanly", async (
         vote_id: `vote-${battleId}`,
         battle_id: battleId,
         winner: "A",
-        reveal: null,
-      }),
-    });
-  });
-
-  await page.route(/\/api\/v1\/battles\/[^/]+\/vote\/reveal$/, async (route) => {
-    if (await handleCorsIfPreflight(route)) return;
-    const match = /\/battles\/([^/]+)\/vote\/reveal$/.exec(route.request().url());
-    const battleId = match?.[1] ?? "battle-unknown";
-
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      headers: CORS_HEADERS,
-      body: JSON.stringify({
-        vote_id: `vote-${battleId}`,
-        battle_id: battleId,
-        winner: "A",
         reveal: {
           A: { model_id: "model-a", display_name: "Revealed Model A" },
           B: { model_id: "model-b", display_name: "Revealed Model B" },
@@ -297,6 +281,7 @@ test("loads an existing completed battle id without creating a new one", async (
         target_lang: "zh",
         mode: "jp2zh_ab",
         status: "completed",
+        retry_allowed: false,
         run_a: {
           id: "battle-existing-run-a",
           side: "A",
@@ -354,22 +339,6 @@ test("loads an existing completed battle id without creating a new one", async (
       authHeader: route.request().headers()["authorization"],
       payload: route.request().postDataJSON(),
     });
-
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      headers: CORS_HEADERS,
-      body: JSON.stringify({
-        vote_id: "vote-existing",
-        battle_id: "battle-existing",
-        winner: "B",
-        reveal: null,
-      }),
-    });
-  });
-
-  await page.route(/\/api\/v1\/battles\/[^/]+\/vote\/reveal$/, async (route) => {
-    if (await handleCorsIfPreflight(route)) return;
 
     await route.fulfill({
       status: 200,

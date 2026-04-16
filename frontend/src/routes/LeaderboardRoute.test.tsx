@@ -18,7 +18,7 @@ beforeEach(() => {
 
 describe("LeaderboardRoute", () => {
   it("requests default Elo leaderboard and shows empty state", async () => {
-    let resolveApi: (value: any) => void;
+    let resolveApi: (value: unknown) => void;
     const promise = new Promise((resolve) => {
       resolveApi = resolve;
     });
@@ -53,7 +53,7 @@ describe("LeaderboardRoute", () => {
   });
 
   it("renders BT rows with confidence intervals when requested", async () => {
-    let resolveApi: (value: any) => void;
+    let resolveApi: (value: unknown) => void;
     const promise = new Promise((resolve) => {
       resolveApi = resolve;
     });
@@ -98,7 +98,7 @@ describe("LeaderboardRoute", () => {
   });
 
   it("shows the BT confidence toggle link when BT is selected", async () => {
-    let resolveApi: (value: any) => void;
+    let resolveApi: (value: unknown) => void;
     const promise = new Promise((resolve) => {
       resolveApi = resolve;
     });
@@ -136,7 +136,7 @@ describe("LeaderboardRoute", () => {
   });
 
   it("requests Elo confidence intervals when enabled", async () => {
-    let resolveApi: (value: any) => void;
+    let resolveApi: (value: unknown) => void;
     const promise = new Promise((resolve) => {
       resolveApi = resolve;
     });
@@ -172,7 +172,7 @@ describe("LeaderboardRoute", () => {
   });
 
   it("shows failed to load leaderboard message when fetch fails", async () => {
-    let rejectApi: (error: any) => void;
+    let rejectApi: (error: unknown) => void;
     const promise = new Promise((_, reject) => {
       rejectApi = reject;
     });
@@ -191,7 +191,7 @@ describe("LeaderboardRoute", () => {
   });
 
   it("requests BT without confidence using correct endpoint without model_ratings", async () => {
-    let resolveApi: (value: any) => void;
+    let resolveApi: (value: unknown) => void;
     const promise = new Promise((resolve) => {
       resolveApi = resolve;
     });

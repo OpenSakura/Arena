@@ -184,7 +184,7 @@ function createSSEParser(maxEventChars = MAX_EVENT_CHARS) {
 
     const emitted: SSEEvent[] = [];
 
-    while (true) {
+    for (;;) {
       const line = readCompleteLine(buffer);
       if (line === null) {
         break;

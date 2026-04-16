@@ -449,12 +449,175 @@ def test_get_battle_keeps_run_stats_hidden() -> None:
         },
     )
 
-    response = battles.get_battle(str(battle_id), db=db)  # type: ignore[arg-type]
+    response = battles.get_battle(
+        str(battle_id),
+        db=db,  # type: ignore[arg-type]
+        principal=cast(Principal, _principal(authenticated=False, user_id=None)),
+    )
 
     assert response.run_a is not None
     assert response.run_b is not None
+    assert response.retry_allowed is False
     assert response.run_a.stats is None
     assert response.run_b.stats is None
+
+
+def test_get_battle_rejects_unauthenticated_non_completed_battle() -> None:
+    battle_id = uuid.uuid4()
+    task = _task()
+    battle = SimpleNamespace(
+        id=battle_id,
+        task_id=task.id,
+        mode="jp2zh_ab",
+        status="running",
+        metadata_json=None,
+    )
+    db = _QueueDB(
+        [],
+        get_map={
+            (battles.Battle, battle_id): battle,
+            (Task, task.id): task,
+        },
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        battles.get_battle(
+            str(battle_id),
+            db=db,  # type: ignore[arg-type]
+            principal=cast(Principal, _principal(authenticated=False, user_id=None)),
+        )
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Authentication required"
+
+
+def test_get_battle_allows_authenticated_non_completed_battle() -> None:
+    battle_id = uuid.uuid4()
+    task = _task()
+    battle = SimpleNamespace(
+        id=battle_id,
+        task_id=task.id,
+        mode="jp2zh_ab",
+        status="running",
+        metadata_json=None,
+    )
+    runs = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="A",
+            output_text="Alpha",
+            stats={"request_id": "req-a"},
+            error_text=None,
+        ),
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="B",
+            output_text="Beta",
+            stats={"request_id": "req-b"},
+            error_text=None,
+        ),
+    ]
+    db = _QueueDB(
+        [[*runs], []],
+        get_map={
+            (battles.Battle, battle_id): battle,
+            (Task, task.id): task,
+        },
+    )
+
+    response = battles.get_battle(
+        str(battle_id),
+        db=db,  # type: ignore[arg-type]
+        principal=cast(
+            Principal,
+            _principal(authenticated=True, user_id=str(uuid.uuid4())),
+        ),
+    )
+
+    assert response.id == str(battle_id)
+    assert response.status == "running"
+    assert response.retry_allowed is False
+    assert response.run_a is not None
+    assert response.run_a.stats is None
+    assert response.run_b is not None
+    assert response.run_b.stats is None
+
+
+def test_get_battle_exposes_retry_allowed_for_failed_creator() -> None:
+    principal, battle = _creator_principal_and_battle(status="failed")
+    task = _task()
+    battle.task_id = task.id
+    runs = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="A",
+            output_text=None,
+            stats=None,
+            error_text="failure",
+        ),
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="B",
+            output_text=None,
+            stats=None,
+            error_text="failure",
+        ),
+    ]
+    db = _QueueDB(
+        [[*runs], []],
+        get_map={
+            (battles.Battle, battle.id): battle,
+            (Task, task.id): task,
+        },
+    )
+
+    response = battles.get_battle(
+        str(battle.id),
+        db=db,  # type: ignore[arg-type]
+        principal=principal,
+    )
+
+    assert response.status == "failed"
+    assert response.retry_allowed is True
+
+
+def test_get_battle_retry_allowed_is_false_when_failed_battle_has_vote() -> None:
+    principal, battle = _creator_principal_and_battle(status="failed")
+    task = _task()
+    battle.task_id = task.id
+    vote_id = uuid.uuid4()
+    runs = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="A",
+            output_text=None,
+            stats=None,
+            error_text="failure",
+        ),
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="B",
+            output_text=None,
+            stats=None,
+            error_text="failure",
+        ),
+    ]
+    db = _QueueDB(
+        [[*runs], [vote_id]],
+        get_map={
+            (battles.Battle, battle.id): battle,
+            (Task, task.id): task,
+        },
+    )
+
+    response = battles.get_battle(
+        str(battle.id),
+        db=db,  # type: ignore[arg-type]
+        principal=principal,
+    )
+
+    assert response.status == "failed"
+    assert response.retry_allowed is False
 
 
 # ── retry_battle tests ──
@@ -584,6 +747,35 @@ def test_retry_battle_clears_all_run_artifacts() -> None:
     assert db.committed
 
 
+def test_retry_battle_resets_automatic_retry_budget() -> None:
+    principal, battle = _creator_principal_and_battle(
+        status="failed",
+        metadata_json={
+            "task_snapshot": {
+                "source_text": "JP text",
+                "source_lang": "ja",
+                "target_lang": "zh",
+            },
+            "requester_user_id": "placeholder",
+            "automatic_retry_count": 1,
+        },
+    )
+    battle.metadata_json["requester_user_id"] = principal.user_id
+    run_a = _stale_run(battle_id=battle.id, side="A")
+    run_b = _stale_run(battle_id=battle.id, side="B")
+
+    db = _RetryDB(battle=battle, runs=[run_a, run_b])
+    result = battles.retry_battle(
+        str(battle.id),
+        request=_request(),
+        db=db,  # type: ignore[arg-type]
+        principal=principal,
+    )
+
+    assert battle.metadata_json["automatic_retry_count"] == 0
+    assert result.status == "pending"
+
+
 def test_retry_battle_rejects_non_failed_status() -> None:
     for status in ("pending", "running", "completed"):
         principal, battle = _creator_principal_and_battle(status=status)
@@ -652,6 +844,7 @@ def test_retry_battle_returns_pending_battle_public() -> None:
 
     assert result.status == "pending"
     assert result.source_text == "JP text"
+    assert result.retry_allowed is False
     assert result.run_a is not None
     assert result.run_a.output_text is None
     assert result.run_a.stats is None
@@ -737,10 +930,15 @@ def test_stats_visible_after_vote() -> None:
         },
     )
 
-    response = battles.get_battle(str(battle_id), db=db)  # type: ignore[arg-type]
+    response = battles.get_battle(
+        str(battle_id),
+        db=db,  # type: ignore[arg-type]
+        principal=cast(Principal, _principal(authenticated=False, user_id=None)),
+    )
 
     assert response.run_a is not None
     assert response.run_b is not None
+    assert response.retry_allowed is False
     assert response.run_a.stats == {"request_id": "req-a"}
     assert response.run_b.stats == {"request_id": "req-b"}
 
@@ -828,7 +1026,7 @@ def test_create_battle_records_authenticated_requester_id(
     request = _request()
     settings = cast(Settings, _settings())
 
-    battles.create_battle(
+    result = battles.create_battle(
         payload=BattleCreate(),
         request=request,
         db=_FakeDB(),  # type: ignore[arg-type]
@@ -839,3 +1037,4 @@ def test_create_battle_records_authenticated_requester_id(
     battles_added = [o for o in added_objects if isinstance(o, Battle)]
     assert len(battles_added) == 1
     assert battles_added[0].metadata_json["requester_user_id"] == principal.user_id
+    assert result.retry_allowed is False

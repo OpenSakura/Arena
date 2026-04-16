@@ -26,13 +26,13 @@ const EXPERIENCE_ROLES = ["translator", "editor", "qc", "tl"] as const;
 type ExperienceRole = (typeof EXPERIENCE_ROLES)[number];
 
 export default function OnboardingRoute() {
-  const { authStatus, accessToken, headers, headersRef, sessionError } = useAuthHeaders();
+  const { authStatus, accessToken, headers, sessionError } = useAuthHeaders();
   const hasRefreshError = sessionError !== null && ["RefreshTokenMissing", "RefreshDiscoveryFailed", "RefreshTokenExpired", "RefreshTokenError"].includes(sessionError);
   const canSave = authStatus === "authenticated" && Boolean(accessToken) && !hasRefreshError;
   const authNoticeTitle = hasRefreshError ? "Session expired" : "Login required to save";
   const authNoticeBody = hasRefreshError
-    ? "Your session expired before we could load or save your profile. Sign in again to save profile info, create battles, vote, and reveal results. You can still browse battles and results while signed out."
-    : "You can browse battles and results without logging in, but creating battles, voting, and revealing results require a login. Profile info is stored for logged-in users only.";
+    ? "Your session expired before we could load or save your profile. Sign in again to save profile info, create battles, and vote. You can still browse the leaderboard and completed results while signed out."
+    : "You can browse the leaderboard and completed results without logging in, but creating battles and voting require a login. Profile info is stored for logged-in users only.";
 
   const [displayName, setDisplayName] = useState("");
   const [uiLanguage, setUiLanguage] = useState("en");

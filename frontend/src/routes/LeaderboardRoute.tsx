@@ -371,8 +371,8 @@ export default function LeaderboardRoute() {
                   {hasConfidence ? (
                     <td className="td-premium text-right tabular-nums font-mono text-xs text-muted-foreground">
                       {row.rating_lower !== null && row.rating_upper !== null
-                        ? `${row.rating_lower.toFixed(1)} \\u2013 ${row.rating_upper.toFixed(1)}`
-                        : "\\u2014"}
+                        ? `${row.rating_lower.toFixed(1)} \u2013 ${row.rating_upper.toFixed(1)}`
+                        : "\u2014"}
                     </td>
                   ) : null}
                   <td className="td-premium text-right tabular-nums text-muted-foreground">
