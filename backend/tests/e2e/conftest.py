@@ -5,6 +5,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+import time
 from textwrap import dedent
 
 import httpx
@@ -151,19 +152,31 @@ def _bootstrap_authentik(stack: E2EStack) -> None:
         """
     ).strip()
 
-    _run(
-        _compose_command(
-            stack,
-            "exec",
-            "-T",
-            "authentik-server",
-            "ak",
-            "shell",
-            "-c",
-            script,
-        ),
-        cwd=E2E_DIR,
-    )
+    last_error: RuntimeError | None = None
+    for attempt in range(12):
+        try:
+            _run(
+                _compose_command(
+                    stack,
+                    "exec",
+                    "-T",
+                    "authentik-server",
+                    "ak",
+                    "shell",
+                    "-c",
+                    script,
+                ),
+                cwd=E2E_DIR,
+            )
+            return
+        except RuntimeError as error:
+            last_error = error
+            if "Flow matching query does not exist" not in str(error) or attempt == 11:
+                raise
+            time.sleep(5)
+
+    if last_error is not None:
+        raise last_error
 
 
 def _run_backend_migrations() -> None:

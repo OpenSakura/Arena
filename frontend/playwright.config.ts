@@ -23,18 +23,12 @@ const PLAYWRIGHT_LIVE_STACK_PORT_ENV = {
 };
 
 const frontendServer = {
-  command: `npm run build && npm run start -- --port ${FRONTEND_PORT}`,
+  command: `npx vite --host 127.0.0.1 --strictPort --port ${FRONTEND_PORT}`,
   url: FRONTEND_ORIGIN,
   timeout: 240_000,
   reuseExistingServer: false,
   env: {
     ...process.env,
-    NEXTAUTH_URL: FRONTEND_ORIGIN,
-    NEXTAUTH_SECRET: "arena-frontend-e2e-nextauth-secret",
-    OIDC_ISSUER: `http://localhost:${PLAYWRIGHT_AUTHENTIK_PORT}/application/o/arena-e2e`,
-    OIDC_CLIENT_ID: "arena-e2e-client",
-    OIDC_CLIENT_SECRET: "arena-e2e-secret",
-    NEXT_PUBLIC_BACKEND_URL: BACKEND_BASE_URL,
   },
 };
 

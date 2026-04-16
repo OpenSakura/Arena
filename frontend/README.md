@@ -1,9 +1,11 @@
 # Frontend
 
-Next.js (TypeScript) web app for the translation arena.
+React + Vite (TypeScript) SPA for the translation arena.
 
 Notes:
-- Integrates with a generic OIDC provider via Auth.js / NextAuth.
+- Authenticates via SPA OIDC PKCE through `react-oidc-context` / `oidc-client-ts`.
+  Public OIDC bootstrap values (issuer, client id, scopes, callback paths) are
+  fetched at startup from the backend's `GET /api/v1/public-config` endpoint.
 - Anonymous users can browse public pages (battles, leaderboards, results).
   Login is required to create battles, retry battles, submit votes, and reveal
   votes. Logged-in users can also fill an optional profile for downstream
@@ -14,9 +16,11 @@ Local quickstart (dev):
 2. Install deps: `npm install`
 3. Run: `npm run dev`
 
+The Vite dev server proxies `/api/v1` to the backend at `http://localhost:8000`.
+
 ## Auth E2E smoke
 
-This frontend includes a Playwright smoke test for NextAuth + OIDC login/logout.
+This frontend includes Playwright smoke tests for SPA OIDC login/logout.
 
 Run from `frontend/`:
 
@@ -27,7 +31,7 @@ npm run test:e2e
 
 Notes:
 - The e2e runner starts a docker-backed Authentik stack from `backend/tests/e2e/docker-compose.yaml`.
-- It then starts the frontend server in production mode on `http://localhost:13000` and runs the login/logout smoke flow.
+- It then starts the frontend dev server on `http://localhost:13000` and runs the login/logout smoke flow.
 
 ## Live backend contract smoke (optional)
 

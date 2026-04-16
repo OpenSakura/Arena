@@ -127,22 +127,12 @@ data:
   LEADERBOARD_BT_CONFIDENCE_LEVEL: "0.95"
 
   # ──────────────────────────────────────────────
-  # Frontend — Next.js
+  # Frontend SPA — OIDC (served via /api/v1/public-config)
   # ──────────────────────────────────────────────
-  NEXT_PUBLIC_BACKEND_URL: "https://arena.example.com/api/v1"
-  # Optional: internal URL for SSR when Next.js can't reach the public URL
-  # BACKEND_INTERNAL_URL: "http://backend:8000/api/v1"
-  NEXTAUTH_URL: "https://arena.example.com"
-  NEXTAUTH_SECRET: ""                      # [SECRET] min 32 chars
-
-  # ──────────────────────────────────────────────
-  # Frontend — OIDC [SECRET]
-  # ──────────────────────────────────────────────
-  OIDC_ISSUER: ""                          # [SECRET] e.g. https://auth.example.com/application/o/arena/
-  OIDC_CLIENT_ID: ""                       # [SECRET]
-  OIDC_CLIENT_SECRET: ""                   # [SECRET]
-
-  # ──────────────────────────────────────────────
-  # Frontend — CSP / OIDC Origins
-  # ──────────────────────────────────────────────
-  # NEXT_PUBLIC_OIDC_ORIGINS: "https://auth.example.com"
+  # The SPA is a static bundle with no server-side env vars.
+  # Public OIDC bootstrap values are configured on the backend
+  # and exposed at GET /api/v1/public-config:
+  #   FRONTEND_OIDC_CLIENT_ID, FRONTEND_OIDC_SCOPE,
+  #   FRONTEND_OIDC_REDIRECT_PATH, FRONTEND_OIDC_SILENT_REDIRECT_PATH,
+  #   FRONTEND_OIDC_POST_LOGOUT_REDIRECT_PATH
+  # See the backend section above for OIDC_ISSUER.

@@ -1,115 +1,91 @@
-/**
- * frontend/src/hooks/useAdminAccess.ts
- *
- * Hook to centralize checking if the current user is an admin.
- * Depends on next-auth session and the backend /me endpoint.
- */
-
-"use client";
-
 import { useEffect, useState } from "react";
-import { useSession } from "next-auth/react";
 
+import { useAuthHeaders } from "@/hooks/useAuthHeaders";
 import { apiGet } from "@/lib/api";
 import { parseMeResponse } from "@/types/me";
 
-const ADMIN_ACCESS_CACHE_TTL_MS = 5_000;
+const SESSION_EXPIRED_MESSAGE = "Your session has expired. Please log in again.";
 
-const REFRESH_ERRORS = [
-  "RefreshTokenMissing",
-  "RefreshDiscoveryFailed",
-  "RefreshTokenExpired",
-  "RefreshTokenError",
-];
-
-let meRequestCache:
-  | {
-      accessToken: string;
-      promise: Promise<ReturnType<typeof parseMeResponse>>;
-      timestamp: number;
-    }
-  | null = null;
-
-function loadMe(accessToken: string) {
-  const now = Date.now();
-  if (
-    meRequestCache &&
-    meRequestCache.accessToken === accessToken &&
-    now - meRequestCache.timestamp < ADMIN_ACCESS_CACHE_TTL_MS
-  ) {
-    return meRequestCache.promise;
-  }
-
-  const promise = apiGet("/me", {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  })
-    .then((data) => parseMeResponse(data))
-    .catch((error: unknown) => {
-      if (meRequestCache?.promise === promise) {
-        meRequestCache = null;
-      }
-      throw error;
-    });
-
-  meRequestCache = {
-    accessToken,
-    promise,
-    timestamp: now,
-  };
-
-  return promise;
+function isUnauthorizedMeError(error: unknown) {
+  return error instanceof Error && /^GET \/me failed: 401\b/.test(error.message);
 }
 
 export function useAdminAccess() {
-  const { data: session, status } = useSession();
-  const isAuthenticated = status === "authenticated" && Boolean(session?.accessToken);
-  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
+  const { authStatus, accessToken, headers, sessionError } = useAuthHeaders();
+  const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const sessionError = typeof session?.error === "string" ? session.error : null;
-  const hasRefreshError = sessionError !== null && REFRESH_ERRORS.includes(sessionError);
 
   useEffect(() => {
-    if (status === "loading") {
+    let cancelled = false;
+
+    async function load() {
+      if (authStatus === "loading") {
+        setLoading(true);
+        setIsAdmin(false);
+        setError(null);
+        return;
+      }
+
+      if (sessionError) {
+        setLoading(false);
+        setIsAdmin(false);
+        setError(SESSION_EXPIRED_MESSAGE);
+        return;
+      }
+
+      if (authStatus !== "authenticated") {
+        setLoading(false);
+        setIsAdmin(false);
+        setError(null);
+        return;
+      }
+
+      if (!accessToken || !headers) {
+        setLoading(false);
+        setIsAdmin(false);
+        setError(SESSION_EXPIRED_MESSAGE);
+        return;
+      }
+
       setLoading(true);
       setError(null);
-      return;
-    }
-    if (hasRefreshError) {
-      setIsAdmin(false);
-      setLoading(false);
-      setError("Your session has expired. Please log in again.");
-      return;
-    }
-    if (!isAuthenticated) {
-      setIsAdmin(false);
-      setLoading(false);
-      setError(null);
-      return;
-    }
 
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-
-    loadMe(session.accessToken!)
-      .then((me) => {
+      try {
+        const response = parseMeResponse(await apiGet("/me", { headers }));
         if (cancelled) return;
-        setIsAdmin(Boolean(me?.is_admin));
-      })
-      .catch((err: unknown) => {
+
+        if (!response.authenticated) {
+          setIsAdmin(false);
+          setLoading(false);
+          setError(SESSION_EXPIRED_MESSAGE);
+          return;
+        }
+
+        setIsAdmin(Boolean(response.is_admin));
+        setLoading(false);
+      } catch (err) {
         if (cancelled) return;
         setIsAdmin(false);
-        setError(err instanceof Error ? err.message : "Failed to load admin access");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+        setLoading(false);
+        if (isUnauthorizedMeError(err)) {
+          setError(SESSION_EXPIRED_MESSAGE);
+          return;
+        }
+        setError(err instanceof Error ? err.message : "Failed to check admin access");
+      }
+    }
 
+    void load();
     return () => {
       cancelled = true;
     };
-  }, [isAuthenticated, session?.accessToken, status, hasRefreshError]);
+  }, [accessToken, authStatus, headers, sessionError]);
 
-  return { isAuthenticated, isAdmin, loading, error };
+  return {
+    isAuthenticated: authStatus === "authenticated",
+    isAdmin,
+    loading,
+    error,
+  };
 }

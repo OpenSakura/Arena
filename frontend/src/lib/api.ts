@@ -3,26 +3,17 @@
  *
  * Thin client for the backend REST API.
  *
- * Notes:
- * - This file centralizes request wiring so pages/components stay clean.
- * - Attach OIDC access token when available (caller provides Authorization).
- * - Use `credentials: "include"` so cookies persist.
+ * All requests target same-origin `/api/v1/...` paths so no absolute backend
+ * URL or environment variable is needed — the browser's default same-origin
+ * fetch behaviour handles everything.
  */
 
 import { toHeaderObject } from "@/lib/sse";
 
-export function getBackendBaseUrl(): string {
-  // Prefer an internal URL for server-side rendering (Next.js server
-  // components running behind a reverse proxy may not be able to reach the
-  // public URL).  Falls back to the public URL for client-side code.
-  const base =
-    (typeof window === "undefined"
-      ? process.env.BACKEND_INTERNAL_URL
-      : undefined) ?? process.env.NEXT_PUBLIC_BACKEND_URL;
-  if (!base) {
-    throw new Error("NEXT_PUBLIC_BACKEND_URL is not set");
-  }
-  return base.replace(/\/$/, "");
+const API_PREFIX = "/api/v1";
+
+export function getApiPrefix(): string {
+  return API_PREFIX;
 }
 
 async function readErrorDetail(res: Response): Promise<string | null> {
@@ -91,7 +82,8 @@ async function apiRequest<T = unknown>(
   body?: unknown,
   init?: RequestInit,
 ): Promise<T> {
-  const url = `${getBackendBaseUrl()}${path.startsWith("/") ? path : `/${path}`}`;
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const url = `${API_PREFIX}${normalizedPath}`;
   const hasJsonBody =
     method !== "GET" && method !== "DELETE" && body !== undefined && !isFormDataBody(body);
   const mergedHeaders = {
@@ -100,13 +92,9 @@ async function apiRequest<T = unknown>(
     ...(hasJsonBody ? { "Content-Type": "application/json" } : {}),
   };
 
-  // Spread `init` first so our explicit properties always win.
-  // Previously `...init` came after `method`, allowing callers to
-  // accidentally override the HTTP method via init.
   const res = await fetch(url, {
     ...init,
     method,
-    credentials: init?.credentials ?? "include",
     headers: mergedHeaders,
     body:
       method === "GET" || method === "DELETE"
@@ -122,7 +110,7 @@ async function apiRequest<T = unknown>(
   if (!res.ok) {
     const detail = await readErrorDetail(res);
     const suffix = detail ? ` - ${detail}` : "";
-    throw new Error(`${method} ${path} failed: ${res.status}${suffix}`);
+    throw new Error(`${method} ${normalizedPath} failed: ${res.status}${suffix}`);
   }
 
   return readSuccessBody(res) as Promise<T>;

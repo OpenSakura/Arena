@@ -5,11 +5,28 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useAuthHeaders } from "./useAuthHeaders";
 
-const useSessionMock = vi.fn();
+const useArenaAuthMock = vi.fn();
 
-vi.mock("next-auth/react", () => ({
-  useSession: () => useSessionMock(),
+vi.mock("@/hooks/useArenaAuth", () => ({
+  useArenaAuth: () => useArenaAuthMock(),
 }));
+
+function makeAuthState(overrides: Record<string, unknown> = {}) {
+  return {
+    authStatus: "unauthenticated",
+    isLoading: false,
+    isAuthenticated: false,
+    user: null,
+    accessToken: null,
+    sessionError: null,
+    headers: undefined,
+    headersRef: { current: undefined },
+    accessTokenRef: { current: null },
+    signinRedirect: vi.fn(),
+    signoutRedirect: vi.fn(),
+    ...overrides,
+  };
+}
 
 function Probe() {
   const { headers, authStatus } = useAuthHeaders();
@@ -24,16 +41,22 @@ function Probe() {
 
 describe("useAuthHeaders", () => {
   beforeEach(() => {
-    useSessionMock.mockReset();
+    useArenaAuthMock.mockReset();
   });
 
-  it("updates headers immediately when the session becomes authenticated", () => {
-    useSessionMock
-      .mockReturnValueOnce({ data: null, status: "loading" })
-      .mockReturnValue({
-        data: { accessToken: "admin-token" },
-        status: "authenticated",
-      });
+  it("updates headers immediately when auth becomes authenticated", () => {
+    useArenaAuthMock
+      .mockReturnValueOnce(makeAuthState({ authStatus: "loading", isLoading: true }))
+      .mockReturnValue(
+        makeAuthState({
+          authStatus: "authenticated",
+          isAuthenticated: true,
+          accessToken: "admin-token",
+          headers: { Authorization: "Bearer admin-token" },
+          headersRef: { current: { Authorization: "Bearer admin-token" } },
+          accessTokenRef: { current: "admin-token" },
+        }),
+      );
 
     const { rerender } = render(<Probe />);
     expect(screen.getByText("no-auth")).toBeDefined();
@@ -44,10 +67,7 @@ describe("useAuthHeaders", () => {
   });
 
   it("keeps auth headers unset while unauthenticated", async () => {
-    useSessionMock.mockReturnValue({
-      data: null,
-      status: "unauthenticated",
-    });
+    useArenaAuthMock.mockReturnValue(makeAuthState());
 
     render(<Probe />);
 

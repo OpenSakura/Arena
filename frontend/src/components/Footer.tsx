@@ -4,7 +4,7 @@
  * Site footer with project links, GitHub, and sakura branding.
  */
 
-import Link from "next/link";
+import { Link } from "react-router-dom";
 import { SakuraIcon } from "@/components/icons/SakuraIcon";
 
 function GitHubIcon({ className = "" }: { className?: string }) {
@@ -47,13 +47,13 @@ export function Footer() {
               Navigation
             </div>
             <nav aria-label="Footer navigation" className="grid gap-2 text-sm text-muted-foreground">
-              <Link href="/battle/new" className="transition-colors hover:text-foreground w-fit">
+              <Link to="/battle/new" className="transition-colors hover:text-foreground w-fit">
                 Battle
               </Link>
-              <Link href="/leaderboard" className="transition-colors hover:text-foreground w-fit">
+              <Link to="/leaderboard" className="transition-colors hover:text-foreground w-fit">
                 Leaderboard
               </Link>
-              <Link href="/onboarding" className="transition-colors hover:text-foreground w-fit">
+              <Link to="/onboarding" className="transition-colors hover:text-foreground w-fit">
                 Profile
               </Link>
             </nav>
@@ -82,7 +82,7 @@ export function Footer() {
         {/* Bottom bar */}
         <div className="divider-fade mt-8 mb-4" />
         <div className="flex flex-col sm:flex-row items-center justify-between gap-2 text-[11px] text-muted-foreground/40">
-          <span>Built with Next.js, FastAPI & community passion</span>
+          <span>Built with React, FastAPI & community passion</span>
           <span>Elo + Bradley-Terry rating systems</span>
         </div>
       </div>

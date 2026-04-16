@@ -1,5 +1,6 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
-import { encode } from "next-auth/jwt";
+
+import { mockSpaAuthenticatedSession } from "./spa-auth";
 
 type Side = "A" | "B";
 
@@ -75,30 +76,13 @@ async function handleCorsIfPreflight(route: Route): Promise<boolean> {
 }
 
 async function mockAuthenticatedSession(page: Page, accessToken: string): Promise<void> {
-  const sessionToken = await encode({
-    token: { name: "Battle E2E", email: "battle-e2e@example.com" },
-    secret: "arena-frontend-e2e-nextauth-secret",
-  });
-
-  await page.context().addCookies([
-    {
-      name: "next-auth.session-token",
-      value: sessionToken,
-      domain: "localhost",
-      path: "/",
+  await mockSpaAuthenticatedSession(page, {
+    accessToken,
+    profile: {
+      sub: "battle-e2e-user",
+      name: "Battle E2E",
+      email: "battle-e2e@example.com",
     },
-  ]);
-
-  await page.route("**/api/auth/session*", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        user: { name: "Battle E2E", email: "battle-e2e@example.com" },
-        expires: "2099-01-01T00:00:00.000Z",
-        accessToken,
-      }),
-    });
   });
 }
 
@@ -440,7 +424,9 @@ test("surfaces stream transport failures and keeps voting disabled", async ({ pa
   await expect(page.getByText(/^error$/i)).toBeVisible({
     timeout: 60_000,
   });
-  await expect(page.getByText(/SSE failed|Failed to fetch|Battle stream failed/i)).toBeVisible();
+  await expect(
+    page.getByText(/SSE failed|Failed to fetch|Battle stream failed|GET \/battles\/.+ failed: 500/i),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: /Model B is better/i })).toHaveCount(0);
   await expect(page.getByLabel("Optional feedback")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Submit Vote" })).toHaveCount(0);

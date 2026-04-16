@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { apiGet, apiPost } from "../lib/api";
-import { asRecord, loadOrCreateBattle, mergeBattleDelta } from "./battleViewUtils";
+import { asRecord, buildBattleAuthHeaders, loadOrCreateBattle, mergeBattleDelta } from "./battleViewUtils";
 
 vi.mock("../lib/api", () => ({
   apiGet: vi.fn(),
@@ -13,6 +13,18 @@ const mockedApiPost = vi.mocked(apiPost);
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+describe("buildBattleAuthHeaders", () => {
+  it("returns undefined when no token is provided", () => {
+    expect(buildBattleAuthHeaders()).toBeUndefined();
+  });
+
+  it("builds a bearer header from the current access token", () => {
+    expect(buildBattleAuthHeaders("token-123")).toEqual({
+      Authorization: "Bearer token-123",
+    });
+  });
 });
 
 describe("loadOrCreateBattle", () => {

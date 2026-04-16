@@ -2,11 +2,17 @@ import { apiGet, apiPost } from "../lib/api";
 
 export { asRecord } from "@/lib/typeGuards";
 
+export function buildBattleAuthHeaders(
+  accessToken?: string,
+): Record<string, string> | undefined {
+  return accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined;
+}
+
 export async function loadOrCreateBattle(
   battleId: string,
   accessToken?: string,
 ): Promise<unknown> {
-  const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined;
+  const headers = buildBattleAuthHeaders(accessToken);
 
   if (battleId === "new") {
     return apiPost("/battles", {}, { headers });

@@ -1,12 +1,15 @@
 import { expect, test } from "@playwright/test";
-import { encode } from "next-auth/jwt";
+
+import { mockSpaAuthenticatedSession, mockSpaPublicConfig } from "./spa-auth";
 
 test("onboarding shows anonymous guard", async ({ page }) => {
-  await page.route("**/api/auth/session*", async (route) => {
+  await mockSpaPublicConfig(page, { scope: "openid profile email" });
+
+  await page.route("**/api/v1/me", async (route) => {
     await route.fulfill({
-      status: 200,
+      status: 401,
       contentType: "application/json",
-      body: "null",
+      body: JSON.stringify({ authenticated: false }),
     });
   });
 
@@ -17,23 +20,30 @@ test("onboarding shows anonymous guard", async ({ page }) => {
 });
 
 test("onboarding shows explicit re-login messaging for expired sessions", async ({ page }) => {
-  await page.route("**/api/auth/session*", async (route) => {
+  await mockSpaPublicConfig(page, { scope: "openid profile email" });
+
+  await page.route("**/api/v1/me", async (route) => {
     await route.fulfill({
-      status: 200,
+      status: 401,
       contentType: "application/json",
       body: JSON.stringify({
-        user: { name: "Arena E2E", email: "arena-e2e@example.com" },
-        expires: "2099-01-01T00:00:00.000Z",
-        accessToken: "frontend-e2e-access-token",
+        authenticated: false,
         error: "RefreshTokenExpired",
       }),
     });
   });
 
-  await page.goto("/onboarding");
+  await page.addInitScript(() => {
+    sessionStorage.setItem("oidc.user:http://localhost:13000/mock-oidc:arena", JSON.stringify({
+      expires_at: Math.floor(Date.now() / 1000) - 3600, // Expired!
+      token_type: "Bearer",
+      scope: "openid profile email",
+      profile: { sub: "user123" }
+    }));
+  });
 
-  await expect(page.getByText("Your session has expired.")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Sign in again" })).toBeVisible();
+  await page.goto("/onboarding");
+  
   await expect(page.getByText("Session expired", { exact: true })).toBeVisible();
   await expect(
     page.getByText(/Your session expired before we could load or save your profile/i),
@@ -44,36 +54,21 @@ test("onboarding shows explicit re-login messaging for expired sessions", async 
 test("onboarding saves profile payload for authenticated users", async ({ page }) => {
   const saveCalls: Array<{ authHeader: string | undefined; payload: Record<string, unknown> }> = [];
 
-  await page.route("**/api/auth/session*", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        user: { name: "Arena E2E", email: "arena-e2e@example.com" },
-        expires: "2099-01-01T00:00:00.000Z",
-        accessToken: "frontend-e2e-access-token",
-      }),
-    });
-  });
-
-  await page.route(/\/api\/v1\/me$/, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        authenticated: true,
-        is_admin: false,
-        profile: {
-          display_name: "Existing User",
-          ui_language: "en",
-          zh_variant: "zh-Hans",
-          jp_proficiency: { jlpt: "N2" },
-          translation_experience: { jp_zh: { years: "1-3", roles: ["translator"] } },
-          consents: { research_use: false },
-          completed_at: "2026-02-19T00:00:00.000Z",
-        },
-      }),
-    });
+  await mockSpaAuthenticatedSession(page, {
+    accessToken: "frontend-e2e-access-token",
+    oidc: { scope: "openid profile email" },
+    meResponse: {
+      profile: {
+        display_name: "Existing User",
+        ui_language: "en",
+        zh_variant: "zh-Hans",
+        jp_proficiency: { jlpt: "N2" },
+        translation_experience: { jp_zh: { years: "1-3", roles: ["translator"] } },
+        consents: { research_use: false },
+        completed_at: "2026-02-19T00:00:00.000Z",
+      },
+    },
+    profile: { sub: "user123" },
   });
 
   await page.route(/\/api\/v1\/me\/profile$/, async (route) => {
@@ -125,52 +120,37 @@ test("onboarding saves profile payload for authenticated users", async ({ page }
 });
 
 test("admin routes redirect unauthenticated users to home page", async ({ page }) => {
+  await mockSpaPublicConfig(page, { scope: "openid profile email" });
+
+  await page.route("**/api/v1/me", async (route) => {
+    await route.fulfill({
+      status: 401,
+      contentType: "application/json",
+      body: JSON.stringify({ authenticated: false }),
+    });
+  });
+
   await page.goto("/admin/models");
 
   await page.waitForURL((url) => url.pathname === "/");
   const url = new URL(page.url());
   expect(url.pathname).toBe("/");
   expect(url.searchParams.has("callbackUrl")).toBe(true);
+  expect(url.searchParams.get("callbackUrl")).toBe("/admin/models");
 });
 
 test("admin models page performs a basic authenticated create flow", async ({ page }) => {
   const createCalls: Array<{ authHeader: string | undefined; payload: Record<string, unknown> }> = [];
 
-  const sessionToken = await encode({
-    token: { name: "Admin Arena", email: "admin@example.com" },
-    secret: "arena-frontend-e2e-nextauth-secret",
-  });
-
-  await page.context().addCookies([
-    {
-      name: "next-auth.session-token",
-      value: sessionToken,
-      domain: "localhost",
-      path: "/",
+  await mockSpaAuthenticatedSession(page, {
+    accessToken: "frontend-admin-access-token",
+    isAdmin: true,
+    oidc: { scope: "openid profile email" },
+    profile: {
+      sub: "admin123",
+      name: "Playwright Admin",
+      email: "admin@example.com",
     },
-  ]);
-
-  await page.route("**/api/auth/session*", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        user: { name: "Admin Arena", email: "admin@example.com" },
-        expires: "2099-01-01T00:00:00.000Z",
-        accessToken: "frontend-admin-access-token",
-      }),
-    });
-  });
-
-  await page.route(/\/api\/v1\/me$/, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        authenticated: true,
-        is_admin: true,
-      }),
-    });
   });
 
   await page.route("**/api/v1/admin/models", async (route) => {
@@ -205,6 +185,8 @@ test("admin models page performs a basic authenticated create flow", async ({ pa
           temperature: null,
           frequency_penalty: null,
           presence_penalty: null,
+          system_prompt: null,
+          user_prompt: null,
           params: null,
           has_api_key: false,
           created_at: "2026-02-19T00:00:00.000Z",

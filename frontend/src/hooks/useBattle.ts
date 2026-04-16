@@ -5,16 +5,14 @@
  * Replaces 15+ useState hooks in BattleView with a single useReducer.
  */
 
-"use client";
-
 import { useEffect, useMemo, useReducer, useRef } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
-import { isBattleBootstrapReady } from "@/components/battleAuth";
+import { hasBattleRefreshError, isBattleBootstrapReady } from "@/components/battleAuth";
 import { loadOrCreateBattle, mergeBattleDelta } from "@/components/battleViewUtils";
-import { getBackendBaseUrl, apiPost } from "@/lib/api";
+import { getApiPrefix, apiPost } from "@/lib/api";
 import { streamSSE } from "@/lib/sse";
-import { useAuthHeaders } from "@/hooks/useAuthHeaders";
+import { useArenaAuth } from "@/hooks/useArenaAuth";
 import { asRecord, isRecord } from "@/lib/typeGuards";
 
 type Side = "A" | "B";
@@ -51,6 +49,36 @@ type BattlePublic = {
   run_b: RunPublic | null;
 };
 
+const redirectedBattleCache = new Map<string, BattlePublic>();
+const bootstrapRequestCache = new Map<string, Promise<BattlePublic>>();
+
+export function __resetBattleRedirectCacheForTests() {
+  redirectedBattleCache.clear();
+  bootstrapRequestCache.clear();
+}
+
+function getBootstrapBattle(
+  bootstrapKey: string,
+  battleId: string,
+  accessToken?: string,
+): Promise<BattlePublic> {
+  const cached = bootstrapRequestCache.get(bootstrapKey);
+  if (cached) {
+    return cached;
+  }
+
+  const request = loadOrCreateBattle(battleId, accessToken)
+    .then(parseBattlePublic)
+    .finally(() => {
+      if (bootstrapRequestCache.get(bootstrapKey) === request) {
+        bootstrapRequestCache.delete(bootstrapKey);
+      }
+    });
+
+  bootstrapRequestCache.set(bootstrapKey, request);
+  return request;
+}
+
 export type RevealData = {
   A: { model_id: string; display_name: string };
   B: { model_id: string; display_name: string };
@@ -80,6 +108,7 @@ export type BattleState = {
   reveal: RevealData | null;
   revealLoading: boolean;
   retryCount: number;
+  retryAllowed: boolean;
 };
 
 type Action =
@@ -125,6 +154,7 @@ const INITIAL_STATE: BattleState = {
   reveal: null,
   revealLoading: false,
   retryCount: 0,
+  retryAllowed: false,
 };
 
 const BATTLE_PUBLIC_STATUSES: readonly BattlePublicStatus[] = [
@@ -135,12 +165,6 @@ const BATTLE_PUBLIC_STATUSES: readonly BattlePublicStatus[] = [
 ];
 
 const VOTE_WINNERS: readonly Winner[] = ["A", "B", "tie"];
-const REFRESH_ERRORS = [
-  "RefreshTokenMissing",
-  "RefreshDiscoveryFailed",
-  "RefreshTokenExpired",
-  "RefreshTokenError",
-];
 
 function battleReducer(state: BattleState, action: Action): BattleState {
   switch (action.type) {
@@ -162,11 +186,12 @@ function battleReducer(state: BattleState, action: Action): BattleState {
         outB: action.battle.run_b?.output_text ?? "",
         status: battleStatus,
         errorText: null,
+        retryAllowed: false,
       };
     }
 
     case "BOOTSTRAP_ERROR":
-      return { ...state, status: "error", errorText: action.error };
+      return { ...state, status: "error", errorText: action.error, retryAllowed: false };
 
     case "SET_STATUS":
       return { ...state, status: action.status };
@@ -209,6 +234,7 @@ function battleReducer(state: BattleState, action: Action): BattleState {
         errorText:
           state.errorText ??
             (action.error ? `${prefix}: ${action.error}` : fallback),
+        retryAllowed: true,
       };
       }
 
@@ -222,6 +248,7 @@ function battleReducer(state: BattleState, action: Action): BattleState {
         errorText: action.detail
           ? `Battle failed: ${action.detail}`
           : state.errorText ?? "Battle failed to complete",
+        retryAllowed: true,
       };
 
     case "BATTLE_ERROR":
@@ -229,6 +256,7 @@ function battleReducer(state: BattleState, action: Action): BattleState {
         ...state,
         status: "error",
         errorText: action.detail ? `Battle error: ${action.detail}` : "Battle stream failed",
+        retryAllowed: true,
       };
 
     case "STREAM_ENDED_EARLY":
@@ -239,10 +267,11 @@ function battleReducer(state: BattleState, action: Action): BattleState {
             ? state.status
             : "error",
         errorText: state.errorText ?? "Battle stream ended before completion",
+        retryAllowed: false,
       };
 
     case "STREAM_ERROR":
-      return { ...state, status: "error", errorText: action.error };
+      return { ...state, status: "error", errorText: action.error, retryAllowed: false };
 
     case "SET_WINNER":
       return { ...state, winner: action.winner };
@@ -277,7 +306,7 @@ function battleReducer(state: BattleState, action: Action): BattleState {
       return { ...state, revealLoading: false, errorText: action.error };
 
     case "RETRY_ERROR":
-      return { ...state, status: action.status, errorText: action.error };
+      return { ...state, status: action.status, errorText: action.error, retryAllowed: true };
 
     case "RETRY_BATTLE":
       return {
@@ -294,6 +323,7 @@ function battleReducer(state: BattleState, action: Action): BattleState {
         reveal: null,
         revealLoading: false,
         retryCount: state.retryCount + 1,
+        retryAllowed: false,
       };
 
     default:
@@ -375,16 +405,17 @@ function parseVoteSubmitResponse(value: unknown): VoteSubmitResponse {
 }
 
 export function useBattle(battleId: string) {
-  const router = useRouter();
-  const searchParams = useSearchParams();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const restartKey = searchParams.get("r") ?? "";
-  const { headersRef, accessTokenRef, authStatus, accessToken, sessionError } = useAuthHeaders();
+  const { headersRef, accessTokenRef, authStatus, accessToken, sessionError } = useArenaAuth();
   const isAuthed = authStatus === "authenticated" && Boolean(accessToken);
-  const hasRefreshError = sessionError !== null && REFRESH_ERRORS.includes(sessionError);
+  const hasRefreshError = hasBattleRefreshError(sessionError);
 
   const [state, dispatch] = useReducer(battleReducer, INITIAL_STATE);
 
   const statusRef = useRef<BattleStatus>(state.status);
+  const bootstrapKeyRef = useRef<string | null>(null);
   const replayPolicyRef = useRef<Record<Side, ReplayPolicy>>({ A: "consume", B: "consume" });
   const voteSubmitLockRef = useRef(false);
 
@@ -393,6 +424,7 @@ export function useBattle(battleId: string) {
   }, [state.status]);
   useEffect(() => {
     let cancelled = false;
+    const bootstrapKey = battleId === "new" ? `new:${restartKey}` : `battle:${battleId}`;
 
     async function bootstrapBattle() {
       if (!isBattleBootstrapReady(authStatus)) {
@@ -409,21 +441,45 @@ export function useBattle(battleId: string) {
         }
       }
 
-      if (state.resolvedBattleId && state.resolvedBattleId === battleId) {
+      if (battleId !== "new" && state.resolvedBattleId === battleId) {
+        bootstrapKeyRef.current = bootstrapKey;
         return;
       }
 
-      if (battleId === "new" && state.resolvedBattleId) {
+      const redirectedBattle = battleId === "new" ? null : redirectedBattleCache.get(battleId) ?? null;
+      if (battleId !== "new" && redirectedBattle) {
+        redirectedBattleCache.delete(battleId);
+        bootstrapKeyRef.current = bootstrapKey;
+        const isFinished =
+          redirectedBattle.status === "completed" || redirectedBattle.status === "failed";
+        replayPolicyRef.current = {
+          A:
+            isFinished && Boolean(redirectedBattle.run_a?.output_text)
+              ? "ignore"
+              : "consume",
+          B:
+            isFinished && Boolean(redirectedBattle.run_b?.output_text)
+              ? "ignore"
+              : "consume",
+        };
+        dispatch({ type: "BOOTSTRAP_SUCCESS", battle: redirectedBattle });
         return;
       }
 
+      if (bootstrapKeyRef.current === bootstrapKey && state.resolvedBattleId !== null) {
+        return;
+      }
+
+      bootstrapKeyRef.current = bootstrapKey;
       dispatch({ type: "RESET_BATTLE" });
       replayPolicyRef.current = { A: "consume", B: "consume" };
       voteSubmitLockRef.current = false;
 
       try {
-        const battle = parseBattlePublic(
-          await loadOrCreateBattle(battleId, accessTokenRef.current),
+        const battle = await getBootstrapBattle(
+          bootstrapKey,
+          battleId,
+          accessToken ?? accessTokenRef.current ?? undefined,
         );
         if (cancelled) return;
 
@@ -436,10 +492,13 @@ export function useBattle(battleId: string) {
         dispatch({ type: "BOOTSTRAP_SUCCESS", battle });
 
         if (battle.id !== battleId) {
-          router.push(`/battle/${encodeURIComponent(battle.id)}`, { scroll: false });
+          redirectedBattleCache.set(battle.id, battle);
+          bootstrapKeyRef.current = `battle:${battle.id}`;
+          navigate(`/battle/${encodeURIComponent(battle.id)}`);
         }
       } catch (err) {
         if (cancelled) return;
+        bootstrapKeyRef.current = null;
         dispatch({
           type: "BOOTSTRAP_ERROR",
           error: err instanceof Error ? err.message : "Failed to load battle",
@@ -453,13 +512,13 @@ export function useBattle(battleId: string) {
     };
     }, [
     accessTokenRef,
+    accessToken,
     authStatus,
     battleId,
     hasRefreshError,
     isAuthed,
     restartKey,
-    router,
-    state.resolvedBattleId
+    navigate
   ]);
 
   const streamUrl = useMemo(() => {
@@ -470,7 +529,7 @@ export function useBattle(battleId: string) {
       return null;
     }
 
-    return `${getBackendBaseUrl()}/battles/${encodeURIComponent(state.resolvedBattleId)}/stream`;
+    return `${getApiPrefix()}/battles/${encodeURIComponent(state.resolvedBattleId)}/stream`;
   }, [state.resolvedBattleId, state.status]);
 
   useEffect(() => {
@@ -497,7 +556,7 @@ export function useBattle(battleId: string) {
         });
 
         for await (const evt of streamSSE(url, {
-          headers: headersRef.current,
+          getHeaders: () => headersRef.current,
           signal: abortController.signal,
         })) {
           if (cancelled) {
@@ -539,11 +598,13 @@ export function useBattle(battleId: string) {
           if (evt.event === "run.error") {
             const errorPayload = asRecord(evt.data);
             const side = isSide(errorPayload?.side) ? errorPayload.side : undefined;
+            sawTerminalEvent = true;
             dispatch({
               type: "RUN_ERROR",
               error: typeof errorPayload?.error === "string" ? errorPayload.error : null,
               side,
             });
+            break;
           }
 
           if (evt.event === "battle.error") {
@@ -705,7 +766,7 @@ export function useBattle(battleId: string) {
 
   function handleStartAnotherBattle() {
     const nonce = Date.now().toString(36);
-    router.push(`/battle/new?r=${nonce}`);
+    navigate(`/battle/new?r=${nonce}`);
   }
 
   async function handleRetry() {
@@ -763,6 +824,7 @@ export function useBattle(battleId: string) {
     isAuthed &&
     !hasRefreshError &&
     state.resolvedBattleId !== null &&
+    state.retryAllowed &&
     (state.status === "failed" || state.status === "error") &&
     !state.voteId;
 

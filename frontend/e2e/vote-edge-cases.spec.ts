@@ -1,5 +1,6 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
-import { encode } from "next-auth/jwt";
+
+import { mockSpaAuthenticatedSession } from "./spa-auth";
 
 const CORS_HEADERS: Record<string, string> = {
   "access-control-allow-origin": "http://localhost:13000",
@@ -17,30 +18,13 @@ async function handleCorsIfPreflight(route: Route): Promise<boolean> {
 }
 
 async function mockAuthenticatedSession(page: Page, accessToken: string): Promise<void> {
-  const sessionToken = await encode({
-    token: { name: "Vote E2E", email: "vote-e2e@example.com" },
-    secret: "arena-frontend-e2e-nextauth-secret",
-  });
-
-  await page.context().addCookies([
-    {
-      name: "next-auth.session-token",
-      value: sessionToken,
-      domain: "localhost",
-      path: "/",
+  await mockSpaAuthenticatedSession(page, {
+    accessToken,
+    profile: {
+      sub: "vote-e2e-user",
+      name: "Vote E2E",
+      email: "vote-e2e@example.com",
     },
-  ]);
-
-  await page.route("**/api/auth/session*", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        user: { name: "Vote E2E", email: "vote-e2e@example.com" },
-        expires: "2099-01-01T00:00:00.000Z",
-        accessToken,
-      }),
-    });
   });
 }
 

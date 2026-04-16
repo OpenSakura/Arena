@@ -3,7 +3,7 @@
 This repo is a monorepo:
 
 - `backend/`: FastAPI + Postgres (control plane)
-- `frontend/`: Next.js (arena UI + admin UI)
+- `frontend/`: React + Vite SPA (arena UI + admin UI)
 - `infra/`: local dev dependencies (Postgres + Redis compose)
 
 ## Prereqs
@@ -82,7 +82,10 @@ npm run dev
 
 Open:
 
-- `http://localhost:3000`
+- `http://localhost:5173`
+
+The Vite dev server proxies `/api/v1` requests to `http://localhost:8000`.
+OIDC configuration is fetched at runtime from `GET /api/v1/public-config`.
 
 ## Seed Data (Tasks + Models)
 
@@ -96,8 +99,8 @@ Recommended workflow:
 1. Configure OIDC and the admin group claim.
 2. Login in the UI.
 3. Use the admin pages:
-   - `http://localhost:3000/admin/models`
-   - `http://localhost:3000/admin/tasks`
+   - `http://localhost:5173/admin/models`
+   - `http://localhost:5173/admin/tasks`
 
 If you do not have an OIDC provider available in local dev, you can still run the
 public UI routes, but you will not be able to use admin endpoints to seed the

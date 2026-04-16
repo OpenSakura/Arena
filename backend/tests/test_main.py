@@ -35,6 +35,12 @@ def _settings(
         rate_limit_redis_url="",
         rate_limit_redis_timeout_seconds=0.5,
         web_concurrency=web_concurrency,
+        oidc_issuer="",
+        frontend_oidc_client_id="",
+        frontend_oidc_scope="openid email profile offline_access",
+        frontend_oidc_redirect_path="/auth/callback",
+        frontend_oidc_silent_redirect_path="/auth/silent-callback",
+        frontend_oidc_post_logout_redirect_path="/auth/logout-callback",
     )
 
 
@@ -128,15 +134,25 @@ def test_public_config_exposes_turnstile_requirement(monkeypatch) -> None:
     from app.core.config import get_settings as core_get_settings
 
     app = _create_test_app(monkeypatch)
-    app.dependency_overrides[core_get_settings] = lambda: _settings(
-        turnstile_secret_key="secret"
-    )
+    override = _settings(turnstile_secret_key="secret")
+    override.oidc_issuer = "https://auth.example"
+    override.frontend_oidc_client_id = "spa-client"
+    app.dependency_overrides[core_get_settings] = lambda: override
 
     with TestClient(app) as client:
         response = client.get("/api/v1/public-config")
 
     assert response.status_code == 200
-    assert response.json() == {"anon_battle_turnstile_required": True}
+    body = response.json()
+    assert body["anon_battle_turnstile_required"] is True
+    assert body["oidc"] == {
+        "issuer": "https://auth.example",
+        "client_id": "spa-client",
+        "scope": "openid email profile offline_access",
+        "redirect_path": "/auth/callback",
+        "silent_redirect_path": "/auth/silent-callback",
+        "post_logout_redirect_path": "/auth/logout-callback",
+    }
 
 
 def test_access_log_is_not_emitted_when_disabled(monkeypatch) -> None:

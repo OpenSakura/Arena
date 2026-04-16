@@ -50,7 +50,7 @@ Important nuance:
 
 ## Stack + Scope (MVP)
 
-- Frontend: Next.js (TypeScript), single app for arena + admin.
+- Frontend: React + Vite SPA (TypeScript), single app for arena + admin.
 - Backend: FastAPI (Python), Postgres only.
 - Auth: Authentik OIDC. Login required for all mutations (battle creation,
   voting, retries, reveal). Public read pages remain accessible without login.

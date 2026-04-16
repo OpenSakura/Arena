@@ -3,7 +3,7 @@
 // TypeScript configuration (JSONC).
 //
 // Notes:
-// - Next.js reads this file automatically.
+// - Vite + Vitest share the @/* alias from this config.
 {
   "compilerOptions": {
     "target": "ES2022",
@@ -21,27 +21,27 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "jsx": "preserve",
-    "incremental": true,
+    "jsx": "react-jsx",
     "baseUrl": ".",
+    "types": [
+      "node",
+      "vite/client"
+    ],
     "paths": {
       "@/*": [
         "src/*"
       ]
-    },
-    "plugins": [
-      {
-        "name": "next"
-      }
-    ]
+    }
   },
   "include": [
-    "next-env.d.ts",
-    "src/**/*.ts",
-    "src/**/*.tsx",
-    ".next/types/**/*.ts"
+    "src/main.tsx",
+    "src/test/setup.ts",
+    "tailwind.config.ts",
+    "vite.config.ts",
+    "vitest.config.ts"
   ],
   "exclude": [
+    "dist",
     "node_modules"
   ]
 }

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { SSEHttpError, streamSSE, type SSEEvent } from "./sse";
+import { SSEHttpError, streamSSE, type SSEEvent, type StreamSSEInit } from "./sse";
 
 function buildSSEBody(chunks: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -16,7 +16,7 @@ function buildSSEBody(chunks: string[]): ReadableStream<Uint8Array> {
 
 async function collectFromStream(
   url = "http://example.test/sse",
-  init?: RequestInit & { maxRetries?: number },
+  init?: StreamSSEInit,
 ): Promise<SSEEvent[]> {
   const events: SSEEvent[] = [];
   for await (const event of streamSSE(url, init)) {
@@ -231,5 +231,44 @@ describe("streamSSE", () => {
 
     const events = await collectFromStream();
     expect(events).toEqual([{ event: "message", data: "ok" }]);
+  });
+
+  it("calls getHeaders on each reconnect to refresh auth", async () => {
+    vi.useFakeTimers();
+
+    let callCount = 0;
+    const getHeaders = () => {
+      callCount += 1;
+      return { Authorization: `Bearer token-${callCount}` };
+    };
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(
+        new Response(buildSSEBody(['data: {"ok":true}\n\n']), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      );
+
+    const promise = collectFromStream("http://example.test/sse", {
+      maxRetries: 1,
+      getHeaders,
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+
+    const events = await promise;
+    expect(events).toEqual([
+      { event: "sse.retry", data: { attempt: 1 } },
+      { event: "message", data: { ok: true } },
+    ]);
+
+    expect(callCount).toBe(2);
+
+    const firstInit = fetchSpy.mock.calls[0]?.[1] as RequestInit;
+    expect((firstInit.headers as Record<string, string>).Authorization).toBe("Bearer token-1");
+
+    const secondInit = fetchSpy.mock.calls[1]?.[1] as RequestInit;
+    expect((secondInit.headers as Record<string, string>).Authorization).toBe("Bearer token-2");
   });
 });

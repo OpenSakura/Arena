@@ -34,15 +34,9 @@ jobs:
           - job_name: core-e2e
             playwright_args: ""
             pw_enable_live_stack: "0"
-            turnstile_site_key: "1x00000000000000000000AA"
           - job_name: live-contract
             playwright_args: "e2e/live-contract.spec.ts"
             pw_enable_live_stack: "1"
-            turnstile_site_key: "1x00000000000000000000AA"
-          - job_name: turnstile-missing-key
-            playwright_args: "e2e/turnstile-misconfigured.spec.ts"
-            pw_enable_live_stack: "0"
-            turnstile_site_key: ""
 
     steps:
       - name: Checkout repository
@@ -81,7 +75,6 @@ jobs:
         env:
           PLAYWRIGHT_ARGS: ${{ matrix.playwright_args }}
           PW_ENABLE_LIVE_STACK: ${{ matrix.pw_enable_live_stack }}
-          NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ matrix.turnstile_site_key }}
         run: |
           if [ -n "$PLAYWRIGHT_ARGS" ]; then
             npm run test:e2e -- "$PLAYWRIGHT_ARGS"

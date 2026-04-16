@@ -1,10 +1,9 @@
 # OIDC Setup (Authentik Example)
 
-This repo uses OIDC for login (frontend) and JWT verification (backend). The
-local example below uses Authentik as the identity provider. Login is required
-for all mutations (creating
-battles, voting, retrying battles, revealing votes). Public read pages remain
-accessible without login. Key details:
+This repo uses OIDC for login (frontend SPA PKCE) and JWT verification (backend).
+The local example below uses Authentik as the identity provider. Login is required
+for all mutations (creating battles, voting, retrying battles, revealing votes).
+Public read pages remain accessible without login. Key details:
 
 - All votes are stored with `voter_user_id` from the authenticated session.
 - Admin endpoints require membership in an Authentik group (default:
@@ -12,25 +11,29 @@ accessible without login. Key details:
 
 ## URLs And Redirects
 
-NextAuth (frontend) uses the generic OIDC provider id `oidc`, so the callback
-URL is:
+The SPA handles OIDC callbacks at these paths (served by the SPA router, not the
+backend):
 
-- `http://localhost:3000/api/auth/callback/oidc`
+- `/auth/callback` (authorization code redirect)
+- `/auth/silent-callback` (silent token renewal)
+- `/auth/logout-callback` (post-logout redirect)
 
-Make sure your Authentik OAuth2/OIDC Provider includes that redirect URI.
+Make sure your Authentik OAuth2/OIDC Provider includes the full callback URL as
+a redirect URI, for example `http://localhost:5173/auth/callback`.
 
 ## Create Provider + Application (Authentik)
 
 High-level steps (names vary slightly by Authentik version):
 
-1. Create an **OAuth2/OpenID Provider** (authorization code flow).
+1. Create an **OAuth2/OpenID Provider** (authorization code flow with PKCE).
 2. Create an **Application** and bind it to the provider.
-3. Add a **Redirect URI** for NextAuth:
-   - `http://localhost:3000/api/auth/callback/oidc`
+3. Add a **Redirect URI** matching your SPA origin + `/auth/callback`:
+   - `http://localhost:5173/auth/callback`
 4. Ensure the provider issues a **JWT access token** (the backend validates the
    bearer token via the issuer JWKS).
+5. No client secret is needed. The SPA uses a public PKCE client.
 
-## Admin Gating (Backend OIDC Groups → Frontend `/me.is_admin`)
+## Admin Gating (Backend OIDC Groups -> Frontend `/me.is_admin`)
 
 Admin access is determined entirely on the backend:
 
@@ -47,14 +50,15 @@ access token, using the same claim name you configure in the backend.
 
 ## Environment Variables
 
-Frontend (`frontend/.env.local`):
+The SPA itself has no server-side env vars. All public OIDC values are served
+by the backend at `GET /api/v1/public-config`. Configure these in the backend:
 
-- `NEXT_PUBLIC_BACKEND_URL=http://localhost:8000/api/v1`
-- `NEXTAUTH_URL=http://localhost:3000`
-- `NEXTAUTH_SECRET=...`
-- `OIDC_ISSUER=...` (must support OIDC discovery)
-- `OIDC_CLIENT_ID=...`
-- `OIDC_CLIENT_SECRET=...`
+- `OIDC_ISSUER` (must support OIDC discovery)
+- `FRONTEND_OIDC_CLIENT_ID` (public SPA client id)
+- `FRONTEND_OIDC_SCOPE` (default: `openid email profile offline_access`)
+- `FRONTEND_OIDC_REDIRECT_PATH` (default: `/auth/callback`)
+- `FRONTEND_OIDC_SILENT_REDIRECT_PATH` (default: `/auth/silent-callback`)
+- `FRONTEND_OIDC_POST_LOGOUT_REDIRECT_PATH` (default: `/auth/logout-callback`)
 
 No admin-specific frontend env vars are needed. The frontend determines admin
 status from the `/me` endpoint's `is_admin` field (see above).
@@ -65,7 +69,6 @@ Backend (`backend/.env`):
 - `OIDC_AUDIENCE=...` (optional; only set if you want to enforce `aud`)
 - `OIDC_ADMIN_GROUP_CLAIM=groups`
 - `OIDC_ADMIN_GROUP_NAME=arena_admin`
-- `CORS_ALLOW_ORIGINS=http://localhost:3000`
 
 ## Troubleshooting
 

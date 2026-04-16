@@ -1,53 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { apiDelete, apiGet, apiPost, apiPut, getBackendBaseUrl } from "./api";
+import { apiDelete, apiGet, apiPost, apiPut } from "./api";
 
 afterEach(() => {
   vi.restoreAllMocks();
-  delete process.env.NEXT_PUBLIC_BACKEND_URL;
-  delete process.env.BACKEND_INTERNAL_URL;
-});
-
-describe("getBackendBaseUrl", () => {
-  it("throws when NEXT_PUBLIC_BACKEND_URL is missing", () => {
-    delete process.env.NEXT_PUBLIC_BACKEND_URL;
-
-    expect(() => getBackendBaseUrl()).toThrow("NEXT_PUBLIC_BACKEND_URL is not set");
-  });
-
-  it("normalizes trailing slash", () => {
-    process.env.NEXT_PUBLIC_BACKEND_URL = "http://backend.test/";
-
-    expect(getBackendBaseUrl()).toBe("http://backend.test");
-  });
-
-  it("prefers BACKEND_INTERNAL_URL over NEXT_PUBLIC_BACKEND_URL for SSR (server environment)", () => {
-    process.env.BACKEND_INTERNAL_URL = "http://backend-internal.cluster/";
-    process.env.NEXT_PUBLIC_BACKEND_URL = "http://backend-public.example/";
-    const originalWindow = globalThis.window;
-    vi.stubGlobal("window", undefined);
-
-    try {
-      expect(getBackendBaseUrl()).toBe("http://backend-internal.cluster");
-    } finally {
-      vi.stubGlobal("window", originalWindow);
-    }
-  });
-
-  it("falls back to NEXT_PUBLIC_BACKEND_URL when BACKEND_INTERNAL_URL is absent", () => {
-    delete process.env.BACKEND_INTERNAL_URL;
-    process.env.NEXT_PUBLIC_BACKEND_URL = "http://backend-public.example/";
-
-    expect(getBackendBaseUrl()).toBe("http://backend-public.example");
-  });
 });
 
 describe("api helpers", () => {
-  beforeEach(() => {
-    process.env.NEXT_PUBLIC_BACKEND_URL = "http://backend.test/";
-  });
-
-  it("apiGet sends default headers and credentials", async () => {
+  it("apiGet sends relative /api/v1 URL with default headers", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ ok: true }), {
         status: 200,
@@ -55,18 +15,47 @@ describe("api helpers", () => {
       }),
     );
 
-    await expect(apiGet("health")).resolves.toEqual({ ok: true });
+    await expect(apiGet("/health")).resolves.toEqual({ ok: true });
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "http://backend.test/health",
+      "/api/v1/health",
       expect.objectContaining({
         method: "GET",
-        credentials: "include",
         cache: "no-store",
         body: undefined,
         headers: { Accept: "application/json" },
       }),
     );
+  });
+
+  it("apiGet normalizes paths without leading slash", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await apiGet("health");
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/v1/health",
+      expect.anything(),
+    );
+  });
+
+  it("does not force credentials by default (same-origin fetch behavior)", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await apiGet("/health");
+
+    const init = fetchSpy.mock.calls[0]?.[1] as RequestInit;
+    expect(init.credentials).toBeUndefined();
   });
 
   it("apiPost merges caller headers and serializes body", async () => {
@@ -78,14 +67,14 @@ describe("api helpers", () => {
     );
 
     await expect(
-      apiPost("votes", { winner: "A" }, {
+      apiPost("/votes", { winner: "A" }, {
         credentials: "omit",
         headers: { Authorization: "Bearer token" },
       }),
     ).resolves.toEqual({ created: true });
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "http://backend.test/votes",
+      "/api/v1/votes",
       expect.objectContaining({
         method: "POST",
         credentials: "omit",
@@ -109,7 +98,7 @@ describe("api helpers", () => {
     );
 
     const callerHeaders = new Headers({ Authorization: "Bearer token" });
-    await expect(apiPost("votes", { winner: "A" }, { headers: callerHeaders })).resolves.toEqual({
+    await expect(apiPost("/votes", { winner: "A" }, { headers: callerHeaders })).resolves.toEqual({
       created: true,
     });
 
@@ -131,7 +120,7 @@ describe("api helpers", () => {
     await expect(apiPut("/tasks/123", { enabled: true })).resolves.toEqual({ ok: true });
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "http://backend.test/tasks/123",
+      "/api/v1/tasks/123",
       expect.objectContaining({
         method: "PUT",
       }),
@@ -148,7 +137,7 @@ describe("api helpers", () => {
     await expect(apiDelete("/admin/tasks/1")).resolves.toBeNull();
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "http://backend.test/admin/tasks/1",
+      "/api/v1/admin/tasks/1",
       expect.objectContaining({
         method: "DELETE",
         body: undefined,
@@ -231,7 +220,7 @@ describe("api helpers", () => {
     await expect(apiPost("/votes", undefined)).resolves.toEqual({ ok: true });
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "http://backend.test/votes",
+      "/api/v1/votes",
       expect.objectContaining({
         method: "POST",
         body: undefined,
@@ -243,8 +232,8 @@ describe("api helpers", () => {
     const errorBody = {
       detail: [
         { loc: ["body", "winner"], msg: "field required", type: "value_error.missing" },
-        { loc: ["query", "page"], msg: "must be an integer", type: "type_error.integer" }
-      ]
+        { loc: ["query", "page"], msg: "must be an integer", type: "type_error.integer" },
+      ],
     };
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify(errorBody), {
@@ -254,7 +243,7 @@ describe("api helpers", () => {
     );
 
     await expect(apiPost("/some-endpoint", {})).rejects.toThrow(
-      "POST /some-endpoint failed: 422 - body.winner: field required, query.page: must be an integer"
+      "POST /some-endpoint failed: 422 - body.winner: field required, query.page: must be an integer",
     );
   });
 });

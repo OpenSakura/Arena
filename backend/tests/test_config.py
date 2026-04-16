@@ -39,6 +39,7 @@ def _production_settings(**overrides) -> dict:
         turnstile_secret_key="turnstile-secret",
         cors_allow_origins="https://arena.example",
         web_concurrency=1,
+        frontend_oidc_client_id="spa-client",
     )
     defaults.update(overrides)
     return defaults
@@ -89,3 +90,8 @@ def test_dev_allows_web_concurrency_of_one() -> None:
 def test_production_accepts_empty_turnstile_secret_key() -> None:
     settings = Settings(**_production_settings(turnstile_secret_key=""))
     assert settings.turnstile_secret_key == ""
+
+
+def test_production_rejects_missing_frontend_oidc_client_id_when_issuer_set() -> None:
+    with pytest.raises(ValueError, match="FRONTEND_OIDC_CLIENT_ID"):
+        Settings(**_production_settings(frontend_oidc_client_id=""))

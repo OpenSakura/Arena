@@ -29,8 +29,18 @@ class HealthResponse(BaseModel):
     checks: dict[str, bool] | None = None
 
 
+class PublicOidcConfig(BaseModel):
+    issuer: str
+    client_id: str
+    scope: str
+    redirect_path: str
+    silent_redirect_path: str
+    post_logout_redirect_path: str
+
+
 class PublicConfigResponse(BaseModel):
     anon_battle_turnstile_required: bool
+    oidc: PublicOidcConfig
 
 
 @router.get("/livez", response_model_exclude_none=True)
@@ -105,5 +115,13 @@ def public_config(
     return PublicConfigResponse(
         anon_battle_turnstile_required=bool(
             (settings.turnstile_secret_key or "").strip()
-        )
+        ),
+        oidc=PublicOidcConfig(
+            issuer=settings.oidc_issuer,
+            client_id=settings.frontend_oidc_client_id,
+            scope=settings.frontend_oidc_scope,
+            redirect_path=settings.frontend_oidc_redirect_path,
+            silent_redirect_path=settings.frontend_oidc_silent_redirect_path,
+            post_logout_redirect_path=settings.frontend_oidc_post_logout_redirect_path,
+        ),
     )

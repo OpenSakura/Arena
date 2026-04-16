@@ -5,8 +5,6 @@
  * State management is delegated to useBattle hook.
  */
 
-"use client";
-
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { useBattle } from "@/hooks/useBattle";

@@ -1,36 +1,13 @@
 /**
  * frontend/src/hooks/useAuthHeaders.ts
  *
- * Shared hook for admin pages that need authenticated API headers.
- * Encapsulates the session → access token → Authorization header pattern
- * that was previously copy-pasted across every admin page.
+ * Shared hook for pages that need authenticated API headers.
  */
 
-"use client";
-
-import { useEffect, useMemo, useRef } from "react";
-import { useSession } from "next-auth/react";
+import { useArenaAuth } from "@/hooks/useArenaAuth";
 
 export function useAuthHeaders() {
-  const { data: session, status: authStatus } = useSession();
-  const accessToken = session?.accessToken;
-  const sessionError = typeof session?.error === "string" ? session.error : null;
-
-  const accessTokenRef = useRef(accessToken);
-  useEffect(() => {
-    accessTokenRef.current = accessToken;
-  }, [accessToken]);
-
-  const headers = useMemo(() => {
-    return accessToken
-      ? { Authorization: `Bearer ${accessToken}` }
-      : undefined;
-  }, [accessToken]);
-
-  const headersRef = useRef(headers);
-  useEffect(() => {
-    headersRef.current = headers;
-  }, [headers]);
+  const { headers, headersRef, accessTokenRef, authStatus, accessToken, sessionError } = useArenaAuth();
 
   return {
     headers,

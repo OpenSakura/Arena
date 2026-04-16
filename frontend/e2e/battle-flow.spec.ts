@@ -1,5 +1,6 @@
 import { expect, test, type Route } from "@playwright/test";
-import { encode } from "next-auth/jwt";
+
+import { mockSpaAuthenticatedSession } from "./spa-auth";
 
 type Side = "A" | "B";
 
@@ -78,30 +79,13 @@ async function mockAuthenticatedSession(
   page: import("@playwright/test").Page,
   accessToken: string,
 ): Promise<void> {
-  const sessionToken = await encode({
-    token: { name: "Battle E2E", email: "battle-e2e@example.com" },
-    secret: "arena-frontend-e2e-nextauth-secret",
-  });
-
-  await page.context().addCookies([
-    {
-      name: "next-auth.session-token",
-      value: sessionToken,
-      domain: "localhost",
-      path: "/",
+  await mockSpaAuthenticatedSession(page, {
+    accessToken,
+    profile: {
+      sub: "battle-e2e-user",
+      name: "Battle E2E",
+      email: "battle-e2e@example.com",
     },
-  ]);
-
-  await page.route("**/api/auth/session*", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        user: { name: "Battle E2E", email: "battle-e2e@example.com" },
-        expires: "2099-01-01T00:00:00.000Z",
-        accessToken,
-      }),
-    });
   });
 }
 

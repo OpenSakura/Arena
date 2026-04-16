@@ -2,100 +2,108 @@
 
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { AnchorHTMLAttributes, ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Header } from "./Header";
 import { ThemeProvider } from "./ThemeProvider";
 
-function renderHeader() {
-  return render(
-    <ThemeProvider>
-      <Header />
-    </ThemeProvider>,
-  );
-}
-
-const useSessionMock = vi.fn();
-const usePathnameMock = vi.fn();
+const useArenaAuthMock = vi.fn();
 const useAdminAccessMock = vi.fn();
-const signInMock = vi.fn();
-const signOutMock = vi.fn();
 
-type MockLinkProps = {
-  href: string | { pathname?: string };
-  children: ReactNode;
-} & AnchorHTMLAttributes<HTMLAnchorElement>;
-
-vi.mock("next/link", () => ({
-  default: ({ href, children, ...props }: any) => {
-    const hrefValue = typeof href === "string" ? href : (href?.pathname ?? "/");
-    return (
-      <a href={hrefValue} {...props}>
-        {children}
-      </a>
-    );
-  },
-}));
-
-vi.mock("next/navigation", () => ({
-  usePathname: () => usePathnameMock(),
-}));
-
-vi.mock("next-auth/react", () => ({
-  useSession: () => useSessionMock(),
-  signIn: (...args: unknown[]) => signInMock(...args),
-  signOut: (...args: unknown[]) => signOutMock(...args),
+vi.mock("@/hooks/useArenaAuth", () => ({
+  useArenaAuth: () => useArenaAuthMock(),
 }));
 
 vi.mock("@/hooks/useAdminAccess", () => ({
   useAdminAccess: () => useAdminAccessMock(),
 }));
 
-beforeEach(() => {
-  useSessionMock.mockReset();
-  usePathnameMock.mockReset();
-  useAdminAccessMock.mockReset();
-  signInMock.mockReset();
-  signOutMock.mockReset();
+function renderHeader(initialEntries: string[] = ["/"]) {
+  return render(
+    <MemoryRouter initialEntries={initialEntries}>
+      <ThemeProvider>
+        <Header />
+      </ThemeProvider>
+    </MemoryRouter>,
+  );
+}
 
-  usePathnameMock.mockReturnValue("/");
+function makeAuthState(overrides: Record<string, unknown> = {}) {
+  return {
+    authStatus: "unauthenticated",
+    isLoading: false,
+    isAuthenticated: false,
+    user: null,
+    accessToken: null,
+    sessionError: null,
+    headers: undefined,
+    headersRef: { current: undefined },
+    accessTokenRef: { current: null },
+    signinRedirect: vi.fn(),
+    signoutRedirect: vi.fn(),
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  useArenaAuthMock.mockReset();
+  useAdminAccessMock.mockReset();
+
+  useArenaAuthMock.mockReturnValue(makeAuthState());
   useAdminAccessMock.mockReturnValue({ isAuthenticated: false, isAdmin: false, loading: false });
   window.history.replaceState({}, "", "/");
 });
 
 describe("Header", () => {
-  it("shows auth loading status while session state is loading", () => {
-    useSessionMock.mockReturnValue({ data: null, status: "loading" });
+  it("shows auth loading status while auth state is loading", () => {
+    useArenaAuthMock.mockReturnValue(makeAuthState({ authStatus: "loading", isLoading: true }));
 
     const { container } = renderHeader();
 
-    // Loading state renders a pulse animation div, not text
     expect(container.querySelector(".shimmer")).toBeDefined();
     expect(screen.queryByRole("button", { name: "Login" })).toBeNull();
   });
 
   it("starts OIDC sign-in when login is clicked", async () => {
-    useSessionMock.mockReturnValue({ data: null, status: "unauthenticated" });
+    const signinRedirect = vi.fn();
+    useArenaAuthMock.mockReturnValue(makeAuthState({ signinRedirect }));
 
-    renderHeader();
+    renderHeader(["/leaderboard?mode=recent#top"]);
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Login" }));
 
-    expect(signInMock).toHaveBeenCalledWith("oidc");
+    expect(signinRedirect).toHaveBeenCalledWith({ state: { returnTo: "/leaderboard?mode=recent#top" } });
   });
 
-  it("shows session identity and calls signOut for authenticated users", async () => {
-    useSessionMock.mockReturnValue({
-      data: {
+  it("uses callbackUrl as returnTo if provided in query string", async () => {
+    const signinRedirect = vi.fn();
+    useArenaAuthMock.mockReturnValue(makeAuthState({ signinRedirect }));
+
+    renderHeader(["/?callbackUrl=%2Fadmin%2Fmodels"]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Login" }));
+
+    expect(signinRedirect).toHaveBeenCalledWith({ state: { returnTo: "/admin/models" } });
+  });
+
+  it("shows session identity and calls signoutRedirect for authenticated users", async () => {
+    const signoutRedirect = vi.fn();
+    useArenaAuthMock.mockReturnValue(
+      makeAuthState({
+        authStatus: "authenticated",
+        isAuthenticated: true,
         accessToken: "test-token",
         user: {
-          email: "arena-user@example.com",
+          profile: {
+            email: "arena-user@example.com",
+          },
         },
-      },
-      status: "authenticated",
-    });
+        signoutRedirect,
+      }),
+    );
     useAdminAccessMock.mockReturnValue({ isAuthenticated: true, isAdmin: false, loading: false });
 
     renderHeader();
@@ -105,22 +113,19 @@ describe("Header", () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Logout" }));
 
-    expect(signOutMock).toHaveBeenCalledWith({ callbackUrl: "/" });
+    expect(signoutRedirect).toHaveBeenCalledWith({ state: { returnTo: "/" } });
   });
 
   it("shows Battle nav link for anonymous users", () => {
-    useSessionMock.mockReturnValue({ data: null, status: "unauthenticated" });
-
     renderHeader();
 
     expect(screen.getAllByText("Battle").length).toBeGreaterThanOrEqual(1);
   });
 
   it("shows Admin nav link for authenticated admin users", () => {
-    useSessionMock.mockReturnValue({
-      data: { accessToken: "admin-token", user: { email: "admin@example.com" } },
-      status: "authenticated",
-    });
+    useArenaAuthMock.mockReturnValue(
+      makeAuthState({ authStatus: "authenticated", isAuthenticated: true, accessToken: "admin-token" }),
+    );
     useAdminAccessMock.mockReturnValue({ isAuthenticated: true, isAdmin: true, loading: false });
 
     renderHeader();
@@ -134,19 +139,15 @@ describe("Header", () => {
   });
 
   it("hides Admin nav link for anonymous users", () => {
-    useSessionMock.mockReturnValue({ data: null, status: "unauthenticated" });
-    useAdminAccessMock.mockReturnValue({ isAuthenticated: false, isAdmin: false, loading: false });
-
     renderHeader();
 
     expect(screen.queryByText("Admin")).toBeNull();
   });
 
   it("hides Admin nav link for authenticated non-admin users", () => {
-    useSessionMock.mockReturnValue({
-      data: { accessToken: "normal-token", user: { email: "normal@example.com" } },
-      status: "authenticated",
-    });
+    useArenaAuthMock.mockReturnValue(
+      makeAuthState({ authStatus: "authenticated", isAuthenticated: true, accessToken: "normal-token" }),
+    );
     useAdminAccessMock.mockReturnValue({ isAuthenticated: true, isAdmin: false, loading: false });
 
     renderHeader();

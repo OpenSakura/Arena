@@ -3,34 +3,38 @@
   "opencodeNotes": [
     "Node project manifest for the Arena frontend.",
     "Notes:",
-    "- This scaffold uses Next.js + TypeScript.",
-    "- Auth uses NextAuth with a generic OIDC connector."
+    "- This scaffold uses Vite + React + TypeScript.",
+    "- OIDC client dependencies are staged for the SPA migration."
   ],
   "name": "opensakura-arena-frontend",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint",
+    "dev": "vite",
+    "build": "vite build",
+    "start": "vite preview --host 127.0.0.1 --strictPort",
+    "lint": "eslint . --max-warnings 0",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@fontsource/inter": "^5.2.8",
     "@radix-ui/react-slot": "^1.2.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "framer-motion": "^12.34.3",
-    "next": "^14.2.0",
-    "next-auth": "^4.24.0",
-    "next-themes": "^0.4.6",
+    "oidc-client-ts": "^3.3.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "react-oidc-context": "^3.3.0",
+    "react-router-dom": "^6.30.1",
     "tailwind-merge": "^3.5.0",
     "tailwindcss-animate": "^1.0.7"
   },
   "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.46.1",
+    "@typescript-eslint/parser": "^8.46.1",
+    "@vitejs/plugin-react": "^4.7.0",
     "@playwright/test": "^1.58.2",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
@@ -39,12 +43,12 @@
     "@types/react-dom": "^18.2.0",
     "autoprefixer": "^10.4.24",
     "eslint": "^8.57.1",
-    "eslint-config-next": "^14.2.35",
     "jsdom": "^28.1.0",
     "matchmedia-polyfill": "^0.3.2",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.19",
     "typescript": "^5.4.0",
+    "vite": "^5.4.19",
     "vitest": "^2.1.8"
   }
 }

@@ -36,35 +36,36 @@ export class SSEHttpError extends Error {
 
 const MAX_EVENT_CHARS = 128 * 1024;
 
+export type StreamSSEInit = RequestInit & {
+  maxRetries?: number;
+  getHeaders?: () => HeadersInit | undefined;
+};
+
 export async function* streamSSE(
   url: string,
-  init?: RequestInit & { maxRetries?: number },
+  init?: StreamSSEInit,
 ): AsyncGenerator<SSEEvent> {
   const maxRetries = init?.maxRetries ?? 3;
   let attempt = 0;
 
   while (true) {
+    const freshHeaders = init?.getHeaders?.() ?? init?.headers;
+    const fetchInit: RequestInit = { ...init, headers: freshHeaders };
+
     try {
-      for await (const evt of streamSSEOnce(url, init)) {
+      for await (const evt of streamSSEOnce(url, fetchInit)) {
         yield evt;
       }
-      return; // Stream completed normally
+      return;
     } catch (err) {
-      // Don't retry if the request was intentionally aborted
       if (init?.signal?.aborted) throw err;
-
-      // Don't retry non-retryable HTTP errors (4xx client errors).
       if (err instanceof SSEHttpError && !err.retryable) throw err;
 
       attempt += 1;
       if (attempt > maxRetries) throw err;
 
-      // Emit a synthetic retry event so consumers can reset accumulated
-      // state (e.g. clear partial text) before the next connection yields
-      // fresh events.
       yield { event: "sse.retry", data: { attempt } };
 
-      // Exponential backoff: 1s, 2s, 4s — abort-aware so cleanup is instant.
       const delay = Math.min(1000 * 2 ** (attempt - 1), 8000);
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(resolve, delay);
@@ -80,8 +81,6 @@ export async function* streamSSE(
             reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
           };
           signal.addEventListener("abort", onAbort, { once: true });
-          // Remove the listener when the timer resolves normally to
-          // prevent accumulating orphaned listeners across retries.
           const origResolve = resolve;
           resolve = (() => {
             signal.removeEventListener("abort", onAbort);
@@ -101,7 +100,6 @@ async function* streamSSEOnce(url: string, init?: RequestInit): AsyncGenerator<S
 
   const res = await fetch(url, {
     ...init,
-    credentials: init?.credentials ?? "include",
     headers,
   });
 

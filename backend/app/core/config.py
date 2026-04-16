@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     oidc_jwks_cache_ttl_seconds: int = 300
     oidc_http_timeout_seconds: float = 5.0
 
+    # Public SPA OIDC fields — exposed verbatim via /api/v1/public-config so
+    # the browser can bootstrap oidc-client-ts without build-time env vars.
+    frontend_oidc_client_id: str = ""
+    frontend_oidc_scope: str = "openid email profile offline_access"
+    frontend_oidc_redirect_path: str = "/auth/callback"
+    frontend_oidc_silent_redirect_path: str = "/auth/silent-callback"
+    frontend_oidc_post_logout_redirect_path: str = "/auth/logout-callback"
+
     turnstile_secret_key: str = ""
     turnstile_verify_url: str = (
         "https://challenges.cloudflare.com/turnstile/v0/siteverify"
@@ -155,6 +163,12 @@ class Settings(BaseSettings):
                 "OIDC_AUDIENCE is empty while OIDC_ISSUER is set — "
                 "audience validation is disabled, tokens for any audience "
                 "on this issuer will be accepted"
+            )
+        if self.oidc_issuer and not self.frontend_oidc_client_id:
+            errors.append(
+                "FRONTEND_OIDC_CLIENT_ID is empty while OIDC_ISSUER is set — "
+                "the SPA cannot bootstrap OIDC authentication without a "
+                "public client ID"
             )
         if not self.arena_master_key:
             errors.append(

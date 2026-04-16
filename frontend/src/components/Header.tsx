@@ -1,26 +1,17 @@
-/**
- * frontend/src/components/Header.tsx
- *
- * Top navigation bar with active link highlighting, mobile menu, and sakura branding.
- */
-
-"use client";
-
-import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { signIn, signOut, useSession } from "next-auth/react";
+import { Link, useLocation } from "react-router-dom";
 import { useEffect, useState, useId } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Button } from "@/components/ui/button";
+
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { useAdminAccess } from "@/hooks/useAdminAccess";
+import { Button } from "@/components/ui/button";
 import { SakuraIcon } from "@/components/icons/SakuraIcon";
+import { useAdminAccess } from "@/hooks/useAdminAccess";
+import { useArenaAuth } from "@/hooks/useArenaAuth";
 
 type NavLink = {
   href: string;
   label: string;
   prefix?: string;
-  authRequired?: boolean;
   adminRequired?: boolean;
 };
 
@@ -31,15 +22,24 @@ const NAV_LINKS: NavLink[] = [
   { href: "/admin/models", label: "Admin", prefix: "/admin", adminRequired: true },
 ];
 
+function getUserLabel(name?: string | null, email?: string | null) {
+  return email ?? name ?? "Signed in";
+}
+
 export function Header() {
-  const { data: session, status } = useSession();
-  const { isAuthenticated, isAdmin, loading: adminLoading } = useAdminAccess();
-  const pathname = usePathname() ?? "/";
+  const auth = useArenaAuth();
+  const { isAdmin } = useAdminAccess();
+  const location = useLocation();
+  const pathname = location.pathname;
+  const search = location.search;
+  const hash = location.hash;
+  const searchParams = new URLSearchParams(search);
+  const callbackUrl = searchParams.get("callbackUrl");
+  const returnTo = callbackUrl || `${pathname}${search}${hash}` || "/";
   const [mobileOpen, setMobileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const mobileMenuId = useId();
 
-  // Auto-close mobile menu on route change.
   useEffect(() => {
     setMobileOpen(false);
   }, [pathname]);
@@ -58,6 +58,45 @@ export function Header() {
     return pathname === link.href || pathname.startsWith(link.href + "/");
   }
 
+  const identity = getUserLabel(
+    auth.user?.profile.name ?? auth.user?.profile.preferred_username,
+    auth.user?.profile.email,
+  );
+
+  function AuthButtonGroup({ mobile = false }: { mobile?: boolean }) {
+    if (auth.authStatus === "loading") {
+      return <div className={`h-8 ${mobile ? "w-full" : "w-24"} rounded shimmer bg-muted/60`} />;
+    }
+
+    if (auth.authStatus === "authenticated" && auth.user) {
+      return (
+        <div className={`flex ${mobile ? "flex-col items-stretch gap-2" : "items-center gap-3"}`}>
+          <span className="max-w-40 truncate text-xs text-muted-foreground">{identity}</span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => void auth.signoutRedirect({ state: { returnTo: "/" } })}
+            className={mobile ? "justify-start" : undefined}
+          >
+            Logout
+          </Button>
+        </div>
+      );
+    }
+
+    return (
+      <Button
+        type="button"
+        size="sm"
+        onClick={() => void auth.signinRedirect({ state: { returnTo } })}
+        className={mobile ? "justify-start" : undefined}
+      >
+        Login
+      </Button>
+    );
+  }
+
   return (
     <header className={`sticky top-0 z-50 w-full border-b transition-all duration-300 ${
       scrolled
@@ -65,8 +104,7 @@ export function Header() {
         : "border-border/30 bg-background/40 backdrop-blur-xl"
     }`}>
       <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-6">
-        {/* Logo */}
-        <Link href="/" className="flex items-center gap-2 group">
+        <Link to="/" className="flex items-center gap-2 group">
           <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-primary/20 bg-primary/[0.08] transition-colors group-hover:bg-primary/[0.12] group-hover:border-primary/30">
             <SakuraIcon className="h-4 w-4 text-primary" />
           </div>
@@ -75,16 +113,14 @@ export function Header() {
           </span>
         </Link>
 
-        {/* Desktop nav */}
         <nav className="hidden md:flex items-center gap-1 text-sm font-medium">
           {NAV_LINKS.filter((link) => {
             if (link.adminRequired) return isAdmin === true;
-            if (link.authRequired) return isAuthenticated;
             return true;
           }).map((link) => (
             <Link
               key={link.href}
-              href={link.href}
+              to={link.href}
               className={`relative rounded-lg px-3 py-1.5 transition-all duration-200 ${
                 isActive(link)
                   ? "text-primary bg-primary/8"
@@ -104,37 +140,13 @@ export function Header() {
 
           <div className="h-5 w-px bg-border mx-2" />
 
-          <ThemeToggle className="mx-1" />
+          <div className="mr-1">
+            <AuthButtonGroup />
+          </div>
 
-          {status === "loading" ? (
-            <div className="h-8 w-20 rounded-full shimmer bg-muted/60" />
-          ) : isAuthenticated ? (
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-muted-foreground max-w-[120px] truncate">
-                {(session?.user?.name || session?.user?.email || "Signed in") as string}
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 rounded-full px-3 text-xs border-border/50 hover:border-border transition-colors"
-                onClick={() => void signOut({ callbackUrl: "/" })}
-              >
-                Logout
-              </Button>
-            </div>
-          ) : (
-            <Button
-              variant="default"
-              size="sm"
-              className="h-7 rounded-full px-4 text-xs"
-              onClick={() => void signIn("oidc")}
-            >
-              Login
-            </Button>
-          )}
+          <ThemeToggle className="mx-1" />
         </nav>
 
-        {/* Mobile hamburger */}
         <button
           type="button"
           className="md:hidden flex flex-col gap-1 p-2"
@@ -149,7 +161,6 @@ export function Header() {
         </button>
       </div>
 
-      {/* Mobile menu */}
       <AnimatePresence>
         {mobileOpen && (
           <motion.div
@@ -163,12 +174,11 @@ export function Header() {
             <div className="px-6 py-4 space-y-1">
               {NAV_LINKS.filter((link) => {
                 if (link.adminRequired) return isAdmin === true;
-                if (link.authRequired) return isAuthenticated;
                 return true;
               }).map((link) => (
                 <Link
                   key={link.href}
-                  href={link.href}
+                  to={link.href}
                   onClick={() => setMobileOpen(false)}
                   className={`block rounded-lg px-3 py-2.5 text-sm font-medium transition-all ${
                     isActive(link)
@@ -181,35 +191,13 @@ export function Header() {
               ))}
               <div className="divider-fade my-3" />
 
-              <div className="flex items-center justify-between py-2">
-                <span className="text-xs text-muted-foreground">Theme</span>
-                <ThemeToggle />
-              </div>
-
-              {status === "loading" ? null : isAuthenticated ? (
-                <div className="flex items-center justify-between py-2">
-                  <span className="text-xs text-muted-foreground">
-                    {(session?.user?.name || session?.user?.email || "Signed in") as string}
-                  </span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 rounded-full px-3 text-xs"
-                    onClick={() => void signOut({ callbackUrl: "/" })}
-                  >
-                    Logout
-                  </Button>
+              <div className="space-y-3 py-2">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs text-muted-foreground">Theme</span>
+                  <ThemeToggle />
                 </div>
-              ) : (
-                <Button
-                  variant="default"
-                  size="sm"
-                  className="w-full rounded-full text-xs"
-                  onClick={() => void signIn("oidc")}
-                >
-                  Login
-                </Button>
-              )}
+                <AuthButtonGroup mobile />
+              </div>
             </div>
           </motion.div>
         )}

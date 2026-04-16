@@ -1,5 +1,4 @@
 import { expect, test, type Page } from "@playwright/test";
-import { encode } from "next-auth/jwt";
 
 type AdminModel = {
   id: string;
@@ -21,7 +20,6 @@ type AdminModel = {
   updated_at: string;
 };
 
-
 type AdminTaskSet = {
   id: string;
   name: string;
@@ -39,28 +37,19 @@ type AdminTask = {
 };
 
 async function mockAuthenticatedSession(page: Page, accessToken = "frontend-admin-access-token", isAdmin = true): Promise<void> {
-  const sessionToken = await encode({
-    token: { name: "Arena Admin", email: "admin@example.com" },
-    secret: "arena-frontend-e2e-nextauth-secret",
-  });
-
-  await page.context().addCookies([
-    {
-      name: "next-auth.session-token",
-      value: sessionToken,
-      domain: "localhost",
-      path: "/",
-    },
-  ]);
-
-  await page.route("**/api/auth/session*", async (route) => {
+  await page.route("**/api/v1/public-config", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        user: { name: "Arena Admin", email: "admin@example.com" },
-        expires: "2099-01-01T00:00:00.000Z",
-        accessToken,
+        oidc: {
+          issuer: "http://localhost:13000/mock-oidc",
+          client_id: "arena",
+          scope: "openid profile email",
+          redirect_path: "/auth/callback",
+          silent_redirect_path: "/auth/silent-callback",
+          post_logout_redirect_path: "/auth/logout-callback"
+        }
       }),
     });
   });
@@ -75,6 +64,16 @@ async function mockAuthenticatedSession(page: Page, accessToken = "frontend-admi
       }),
     });
   });
+
+  await page.addInitScript((token) => {
+    sessionStorage.setItem("oidc.user:http://localhost:13000/mock-oidc:arena", JSON.stringify({
+      access_token: token,
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+      token_type: "Bearer",
+      scope: "openid profile email",
+      profile: { sub: "admin123" }
+    }));
+  }, accessToken);
 }
 
 function modelRecord(overrides: Partial<AdminModel> = {}): AdminModel {

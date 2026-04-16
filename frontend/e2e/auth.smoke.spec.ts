@@ -4,29 +4,7 @@ import type { Page } from "@playwright/test";
 const AUTHENTIK_USERNAME = "akadmin";
 const AUTHENTIK_PASSWORD = "password1234";
 
-async function hasAccessToken(baseUrl: string, page: Page): Promise<boolean> {
-  const response = await page.context().request.get(`${baseUrl}/api/auth/session`);
-  if (!response.ok()) {
-    return false;
-  }
-  const payload = await response.json();
-  return Boolean(
-    payload &&
-      typeof payload === "object" &&
-      "accessToken" in payload &&
-      typeof payload.accessToken === "string" &&
-      payload.accessToken.length > 0,
-  );
-}
-
-test("login and logout through Authentik", async ({ baseURL, page }) => {
-  if (!baseURL) {
-    throw new Error("Playwright baseURL is required");
-  }
-
-  await page.goto("/");
-  await page.getByRole("button", { name: "Login" }).click();
-
+async function waitForAuthentikLogin(page: Page) {
   const authForm = page.getByRole("main", { name: /authentication form/i });
 
   const userInput = authForm.locator('input[name="uidField"]');
@@ -47,26 +25,45 @@ test("login and logout through Authentik", async ({ baseURL, page }) => {
   const passwordAction = authForm.getByRole("button", { name: /log in|continue/i });
   await passwordAction.waitFor({ state: "visible", timeout: 30_000 });
   await passwordAction.click({ force: true });
+}
 
-  await expect
-    .poll(async () => hasAccessToken(baseURL, page), {
-      timeout: 90_000,
-      message: "Expected NextAuth session to include accessToken after login",
-    })
-    .toBe(true);
+test("login and logout through the SPA OIDC flow", async ({ page }) => {
+  await page.route("**/api/v1/public-config", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        anon_battle_turnstile_required: false,
+        oidc: {
+          issuer: "http://localhost:29000/application/o/arena-e2e/",
+          client_id: "arena-e2e-client",
+          scope: "openid profile email offline_access",
+          redirect_path: "/auth/callback",
+          silent_redirect_path: "/auth/silent-callback",
+          post_logout_redirect_path: "/auth/logout-callback",
+        },
+      }),
+    });
+  });
 
   await page.goto("/");
+  await page.getByRole("button", { name: "Login" }).click();
+
+  await waitForAuthentikLogin(page);
+
+  await page.waitForURL((url) => url.pathname === "/", { timeout: 90_000 });
+  await expect(page.getByRole("button", { name: "Logout" })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole("button", { name: "Login" })).toBeHidden();
+
   const logoutButton = page.getByRole("button", { name: "Logout" });
   await logoutButton.waitFor({ state: "visible", timeout: 60_000 });
   await logoutButton.click();
 
-  await expect
-    .poll(async () => hasAccessToken(baseURL, page), {
-      timeout: 60_000,
-      message: "Expected NextAuth session accessToken to clear after logout",
-    })
-    .toBe(false);
+  const returnToArenaLink = page.getByRole("link", { name: /Log back into Arena E2E/i });
+  await returnToArenaLink.waitFor({ state: "visible", timeout: 90_000 });
+  await returnToArenaLink.click();
 
-  await page.goto("/");
-  await page.getByRole("button", { name: "Login" }).waitFor({ state: "visible", timeout: 60_000 });
+  await page.waitForURL((url) => url.pathname === "/", { timeout: 90_000 });
+  await expect(page.getByRole("button", { name: "Login" })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole("button", { name: "Logout" })).toBeHidden();
 });
