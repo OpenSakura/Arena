@@ -43,7 +43,6 @@ function createUseBattleState(overrides: Record<string, unknown> = {}) {
       submittingVote: false,
       voteId: null,
       reveal: null,
-      revealLoading: false,
       ...stateOverrides,
     },
     dispatch: vi.fn(),
@@ -51,12 +50,10 @@ function createUseBattleState(overrides: Record<string, unknown> = {}) {
     authStatus: "authenticated",
     hasRefreshError: false,
     canVote: true,
-    canReveal: false,
     canRetry: false,
     voteSubmitted: false,
     statusLabel: "Loading...",
     handleVoteSubmit: vi.fn(),
-    handleReveal: vi.fn(),
     handleRetry: vi.fn(),
     handleStartAnotherBattle: vi.fn(),
     ...Object.fromEntries(Object.entries(overrides).filter(([key]) => key !== "state")),
@@ -107,21 +104,21 @@ describe("BattleView", () => {
     expect(handleVoteSubmit).toHaveBeenCalledTimes(1);
   });
 
-  it("shows anonymous login messaging after completion", async () => {
+  it("shows login error when unauthenticated and loading battle fails", async () => {
     useBattleMock.mockReturnValue(
       createUseBattleState({
-        state: { status: "done" },
+        state: { status: "error", errorText: "Login required to view battles.", resolvedBattleId: null },
         isAuthed: false,
         authStatus: "unauthenticated",
         canVote: false,
-        statusLabel: "Complete",
+        statusLabel: "Error",
       }),
     );
 
     renderBattleView();
 
-    await screen.findByText("Login to Vote");
-    expect(screen.getByText(/please log in/i)).toBeDefined();
+    await screen.findByText("Unable to load battle");
+    expect(screen.getByText("Login required to view battles.")).toBeDefined();
   });
 
   it("shows refresh-expired messaging when session refresh failed", async () => {

@@ -67,9 +67,8 @@ Notes:
 Notes:
 
 - Admin endpoints (`/api/v1/admin/*`) require OIDC and admin group membership.
-- Public read endpoints are limited to the leaderboard and completed battle
-  result pages.
-- All mutations (creating battles, submitting votes, retrying battles) require
+- Public read endpoints are limited to the leaderboard.
+- All mutations and viewing (creating battles, viewing battles, submitting votes, retrying battles) require
   authentication. Successful vote submission reveals model identities
   immediately.
 
@@ -105,5 +104,5 @@ Recommended workflow:
    - `http://localhost:5173/admin/tasks`
 
 If you do not have an OIDC provider available in local dev, you can still run
-the public leaderboard/completed-results UI routes, but you will not be able to
-create battles, vote, or use admin endpoints to seed the database.
+the public leaderboard UI route, but you will not be able to
+create battles, view battles, vote, or use admin endpoints to seed the database.

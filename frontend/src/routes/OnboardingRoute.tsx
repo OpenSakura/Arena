@@ -4,7 +4,7 @@
  * User onboarding/profile capture.
  *
  * Notes:
- * - Login is required to create battles, vote, and reveal results. Logged-in
+ * - Login is required to create battles, view battles, and vote. Logged-in
  *   users can optionally add language/experience info to improve downstream
  *   filtering.
  */
@@ -31,8 +31,8 @@ export default function OnboardingRoute() {
   const canSave = authStatus === "authenticated" && Boolean(accessToken) && !hasRefreshError;
   const authNoticeTitle = hasRefreshError ? "Session expired" : "Login required to save";
   const authNoticeBody = hasRefreshError
-    ? "Your session expired before we could load or save your profile. Sign in again to save profile info, create battles, and vote. You can still browse the leaderboard and completed results while signed out."
-    : "You can browse the leaderboard and completed results without logging in, but creating battles and voting require a login. Profile info is stored for logged-in users only.";
+    ? "Your session expired before we could load or save your profile. Sign in again to save profile info, create battles, view battles, and vote. You can still browse the leaderboard while signed out."
+    : "You can browse the leaderboard without logging in, but creating battles, viewing battles, and voting require a login. Profile info is stored for logged-in users only.";
 
   const [displayName, setDisplayName] = useState("");
   const [uiLanguage, setUiLanguage] = useState("en");

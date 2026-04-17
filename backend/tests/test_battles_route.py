@@ -315,9 +315,16 @@ class _CountDB:
 
 
 def _principal(
-    *, authenticated: bool = False, user_id: str | None = None
+    *,
+    authenticated: bool = False,
+    user_id: str | None = None,
+    claims: dict[str, object] | None = None,
 ) -> SimpleNamespace:
-    return SimpleNamespace(is_authenticated=authenticated, user_id=user_id)
+    return SimpleNamespace(
+        is_authenticated=authenticated,
+        user_id=user_id,
+        claims=claims or {},
+    )
 
 
 def _creator_principal_and_battle(
@@ -415,7 +422,7 @@ def test_build_sampling_policy_uses_settings_values() -> None:
     assert policy.boost_models == {"env-boost"}
 
 
-def test_get_battle_keeps_run_stats_hidden() -> None:
+def test_get_battle_rejects_unauthenticated_completed_battle() -> None:
     battle_id = uuid.uuid4()
     task = _task()
     battle = SimpleNamespace(
@@ -425,41 +432,23 @@ def test_get_battle_keeps_run_stats_hidden() -> None:
         status="completed",
         metadata_json=None,
     )
-    runs = [
-        SimpleNamespace(
-            id=uuid.uuid4(),
-            side="A",
-            output_text="Alpha",
-            stats={"request_id": "req-a"},
-            error_text=None,
-        ),
-        SimpleNamespace(
-            id=uuid.uuid4(),
-            side="B",
-            output_text="Beta",
-            stats={"request_id": "req-b"},
-            error_text=None,
-        ),
-    ]
     db = _QueueDB(
-        [[*runs], []],
+        [],
         get_map={
             (battles.Battle, battle_id): battle,
             (Task, task.id): task,
         },
     )
 
-    response = battles.get_battle(
-        str(battle_id),
-        db=db,  # type: ignore[arg-type]
-        principal=cast(Principal, _principal(authenticated=False, user_id=None)),
-    )
+    with pytest.raises(HTTPException) as exc_info:
+        battles.get_battle(
+            str(battle_id),
+            db=db,  # type: ignore[arg-type]
+            principal=cast(Principal, _principal(authenticated=False, user_id=None)),
+        )
 
-    assert response.run_a is not None
-    assert response.run_b is not None
-    assert response.retry_allowed is False
-    assert response.run_a.stats is None
-    assert response.run_b.stats is None
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Authentication required"
 
 
 def test_get_battle_rejects_unauthenticated_non_completed_battle() -> None:
@@ -491,15 +480,94 @@ def test_get_battle_rejects_unauthenticated_non_completed_battle() -> None:
     assert exc_info.value.detail == "Authentication required"
 
 
-def test_get_battle_allows_authenticated_non_completed_battle() -> None:
+def test_get_battle_rejects_authenticated_non_creator_non_admin() -> None:
     battle_id = uuid.uuid4()
     task = _task()
     battle = SimpleNamespace(
         id=battle_id,
         task_id=task.id,
         mode="jp2zh_ab",
-        status="running",
-        metadata_json=None,
+        status="completed",
+        metadata_json={"requester_user_id": str(uuid.uuid4())},
+    )
+    db = _QueueDB(
+        [],
+        get_map={
+            (battles.Battle, battle_id): battle,
+            (Task, task.id): task,
+        },
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        battles.get_battle(
+            str(battle_id),
+            db=db,  # type: ignore[arg-type]
+            principal=cast(
+                Principal,
+                _principal(authenticated=True, user_id=str(uuid.uuid4())),
+            ),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert (
+        exc_info.value.detail
+        == "Only the battle creator or an admin may access this battle"
+    )
+
+
+def test_get_battle_allows_creator_and_keeps_run_stats_hidden_before_vote() -> None:
+    principal, battle = _creator_principal_and_battle(status="completed")
+    task = _task()
+    battle.task_id = task.id
+    runs = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="A",
+            output_text="Alpha",
+            stats={"request_id": "req-a"},
+            error_text=None,
+        ),
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="B",
+            output_text="Beta",
+            stats={"request_id": "req-b"},
+            error_text=None,
+        ),
+    ]
+    db = _QueueDB(
+        [[*runs], []],
+        get_map={
+            (battles.Battle, battle.id): battle,
+            (Task, task.id): task,
+        },
+    )
+
+    response = battles.get_battle(
+        str(battle.id),
+        db=db,  # type: ignore[arg-type]
+        principal=principal,
+    )
+
+    assert response.id == str(battle.id)
+    assert response.status == "completed"
+    assert response.retry_allowed is False
+    assert response.run_a is not None
+    assert response.run_a.stats is None
+    assert response.run_b is not None
+    assert response.run_b.stats is None
+
+
+def test_get_battle_allows_admin_reader() -> None:
+    battle_id = uuid.uuid4()
+    task = _task()
+    admin_group_name = "arena-admins"
+    battle = SimpleNamespace(
+        id=battle_id,
+        task_id=task.id,
+        mode="jp2zh_ab",
+        status="completed",
+        metadata_json={"requester_user_id": str(uuid.uuid4())},
     )
     runs = [
         SimpleNamespace(
@@ -525,22 +593,34 @@ def test_get_battle_allows_authenticated_non_completed_battle() -> None:
         },
     )
 
-    response = battles.get_battle(
-        str(battle_id),
-        db=db,  # type: ignore[arg-type]
-        principal=cast(
-            Principal,
-            _principal(authenticated=True, user_id=str(uuid.uuid4())),
+    principal = cast(
+        Principal,
+        _principal(
+            authenticated=True,
+            user_id=str(uuid.uuid4()),
+            claims={"groups": [admin_group_name]},
         ),
     )
 
+    get_settings = battles.get_settings
+    battles.get_settings = lambda: cast(  # type: ignore[assignment]
+        Settings,
+        SimpleNamespace(
+            oidc_admin_group_claim="groups",
+            oidc_admin_group_name=admin_group_name,
+        ),
+    )
+    try:
+        response = battles.get_battle(
+            str(battle_id),
+            db=db,  # type: ignore[arg-type]
+            principal=principal,
+        )
+    finally:
+        battles.get_settings = get_settings  # type: ignore[assignment]
+
     assert response.id == str(battle_id)
-    assert response.status == "running"
-    assert response.retry_allowed is False
-    assert response.run_a is not None
-    assert response.run_a.stats is None
-    assert response.run_b is not None
-    assert response.run_b.stats is None
+    assert response.status == "completed"
 
 
 def test_get_battle_exposes_retry_allowed_for_failed_creator() -> None:
@@ -896,15 +976,10 @@ def test_retry_lock_serializes_retry_with_row_lock() -> None:
 
 
 def test_stats_visible_after_vote() -> None:
-    battle_id = uuid.uuid4()
+    principal, battle = _creator_principal_and_battle(status="completed")
+    battle_id = battle.id
     task = _task()
-    battle = SimpleNamespace(
-        id=battle_id,
-        task_id=task.id,
-        mode="jp2zh_ab",
-        status="completed",
-        metadata_json=None,
-    )
+    battle.task_id = task.id
     vote_id = uuid.uuid4()
     runs = [
         SimpleNamespace(
@@ -933,7 +1008,7 @@ def test_stats_visible_after_vote() -> None:
     response = battles.get_battle(
         str(battle_id),
         db=db,  # type: ignore[arg-type]
-        principal=cast(Principal, _principal(authenticated=False, user_id=None)),
+        principal=principal,
     )
 
     assert response.run_a is not None

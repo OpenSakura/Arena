@@ -179,7 +179,7 @@ def test_vote_submit_requires_authentication(
     assert response.json()["detail"] == "Authentication required"
 
 
-def test_vote_reveal_requires_authentication(
+def test_private_battle_read_requires_authentication(
     backend_client,
     db_session,
 ) -> None:
@@ -192,20 +192,82 @@ def test_vote_reveal_requires_authentication(
     task = Task(
         source_lang="ja",
         target_lang="zh",
-        source_text=f"vote-reveal-source-{suffix}",
+        source_text=f"private-battle-source-{suffix}",
     )
     model_a = Model(
-        display_name=f"Vote Reveal Model A {suffix}",
+        display_name=f"Private Battle Model A {suffix}",
         provider_type="openai",
-        model_name=f"vote-reveal-model-a-{suffix}",
+        model_name=f"private-battle-model-a-{suffix}",
         base_url="http://example.invalid",
         enabled=True,
         visibility="public",
     )
     model_b = Model(
-        display_name=f"Vote Reveal Model B {suffix}",
+        display_name=f"Private Battle Model B {suffix}",
         provider_type="openai",
-        model_name=f"vote-reveal-model-b-{suffix}",
+        model_name=f"private-battle-model-b-{suffix}",
+        base_url="http://example.invalid",
+        enabled=True,
+        visibility="public",
+    )
+
+    db_session.add_all([task, model_a, model_b])
+    db_session.flush()
+
+    battle = Battle(task_id=task.id, mode="jp2zh_ab", status="completed")
+    db_session.add(battle)
+    db_session.flush()
+
+    db_session.add_all(
+        [
+            Run(
+                battle_id=battle.id,
+                side="A",
+                model_id=model_a.id,
+                output_text="A output",
+            ),
+            Run(
+                battle_id=battle.id,
+                side="B",
+                model_id=model_b.id,
+                output_text="B output",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = backend_client.get(f"/api/v1/battles/{battle.id}")
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Authentication required"
+
+
+def test_removed_vote_reveal_route_returns_404(
+    backend_client,
+    db_session,
+) -> None:
+    from app.models.battle import Battle, Run
+    from app.models.model_registry import Model
+    from app.models.task import Task
+
+    suffix = uuid.uuid4().hex[:8]
+
+    task = Task(
+        source_lang="ja",
+        target_lang="zh",
+        source_text=f"vote-reveal-removed-source-{suffix}",
+    )
+    model_a = Model(
+        display_name=f"Vote Reveal Removed Model A {suffix}",
+        provider_type="openai",
+        model_name=f"vote-reveal-removed-model-a-{suffix}",
+        base_url="http://example.invalid",
+        enabled=True,
+        visibility="public",
+    )
+    model_b = Model(
+        display_name=f"Vote Reveal Removed Model B {suffix}",
+        provider_type="openai",
+        model_name=f"vote-reveal-removed-model-b-{suffix}",
         base_url="http://example.invalid",
         enabled=True,
         visibility="public",
@@ -237,8 +299,7 @@ def test_vote_reveal_requires_authentication(
     db_session.commit()
 
     response = backend_client.post(f"/api/v1/battles/{battle.id}/vote/reveal")
-    assert response.status_code == 401
-    assert response.json()["detail"] == "Authentication required"
+    assert response.status_code == 404
 
 
 def test_authenticated_vote_rate_limit_is_enforced_with_redis(

@@ -64,6 +64,7 @@ type BattlePublic = {
   target_lang: string;
   mode: string;
   status: string;
+  retry_allowed: boolean;
   run_a: {
     id: string;
     side: Side;
@@ -89,6 +90,7 @@ function makeBattle(id: string): BattlePublic {
     target_lang: "zh",
     mode: "jp2zh_ab",
     status: "pending",
+    retry_allowed: false,
     run_a: {
       id: `${id}-run-a`,
       side: "A",
@@ -174,21 +176,6 @@ test("submits tie votes with rubric tags and comment payload", async ({ page }) 
         vote_id: "vote-tie-1",
         battle_id: "battle-vote-tie",
         winner: "tie",
-        reveal: null,
-      }),
-    });
-  });
-
-  await page.route(/\/api\/v1\/battles\/[^/]+\/vote\/reveal$/, async (route) => {
-    if (await handleCorsIfPreflight(route)) return;
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      headers: CORS_HEADERS,
-      body: JSON.stringify({
-        vote_id: "vote-tie-1",
-        battle_id: "battle-vote-tie",
-        winner: "tie",
         reveal: {
           A: { model_id: "model-a", display_name: "Model A" },
           B: { model_id: "model-b", display_name: "Model B" },
@@ -246,21 +233,6 @@ test("shows conflict errors and allows retry with the same vote state", async ({
       return;
     }
 
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      headers: CORS_HEADERS,
-      body: JSON.stringify({
-        vote_id: "vote-conflict-retry",
-        battle_id: "battle-vote-conflict",
-        winner: "A",
-        reveal: null,
-      }),
-    });
-  });
-
-  await page.route(/\/api\/v1\/battles\/[^/]+\/vote\/reveal$/, async (route) => {
-    if (await handleCorsIfPreflight(route)) return;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -337,21 +309,6 @@ test("submits only once when users double-click submit under latency", async ({ 
       setTimeout(resolve, 250);
     });
 
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      headers: CORS_HEADERS,
-      body: JSON.stringify({
-        vote_id: "vote-idempotent-1",
-        battle_id: "battle-vote-idempotent",
-        winner: "A",
-        reveal: null,
-      }),
-    });
-  });
-
-  await page.route(/\/api\/v1\/battles\/[^/]+\/vote\/reveal$/, async (route) => {
-    if (await handleCorsIfPreflight(route)) return;
     await route.fulfill({
       status: 200,
       contentType: "application/json",

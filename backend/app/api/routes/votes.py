@@ -3,7 +3,7 @@
 Vote ingestion endpoints.
 
 Notes:
-- Vote submission and reveal are authenticated-only operations.
+- Vote submission is authenticated-only.
 - Authenticated voters are identified by user id only.
 - Vote submission immediately reveals model identities and locks the vote.
 """
@@ -202,61 +202,6 @@ def submit_vote(
     )
 
 
-@router.post("/{battle_id}/vote/reveal")
-def reveal_vote(
-    battle_id: str,
-    db: Session = Depends(get_db),
-    principal: Principal = Depends(get_principal_required),
-) -> VoteSubmitResponse:
-    """Lock the vote and reveal model identities.
-
-    Once revealed, the vote can no longer be updated.
-    """
-    battle_uuid = parse_uuid_or_422(battle_id, "battle_id")
-
-    battle = db.get(Battle, battle_uuid)
-    if battle is None:
-        raise HTTPException(status_code=404, detail="Battle not found")
-
-    requester_identity = RequesterIdentity(voter_user_id=uuid.UUID(principal.user_id))
-
-    existing_vote = find_existing_battle_vote(
-        db,
-        battle_id=battle_uuid,
-        requester_identity=requester_identity,
-    )
-    if existing_vote is None:
-        raise HTTPException(status_code=404, detail="No vote found for this battle")
-
-    # Mark as revealed (locks the vote). This remains idempotent so older
-    # clients that still call /vote/reveal after submit continue to work.
-    if not existing_vote.revealed:
-        existing_vote.revealed = True
-        db.commit()
-
-    runs = (
-        db.execute(
-            select(Run).where(Run.battle_id == battle_uuid).order_by(Run.side.asc())
-        )
-        .scalars()
-        .all()
-    )
-    run_map = {run.side: run for run in runs}
-    run_a = run_map.get("A")
-    run_b = run_map.get("B")
-    if run_a is None or run_b is None:
-        raise HTTPException(status_code=500, detail="Battle runs not found")
-
-    return _build_vote_submit_response(
-        db,
-        vote_id=existing_vote.id,
-        battle_id=battle_uuid,
-        winner=existing_vote.winner,
-        model_a_id=run_a.model_id,
-        model_b_id=run_b.model_id,
-    )
-
-
 def _resolve_duplicate_vote_conflict(
     db: Session,
     *,
@@ -294,6 +239,7 @@ def _resolve_duplicate_vote_conflict(
             existing_vote.rubric = rubric
         if existing_vote.comment != comment:
             existing_vote.comment = comment
+        existing_vote.revealed = True
 
     # Commit explicitly so that identity upgrades and payload updates are
     # durably persisted regardless of whether the caller's session teardown
@@ -301,11 +247,13 @@ def _resolve_duplicate_vote_conflict(
     # get_db() auto-commit semantics change).
     db.commit()
 
-    return VoteSubmitResponse(
-        vote_id=str(existing_vote.id),
-        battle_id=str(battle_id),
+    return _build_vote_submit_response(
+        db,
+        vote_id=existing_vote.id,
+        battle_id=battle_id,
         winner=existing_vote.winner,
-        reveal=None,
+        model_a_id=model_a_id,
+        model_b_id=model_b_id,
     )
 
 

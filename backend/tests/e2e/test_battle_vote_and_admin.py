@@ -342,19 +342,7 @@ def test_vote_pipeline_handles_idempotency_and_conflicts(
     assert second_payload["reveal"]["A"]["model_id"] == str(model_a_id)
     assert second_payload["reveal"]["B"]["model_id"] == str(model_b_id)
 
-    # Compatibility-safe reveal remains idempotent.
-    reveal = backend_client.post(
-        f"/api/v1/battles/{battle_id}/vote/reveal",
-        headers=auth_headers,
-    )
-    assert reveal.status_code == 200
-    reveal_payload = reveal.json()
-    assert reveal_payload["vote_id"] == first_vote_id
-    assert reveal_payload["winner"] == "A"
-    assert reveal_payload["reveal"]["A"]["model_id"] == str(model_a_id)
-    assert reveal_payload["reveal"]["B"]["model_id"] == str(model_b_id)
-
-    # Changing winner after submit/reveal is rejected.
+    # Changing winner after submit is rejected because the submit already reveals.
     conflicting = backend_client.post(
         f"/api/v1/battles/{battle_id}/vote",
         headers=auth_headers,
@@ -473,16 +461,6 @@ def test_battle_stream_vote_and_leaderboard_reflect_rating_updates(
     assert vote_payload["winner"] == "A"
     assert vote_payload["reveal"]["A"]["model_id"] == str(run_a.model_id)
     assert vote_payload["reveal"]["B"]["model_id"] == str(run_b.model_id)
-
-    # Reveal models — locks the vote and returns model identities.
-    reveal = backend_client.post(
-        f"/api/v1/battles/{battle_id}/vote/reveal",
-        headers=auth_headers,
-    )
-    assert reveal.status_code == 200
-    reveal_payload = reveal.json()
-    assert reveal_payload["reveal"]["A"]["model_id"] == str(run_a.model_id)
-    assert reveal_payload["reveal"]["B"]["model_id"] == str(run_b.model_id)
 
     # Elo leaderboard reads persisted ModelRating snapshots. In this e2e
     # harness the periodic refresher is disabled, so trigger one refresh cycle

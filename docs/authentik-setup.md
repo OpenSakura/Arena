@@ -2,8 +2,8 @@
 
 This repo uses OIDC for login (frontend SPA PKCE) and JWT verification (backend).
 The local example below uses Authentik as the identity provider. Login is required
-for all mutations (creating battles, voting, retrying battles).
-Leaderboard reads and completed battle result pages remain accessible without
+for all mutations and viewing (creating battles, viewing battles, voting, retrying battles).
+Leaderboard reads remain accessible without
 login. Key details:
 
 - All votes are stored with `voter_user_id` from the authenticated session.

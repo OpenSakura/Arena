@@ -8,8 +8,8 @@ Notes:
 - Live execution assumes a single API worker/process owns the cached
   ``BattleOrchestrator`` singleton; additional stream consumers are observers.
 - Battle creation and retry are authenticated-only operations.
-- Completed battle results are public; non-completed battle reads remain
-  authenticated-only.
+- Battle detail reads and stream/retry access are restricted to the battle
+  creator or an admin.
 """
 
 from __future__ import annotations
@@ -33,7 +33,6 @@ from app.core.security import (
     get_principal_optional,
     get_principal_required,
     normalize_groups,
-    require_admin,
 )
 from app.db.session import get_db
 from app.models.battle import Battle, Run
@@ -140,8 +139,11 @@ def get_battle(
     if battle is None:
         raise HTTPException(status_code=404, detail="Battle not found")
 
-    if battle.status != "completed" and not principal.is_authenticated:
-        raise HTTPException(status_code=401, detail="Authentication required")
+    _require_battle_creator_or_admin(
+        battle=battle,
+        principal=principal,
+        forbidden_detail="Only the battle creator or an admin may access this battle",
+    )
 
     snapshot = _battle_task_snapshot(battle)
     if snapshot is None:
@@ -201,21 +203,11 @@ async def stream_battle(
         raise HTTPException(status_code=404, detail="Battle not found")
 
     # Only the battle creator (or an admin) may connect to the stream.
-    if not _is_battle_creator(battle, principal=principal):
-        settings_for_admin = get_settings()
-        claim_value = claim_by_path(
-            principal.claims, settings_for_admin.oidc_admin_group_claim
-        )
-        groups = normalize_groups(claim_value)
-        is_admin = (
-            principal.is_authenticated
-            and settings_for_admin.oidc_admin_group_name in groups
-        )
-        if not is_admin:
-            raise HTTPException(
-                status_code=403,
-                detail="Only the battle creator may connect to this stream",
-            )
+    _require_battle_creator_or_admin(
+        battle=battle,
+        principal=principal,
+        forbidden_detail="Only the battle creator or an admin may connect to this stream",
+    )
 
     # Battle mutation/stream ownership is authenticated-user scoped.
     # Run the sync Redis call in a thread to avoid blocking the event loop.
@@ -263,22 +255,11 @@ def retry_battle(
     if battle is None:
         raise HTTPException(status_code=404, detail="Battle not found")
 
-    is_creator = _is_battle_creator(battle, principal=principal)
-    if not is_creator:
-        settings_for_admin = get_settings()
-        claim_value = claim_by_path(
-            principal.claims, settings_for_admin.oidc_admin_group_claim
-        )
-        groups = normalize_groups(claim_value)
-        is_admin = (
-            principal.is_authenticated
-            and settings_for_admin.oidc_admin_group_name in groups
-        )
-        if not is_admin:
-            raise HTTPException(
-                status_code=403,
-                detail="Only the battle creator or an admin may retry",
-            )
+    _require_battle_creator_or_admin(
+        battle=battle,
+        principal=principal,
+        forbidden_detail="Only the battle creator or an admin may retry",
+    )
 
     if battle.status != "failed":
         raise HTTPException(
@@ -532,6 +513,24 @@ def _is_admin_principal(principal: Principal) -> bool:
     claim_value = claim_by_path(principal.claims, settings.oidc_admin_group_claim)
     groups = normalize_groups(claim_value)
     return settings.oidc_admin_group_name in groups
+
+
+def _require_battle_creator_or_admin(
+    *,
+    battle: Battle,
+    principal: Principal,
+    forbidden_detail: str,
+) -> None:
+    if not principal.is_authenticated:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    if _is_battle_creator(battle, principal=principal):
+        return
+
+    if _is_admin_principal(principal):
+        return
+
+    raise HTTPException(status_code=403, detail=forbidden_detail)
 
 
 def _retry_allowed_for_battle(

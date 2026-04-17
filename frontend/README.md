@@ -6,10 +6,10 @@ Notes:
 - Authenticates via SPA OIDC PKCE through `react-oidc-context` / `oidc-client-ts`.
   Public OIDC bootstrap values (issuer, client id, scopes, callback paths) are
   fetched at startup from the backend's `GET /api/v1/public-config` endpoint.
-- Anonymous users can browse the leaderboard and completed battle result pages.
-  Login is required to create battles, retry battles, and submit votes.
-  Successful vote submission immediately reveals the models used. Logged-in
-  users can also fill an optional profile for downstream filtering.
+- Anonymous users can browse the leaderboard.
+  Login is required to create battles, view battles, retry battles, and submit
+  votes. Successful vote submission immediately reveals the models used inline.
+  Logged-in users can also fill an optional profile for downstream filtering.
 
 Local quickstart (dev):
 1. Copy env: `cp .env.example .env.local` and edit.
@@ -50,4 +50,4 @@ If `PW_ENABLE_LIVE_STACK` is not set, `e2e/live-contract.spec.ts` is skipped by 
 
 Battle creation, retries, and vote submission/reveal flows are covered in
 Playwright with authenticated session mocks. Anonymous coverage is limited to
-the leaderboard, completed results, and onboarding guard behavior.
+the leaderboard and onboarding guard behavior.

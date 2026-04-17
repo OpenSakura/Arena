@@ -8,7 +8,7 @@ Notes:
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, TypeAlias
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -55,8 +55,11 @@ class VoteCreate(BaseModel):
     comment: str | None = Field(default=None, max_length=4096)
 
 
+VoteReveal: TypeAlias = dict[str, dict[str, str]]
+
+
 class VoteSubmitResponse(BaseModel):
     vote_id: str
     battle_id: str
     winner: Literal["A", "B", "tie"]
-    reveal: dict[str, dict[str, str]] | None = None
+    reveal: VoteReveal

@@ -58,6 +58,16 @@ describe("loadOrCreateBattle", () => {
     });
     expect(mockedApiPost).not.toHaveBeenCalled();
   });
+
+  it("attaches bearer auth when loading an existing battle with an access token", async () => {
+    mockedApiGet.mockResolvedValueOnce({ id: "existing" });
+
+    await loadOrCreateBattle("battle/alpha beta", "token-123");
+
+    expect(mockedApiGet).toHaveBeenCalledWith("/battles/battle%2Falpha%20beta", {
+      headers: { Authorization: "Bearer token-123" },
+    });
+  });
 });
 
 describe("asRecord", () => {

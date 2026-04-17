@@ -60,6 +60,27 @@ export function BattleView({ battleId }: { battleId: string }) {
     dispatch({ type: "TOGGLE_RUBRIC_TAG", tag });
   }
 
+  if (status === "error" && !resolvedBattleId) {
+    return (
+      <div className="flex h-[50vh] flex-col items-center justify-center gap-4 text-center">
+        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10 text-destructive">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="8" x2="12" y2="12" />
+            <line x1="12" y1="16" x2="12.01" y2="16" />
+          </svg>
+        </div>
+        <h2 className="text-xl font-semibold">Unable to load battle</h2>
+        <p className="text-muted-foreground max-w-md">{errorText}</p>
+        {!isAuthed && (
+          <Button onClick={() => window.location.href = "/"} variant="outline" className="mt-4">
+            Return Home
+          </Button>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div
         className="grid gap-6"
@@ -107,21 +128,7 @@ export function BattleView({ battleId }: { battleId: string }) {
           className="glass-panel-accent p-8 flex flex-col items-center gap-6"
         >
           {status === "done" && (
-            (!isAuthed && !hasRefreshError) ? (
-              <div className="w-full max-w-2xl text-center glass-panel-accent p-6 border-amber-500/20 bg-amber-500/5">
-                <div className="flex flex-col items-center gap-3">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-8 w-8 text-amber-600/80" aria-hidden>
-                    <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
-                    <polyline points="10 17 15 12 10 7" />
-                    <line x1="15" y1="12" x2="3" y2="12" />
-                  </svg>
-                  <h3 className="text-lg font-semibold text-foreground">Login to Vote</h3>
-                  <p className="text-sm text-muted-foreground max-w-md mx-auto">
-                    You&apos;re viewing this battle anonymously. To cast a vote and see which models were used, please log in.
-                  </p>
-                </div>
-              </div>
-            ) : hasRefreshError ? (
+            hasRefreshError ? (
               <div className="w-full max-w-2xl text-center glass-panel-accent p-6 border-red-500/20 bg-red-500/5">
                 <div className="flex flex-col items-center gap-3">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-8 w-8 text-red-600/80" aria-hidden>

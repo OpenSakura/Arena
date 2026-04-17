@@ -207,7 +207,12 @@ function battleReducer(state: BattleState, action: Action): BattleState {
     }
 
     case "BOOTSTRAP_ERROR":
-      return { ...state, status: "error", errorText: action.error, retryAllowed: false };
+      return {
+        ...INITIAL_STATE,
+        status: "error",
+        errorText: action.error,
+        retryAllowed: false,
+      };
 
     case "SET_STATUS":
       return { ...state, status: action.status };
@@ -476,13 +481,13 @@ export function useBattle(battleId: string) {
       if (battleId !== "new" && redirectedBattle) {
         redirectedBattleCache.delete(battleId);
         bootstrapKeyRef.current = bootstrapKey;
-        const isFinished =
-          redirectedBattle.status === "completed" || redirectedBattle.status === "failed";
-
-        if (!isAuthed && !isFinished) {
-          dispatch({ type: "BOOTSTRAP_ERROR", error: "Login required to view ongoing battles." });
+        if (!isAuthed) {
+          dispatch({ type: "BOOTSTRAP_ERROR", error: "Login required to view battles." });
           return;
         }
+
+        const isFinished =
+          redirectedBattle.status === "completed" || redirectedBattle.status === "failed";
 
         replayPolicyRef.current = {
           A:
@@ -517,8 +522,8 @@ export function useBattle(battleId: string) {
 
         const isFinished = battle.status === "completed" || battle.status === "failed";
 
-        if (!isAuthed && !isFinished) {
-          dispatch({ type: "BOOTSTRAP_ERROR", error: "Login required to view ongoing battles." });
+        if (!isAuthed) {
+          dispatch({ type: "BOOTSTRAP_ERROR", error: "Login required to view battles." });
           return;
         }
 
@@ -537,9 +542,18 @@ export function useBattle(battleId: string) {
       } catch (err) {
         if (cancelled) return;
         bootstrapKeyRef.current = null;
+        
+        const message = err instanceof Error ? err.message : "Failed to load battle";
+        let error = message;
+        if (message.includes("401")) {
+          error = isAuthed ? SESSION_EXPIRED_MESSAGE : "Login required to view battles.";
+        } else if (message.includes("403")) {
+          error = "Permission denied. You can only view your own battles.";
+        }
+
         dispatch({
           type: "BOOTSTRAP_ERROR",
-          error: err instanceof Error ? err.message : "Failed to load battle",
+          error,
         });
       }
     }
@@ -605,8 +619,15 @@ export function useBattle(battleId: string) {
           return;
         }
         dispatch({ type: "SYNC_BATTLE_PUBLIC", battle });
-      } catch {
-        // Best-effort sync only. Keep current terminal state if refresh fails.
+      } catch (err) {
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : "";
+        if (message.includes("401")) {
+          dispatch({ type: "BOOTSTRAP_ERROR", error: isAuthed ? SESSION_EXPIRED_MESSAGE : "Login required to view battles." });
+        } else if (message.includes("403")) {
+          dispatch({ type: "BOOTSTRAP_ERROR", error: "Permission denied. You can only view your own battles." });
+        }
+        // Otherwise, best-effort sync only. Keep current terminal state if refresh fails.
       }
     }
 

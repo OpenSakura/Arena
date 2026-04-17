@@ -239,6 +239,8 @@ def test_resolve_duplicate_vote_conflict_returns_existing_vote_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     battle_id = uuid.uuid4()
+    model_a_id = uuid.uuid4()
+    model_b_id = uuid.uuid4()
     existing_vote = SimpleNamespace(
         id=uuid.uuid4(),
         winner="A",
@@ -254,6 +256,20 @@ def test_resolve_duplicate_vote_conflict_returns_existing_vote_response(
 
     commit_calls: list[None] = []
     db = SimpleNamespace(commit=lambda: commit_calls.append(None))
+    expected_reveal = {
+        "A": {"model_id": str(model_a_id), "display_name": "Model A"},
+        "B": {"model_id": str(model_b_id), "display_name": "Model B"},
+    }
+    monkeypatch.setattr(
+        votes,
+        "_build_vote_submit_response",
+        lambda *_a, **_kw: VoteSubmitResponse(
+            vote_id=str(existing_vote.id),
+            battle_id=str(battle_id),
+            winner="A",
+            reveal=expected_reveal,
+        ),
+    )
 
     response = votes._resolve_duplicate_vote_conflict(
         db=db,  # type: ignore[arg-type]
@@ -261,14 +277,15 @@ def test_resolve_duplicate_vote_conflict_returns_existing_vote_response(
         battle_id=battle_id,
         winner="A",
         requester_identity=RequesterIdentity(voter_user_id=uuid.uuid4()),
-        model_a_id=uuid.uuid4(),
-        model_b_id=uuid.uuid4(),
+        model_a_id=model_a_id,
+        model_b_id=model_b_id,
     )
 
     assert response.vote_id == str(existing_vote.id)
     assert response.battle_id == str(battle_id)
     assert response.winner == "A"
-    assert response.reveal is None
+    assert response.reveal == expected_reveal
+    assert existing_vote.revealed is True
     assert len(commit_calls) == 1
 
 
@@ -276,6 +293,8 @@ def test_resolve_duplicate_vote_conflict_updates_payload_and_commits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     battle_id = uuid.uuid4()
+    model_a_id = uuid.uuid4()
+    model_b_id = uuid.uuid4()
     existing_vote = SimpleNamespace(
         id=uuid.uuid4(),
         winner="A",
@@ -291,6 +310,20 @@ def test_resolve_duplicate_vote_conflict_updates_payload_and_commits(
 
     commit_calls: list[None] = []
     db = SimpleNamespace(commit=lambda: commit_calls.append(None))
+    expected_reveal = {
+        "A": {"model_id": str(model_a_id), "display_name": "Model A"},
+        "B": {"model_id": str(model_b_id), "display_name": "Model B"},
+    }
+    monkeypatch.setattr(
+        votes,
+        "_build_vote_submit_response",
+        lambda *_a, **_kw: VoteSubmitResponse(
+            vote_id=str(existing_vote.id),
+            battle_id=str(battle_id),
+            winner="B",
+            reveal=expected_reveal,
+        ),
+    )
 
     response = votes._resolve_duplicate_vote_conflict(
         db=db,  # type: ignore[arg-type]
@@ -300,14 +333,16 @@ def test_resolve_duplicate_vote_conflict_updates_payload_and_commits(
         rubric={"tags": ["fluency"]},
         comment="new",
         requester_identity=RequesterIdentity(voter_user_id=uuid.uuid4()),
-        model_a_id=uuid.uuid4(),
-        model_b_id=uuid.uuid4(),
+        model_a_id=model_a_id,
+        model_b_id=model_b_id,
     )
 
     assert response.winner == "B"
+    assert response.reveal == expected_reveal
     assert existing_vote.winner == "B"
     assert existing_vote.rubric == {"tags": ["fluency"]}
     assert existing_vote.comment == "new"
+    assert existing_vote.revealed is True
     assert len(commit_calls) == 1
 
 
@@ -616,61 +651,6 @@ def test_submit_vote_resolves_duplicate_conflict_after_commit_error(
     assert db.rollback_calls == 1
 
 
-def test_reveal_vote_returns_404_when_vote_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    battle, runs, _, _ = _battle_and_runs()
-    monkeypatch.setattr(votes, "find_existing_battle_vote", lambda *_a, **_kw: None)
-
-    with pytest.raises(HTTPException) as exc_info:
-        votes.reveal_vote(
-            battle_id=str(battle.id),
-            db=_VoteDB(battle=battle, runs=runs),  # type: ignore[arg-type]
-            principal=_authenticated_principal(),
-        )
-
-    assert exc_info.value.status_code == 404
-    assert exc_info.value.detail == "No vote found for this battle"
-
-
-def test_reveal_vote_marks_vote_revealed_and_returns_model_metadata(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    battle, runs, model_a_id, model_b_id = _battle_and_runs()
-    db = _VoteDB(battle=battle, runs=runs)
-    existing_vote = Vote(
-        battle_id=battle.id,
-        winner="B",
-        voter_user_id=uuid.uuid4(),
-    )
-    existing_vote.id = uuid.uuid4()
-
-    monkeypatch.setattr(
-        votes, "find_existing_battle_vote", lambda *_a, **_kw: existing_vote
-    )
-    monkeypatch.setattr(
-        votes,
-        "_build_vote_submit_response",
-        lambda *_a, **_kw: _vote_submit_response(
-            vote_id=existing_vote.id,
-            battle_id=battle.id,
-            winner="B",
-            model_a_id=model_a_id,
-            model_b_id=model_b_id,
-        ),
-    )
-
-    response = votes.reveal_vote(
-        battle_id=str(battle.id),
-        db=db,  # type: ignore[arg-type]
-        principal=_authenticated_principal(),
-    )
-
-    assert response.vote_id == str(existing_vote.id)
-    assert response.reveal is not None
-    assert existing_vote.revealed is True
-
-
 def test_submit_vote_reveals_existing_unrevealed_vote_and_updates_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -721,42 +701,3 @@ def test_submit_vote_reveals_existing_unrevealed_vote_and_updates_payload(
         "A": {"model_id": str(model_a_id), "display_name": "Alpha"},
         "B": {"model_id": str(model_b_id), "display_name": "Beta"},
     }
-
-
-def test_reveal_vote_is_idempotent_for_already_revealed_vote(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    battle, runs, model_a_id, model_b_id = _battle_and_runs()
-    db = _VoteDB(battle=battle, runs=runs)
-    existing_vote = Vote(
-        battle_id=battle.id,
-        winner="A",
-        voter_user_id=uuid.uuid4(),
-        revealed=True,
-    )
-    existing_vote.id = uuid.uuid4()
-
-    monkeypatch.setattr(
-        votes, "find_existing_battle_vote", lambda *_a, **_kw: existing_vote
-    )
-    monkeypatch.setattr(
-        votes,
-        "_build_vote_submit_response",
-        lambda *_a, **_kw: _vote_submit_response(
-            vote_id=existing_vote.id,
-            battle_id=battle.id,
-            winner="A",
-            model_a_id=model_a_id,
-            model_b_id=model_b_id,
-        ),
-    )
-
-    response = votes.reveal_vote(
-        battle_id=str(battle.id),
-        db=db,  # type: ignore[arg-type]
-        principal=_authenticated_principal(),
-    )
-
-    assert response.vote_id == str(existing_vote.id)
-    assert response.reveal is not None
-    assert existing_vote.revealed is True

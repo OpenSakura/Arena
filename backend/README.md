@@ -6,9 +6,10 @@ Notes:
 - This backend does not host model inference. It calls your existing LLM gateway
   / provider endpoints via HTTP.
 - Authentication is OIDC (Authentik). Public reads are limited to the
-  leaderboard and completed battle results. Battle creation, retrying battles,
-  vote submission, vote reveal compatibility calls, and non-completed battle
-  reads require a valid OIDC access token.
+  leaderboard. Battle detail reads, battle creation, retrying battles, battle
+  streaming, and vote submission require a valid OIDC access token. Successful
+  vote submissions reveal model identities inline; there is no separate reveal
+  compatibility call.
 - **Single-worker requirement**: battle execution relies on in-process singletons
   (orchestrator, leaderboard refresher) that are not safe across multiple OS
   processes. Always run with `WEB_CONCURRENCY=1` (the default). Starting with
