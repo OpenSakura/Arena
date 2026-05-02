@@ -116,6 +116,13 @@ class Settings(BaseSettings):
     leaderboard_refresh_daily_vote_cap: int = 0
     leaderboard_refresh_elo_k: float = 32.0
 
+    # Optional FastChat-inspired judge outlier filtering for rating inputs.
+    # Disabled by default to preserve existing leaderboard behavior.
+    leaderboard_outlier_filter_enabled: bool = False
+    leaderboard_outlier_min_votes: int = 5
+    leaderboard_outlier_max_votes: int = 100
+    leaderboard_outlier_alpha: float = 0.05
+
     # Confidence-enabled leaderboard requests are CPU-expensive (bootstrap).
     # Cache short-term and optionally throttle uncached recomputations.
     leaderboard_confidence_cache_ttl_seconds: int = 15

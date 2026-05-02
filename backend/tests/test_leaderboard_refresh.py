@@ -9,6 +9,7 @@ from app.services.leaderboard_refresh import (
     VoteSample,
     compute_elo_confidence_intervals,
     compute_elo_ratings,
+    filter_outlier_judge_votes,
     limit_votes_per_judge_per_day,
     load_vote_samples,
 )
@@ -50,6 +51,158 @@ def test_limit_votes_per_judge_per_day_caps_votes() -> None:
 
     kept = limit_votes_per_judge_per_day(votes, daily_vote_cap=2)
     assert len(kept) == 2
+
+
+def test_outlier_filter_setting_defaults_disabled() -> None:
+    from app.core.config import Settings
+
+    assert Settings.model_fields["leaderboard_outlier_filter_enabled"].default is False
+
+
+def test_filter_outlier_judge_votes_removes_extreme_judge() -> None:
+    model_a = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    model_b = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+    start = datetime(2026, 2, 18, 9, 0, tzinfo=timezone.utc)
+
+    mainstream_votes = [
+        _vote(
+            at=start + timedelta(minutes=idx),
+            winner="A",
+            model_a_id=model_a,
+            model_b_id=model_b,
+            judge_key=f"user:mainstream-{idx}",
+        )
+        for idx in range(20)
+    ]
+    outlier_votes = [
+        _vote(
+            at=start + timedelta(minutes=30 + idx),
+            winner="B",
+            model_a_id=model_a,
+            model_b_id=model_b,
+            judge_key="user:outlier",
+        )
+        for idx in range(5)
+    ]
+
+    kept = filter_outlier_judge_votes(
+        mainstream_votes + outlier_votes,
+        min_votes=5,
+        max_votes=100,
+        alpha=0.05,
+    )
+
+    assert len(kept) == len(mainstream_votes)
+    assert {vote.judge_key for vote in kept} == {
+        vote.judge_key for vote in mainstream_votes
+    }
+
+
+def test_filter_outlier_judge_votes_preserves_low_activity_judges() -> None:
+    model_a = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    model_b = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+    start = datetime(2026, 2, 18, 9, 0, tzinfo=timezone.utc)
+    votes = [
+        _vote(
+            at=start + timedelta(minutes=idx),
+            winner="B",
+            model_a_id=model_a,
+            model_b_id=model_b,
+            judge_key="user:low-activity",
+        )
+        for idx in range(4)
+    ]
+
+    kept = filter_outlier_judge_votes(votes, min_votes=5, max_votes=100, alpha=0.05)
+
+    assert kept is votes
+
+
+def test_refresher_load_vote_samples_skips_outlier_filter_when_disabled(
+    monkeypatch,
+) -> None:
+    vote_samples: list[VoteSample] = []
+    refresher = LeaderboardRefresher(
+        enabled=True,
+        interval_seconds=60,
+        daily_vote_cap=2,
+        elo_k=32.0,
+        outlier_filter_enabled=False,
+    )
+
+    monkeypatch.setattr(
+        leaderboard_refresh_module,
+        "load_vote_samples",
+        lambda _db, *, daily_vote_cap: vote_samples,
+    )
+    monkeypatch.setattr(
+        leaderboard_refresh_module,
+        "filter_outlier_judge_votes",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("filter should not run when disabled")
+        ),
+    )
+
+    loaded = refresher._load_vote_samples(db=object())  # type: ignore[arg-type]
+
+    assert loaded is vote_samples
+
+
+def test_refresher_load_vote_samples_applies_outlier_filter_when_enabled(
+    monkeypatch,
+) -> None:
+    raw_vote_samples: list[VoteSample] = []
+    filtered_vote_samples: list[VoteSample] = []
+    captured: dict[str, object] = {}
+    refresher = LeaderboardRefresher(
+        enabled=True,
+        interval_seconds=60,
+        daily_vote_cap=2,
+        elo_k=32.0,
+        outlier_filter_enabled=True,
+        outlier_filter_min_votes=7,
+        outlier_filter_max_votes=50,
+        outlier_filter_alpha=0.01,
+    )
+
+    def fake_load_vote_samples(_db: object, *, daily_vote_cap: int) -> list[VoteSample]:
+        captured["daily_vote_cap"] = daily_vote_cap
+        return raw_vote_samples
+
+    def fake_filter_outlier_judge_votes(
+        vote_samples: list[VoteSample],
+        *,
+        min_votes: int,
+        max_votes: int,
+        alpha: float,
+    ) -> list[VoteSample]:
+        captured["vote_samples"] = vote_samples
+        captured["min_votes"] = min_votes
+        captured["max_votes"] = max_votes
+        captured["alpha"] = alpha
+        return filtered_vote_samples
+
+    monkeypatch.setattr(
+        leaderboard_refresh_module,
+        "load_vote_samples",
+        fake_load_vote_samples,
+    )
+    monkeypatch.setattr(
+        leaderboard_refresh_module,
+        "filter_outlier_judge_votes",
+        fake_filter_outlier_judge_votes,
+    )
+
+    loaded = refresher._load_vote_samples(db=object())  # type: ignore[arg-type]
+
+    assert loaded is filtered_vote_samples
+    assert captured == {
+        "daily_vote_cap": 2,
+        "vote_samples": raw_vote_samples,
+        "min_votes": 7,
+        "max_votes": 50,
+        "alpha": 0.01,
+    }
 
 
 def test_compute_elo_ratings_counts_games_and_updates_ratings() -> None:

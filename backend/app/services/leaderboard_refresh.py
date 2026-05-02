@@ -5,6 +5,7 @@ Periodic leaderboard refresh service.
 Notes:
 - Refreshes persisted Elo snapshots in ``model_ratings`` from vote history.
 - Applies optional per-judge daily vote caps (FastChat-inspired anti-abuse signal).
+- Can optionally filter outlier judges before rating computation.
 """
 
 # NOTE: This module creates DB sessions via get_sessionmaker() directly
@@ -20,13 +21,14 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 import hashlib
 import logging
+import math
 import random
 import threading
 from typing import Any, TypeAlias, cast
 import uuid
 
-from sqlalchemy import and_, func, select, text
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy import and_, func, select, text  # pyright: ignore[reportMissingImports]
+from sqlalchemy.orm import Session, aliased  # pyright: ignore[reportMissingImports]
 
 from app.core.config import get_settings
 from app.db.session import get_sessionmaker
@@ -40,6 +42,7 @@ from app.utils.stats import percentile as _percentile
 logger = logging.getLogger(__name__)
 
 _EloEvent = tuple[uuid.UUID, uuid.UUID, str]
+_ModelPair: TypeAlias = tuple[uuid.UUID, uuid.UUID]
 
 
 @dataclass(slots=True)
@@ -50,6 +53,12 @@ class VoteSample:
     model_a_id: uuid.UUID
     model_b_id: uuid.UUID
     judge_key: str
+
+
+@dataclass(slots=True)
+class _OutlierPairStats:
+    wins: int = 0
+    losses: int = 0
 
 
 @dataclass(slots=True)
@@ -75,6 +84,10 @@ class LeaderboardRefresher:
         elo_k: float,
         elo_shuffle_rounds: int = 1,
         elo_shuffle_seed: int = 0,
+        outlier_filter_enabled: bool = False,
+        outlier_filter_min_votes: int = 5,
+        outlier_filter_max_votes: int = 100,
+        outlier_filter_alpha: float = 0.05,
     ) -> None:
         self._enabled = enabled
         self._interval_seconds = max(interval_seconds, 5)
@@ -82,6 +95,10 @@ class LeaderboardRefresher:
         self._elo_k = max(float(elo_k), 1.0)
         self._elo_shuffle_rounds = max(int(elo_shuffle_rounds), 0)
         self._elo_shuffle_seed = int(elo_shuffle_seed)
+        self._outlier_filter_enabled = bool(outlier_filter_enabled)
+        self._outlier_filter_min_votes = int(outlier_filter_min_votes)
+        self._outlier_filter_max_votes = int(outlier_filter_max_votes)
+        self._outlier_filter_alpha = float(outlier_filter_alpha)
 
         self._status_lock = threading.Lock()
         self._last_attempted_at: datetime | None = None
@@ -202,7 +219,15 @@ class LeaderboardRefresher:
         return list(db.execute(select(Model.id)).scalars().all())
 
     def _load_vote_samples(self, db: Session) -> list[VoteSample]:
-        return load_vote_samples(db, daily_vote_cap=self._daily_vote_cap)
+        vote_samples = load_vote_samples(db, daily_vote_cap=self._daily_vote_cap)
+        if not self._outlier_filter_enabled:
+            return vote_samples
+        return filter_outlier_judge_votes(
+            vote_samples,
+            min_votes=self._outlier_filter_min_votes,
+            max_votes=self._outlier_filter_max_votes,
+            alpha=self._outlier_filter_alpha,
+        )
 
     @staticmethod
     def _persist_ratings(
@@ -279,6 +304,182 @@ def limit_votes_per_judge_per_day(
         kept.append(vote)
 
     return kept
+
+
+def filter_outlier_judge_votes(
+    vote_samples: list[VoteSample],
+    *,
+    min_votes: int = 5,
+    max_votes: int = 100,
+    alpha: float = 0.05,
+) -> list[VoteSample]:
+    """Remove judges whose votes are extreme against pair aggregates.
+
+    The detector adapts FastChat's sequential evidence idea without pandas or
+    numpy: for each sufficiently active judge, compare their vote on each model
+    pair with the aggregate win/loss distribution for that pair. Judges whose
+    cumulative upper- or lower-tail evidence crosses ``1 / alpha`` are removed.
+    """
+
+    if not vote_samples:
+        return vote_samples
+
+    min_votes = max(int(min_votes), 1)
+    max_votes = max(int(max_votes), 1)
+    alpha = _normalize_outlier_alpha(alpha)
+
+    votes_by_judge: dict[str, list[VoteSample]] = {}
+    for vote_sample in vote_samples:
+        votes_by_judge.setdefault(vote_sample.judge_key, []).append(vote_sample)
+
+    candidate_judges = {
+        judge_key
+        for judge_key, judge_votes in votes_by_judge.items()
+        if len(judge_votes) >= min_votes
+    }
+    if not candidate_judges:
+        return vote_samples
+
+    pair_stats = _build_outlier_pair_stats(vote_samples)
+    outlier_judges = {
+        judge_key
+        for judge_key in candidate_judges
+        if _judge_is_outlier(
+            votes_by_judge[judge_key],
+            pair_stats=pair_stats,
+            max_votes=max_votes,
+            alpha=alpha,
+        )
+    }
+
+    if not outlier_judges:
+        return vote_samples
+    return [
+        vote_sample
+        for vote_sample in vote_samples
+        if vote_sample.judge_key not in outlier_judges
+    ]
+
+
+def _build_outlier_pair_stats(
+    vote_samples: list[VoteSample],
+) -> dict[_ModelPair, _OutlierPairStats]:
+    pair_stats: dict[_ModelPair, _OutlierPairStats] = {}
+    for vote_sample in vote_samples:
+        model_pair = _canonical_model_pair(vote_sample)
+        if model_pair is None:
+            continue
+        vote_score = _canonical_pair_vote_score(vote_sample, model_pair=model_pair)
+        if vote_score is None:
+            continue
+
+        stats = pair_stats.setdefault(model_pair, _OutlierPairStats())
+        if vote_score == 1.0:
+            stats.wins += 1
+        elif vote_score == 0.0:
+            stats.losses += 1
+
+    return pair_stats
+
+
+def _judge_is_outlier(
+    judge_votes: list[VoteSample],
+    *,
+    pair_stats: dict[_ModelPair, _OutlierPairStats],
+    max_votes: int,
+    alpha: float,
+) -> bool:
+    log_upper_evidence = 0.0
+    log_lower_evidence = 0.0
+    log_threshold = -math.log(alpha)
+    inspected_votes = 0
+
+    for vote_sample in judge_votes:
+        if inspected_votes >= max_votes:
+            break
+
+        model_pair = _canonical_model_pair(vote_sample)
+        if model_pair is None:
+            continue
+        stats = pair_stats.get(model_pair)
+        if stats is None:
+            continue
+        probabilities = _outlier_tail_probabilities(
+            vote_sample,
+            model_pair=model_pair,
+            stats=stats,
+        )
+        if probabilities is None:
+            continue
+
+        p_upper, p_lower = probabilities
+        log_upper_evidence += _outlier_log_evidence_factor(p_upper)
+        log_lower_evidence += _outlier_log_evidence_factor(p_lower)
+        inspected_votes += 1
+
+        if log_upper_evidence > log_threshold or log_lower_evidence > log_threshold:
+            return True
+
+    return False
+
+
+def _outlier_tail_probabilities(
+    vote_sample: VoteSample,
+    *,
+    model_pair: _ModelPair,
+    stats: _OutlierPairStats,
+) -> tuple[float, float] | None:
+    win_loss_total = stats.wins + stats.losses
+    if win_loss_total <= 0:
+        return None
+
+    vote_score = _canonical_pair_vote_score(vote_sample, model_pair=model_pair)
+    if vote_score is None:
+        return None
+
+    win_rate = stats.wins / win_loss_total
+    loss_rate = stats.losses / win_loss_total
+
+    if vote_score == 1.0:
+        return 1.0, win_rate
+    if vote_score == 0.0:
+        return loss_rate, 1.0
+    return loss_rate, win_rate
+
+
+def _canonical_model_pair(vote_sample: VoteSample) -> _ModelPair | None:
+    if vote_sample.model_a_id == vote_sample.model_b_id:
+        return None
+    model_ids = sorted((vote_sample.model_a_id, vote_sample.model_b_id), key=str)
+    return model_ids[0], model_ids[1]
+
+
+def _canonical_pair_vote_score(
+    vote_sample: VoteSample,
+    *,
+    model_pair: _ModelPair,
+) -> float | None:
+    if vote_sample.winner == "tie":
+        return 0.5
+    if vote_sample.winner == "A":
+        winning_model_id = vote_sample.model_a_id
+    elif vote_sample.winner == "B":
+        winning_model_id = vote_sample.model_b_id
+    else:
+        return None
+    return 1.0 if winning_model_id == model_pair[0] else 0.0
+
+
+def _outlier_log_evidence_factor(probability: float) -> float:
+    if probability <= 0.0:
+        return float("inf")
+    return -math.log(2.0 * probability)
+
+
+def _normalize_outlier_alpha(alpha: float) -> float:
+    if math.isnan(alpha) or math.isinf(alpha):
+        return 0.05
+    return min(max(float(alpha), 1e-12), 1.0)
 
 
 def load_vote_samples(db: Session, *, daily_vote_cap: int = 0) -> list[VoteSample]:
@@ -672,6 +873,10 @@ def get_leaderboard_refresher() -> LeaderboardRefresher:
         elo_k=settings.leaderboard_refresh_elo_k,
         elo_shuffle_rounds=settings.leaderboard_elo_shuffle_rounds,
         elo_shuffle_seed=settings.leaderboard_elo_shuffle_seed,
+        outlier_filter_enabled=settings.leaderboard_outlier_filter_enabled,
+        outlier_filter_min_votes=settings.leaderboard_outlier_min_votes,
+        outlier_filter_max_votes=settings.leaderboard_outlier_max_votes,
+        outlier_filter_alpha=settings.leaderboard_outlier_alpha,
     )
 
 

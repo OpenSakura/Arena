@@ -7,7 +7,7 @@ from fastapi import HTTPException  # pyright: ignore[reportMissingImports]
 import pytest
 
 from app.api.routes import leaderboard
-from app.schemas.leaderboard import LeaderboardResponse
+from app.schemas.leaderboard import LeaderboardResponse, LeaderboardRow
 from app.services.leaderboard_bt import PairwiseVote
 
 
@@ -48,6 +48,10 @@ def _settings(**overrides: object) -> SimpleNamespace:
     base = {
         "leaderboard_refresh_daily_vote_cap": 3,
         "leaderboard_refresh_elo_k": 32.0,
+        "leaderboard_outlier_filter_enabled": False,
+        "leaderboard_outlier_min_votes": 5,
+        "leaderboard_outlier_max_votes": 100,
+        "leaderboard_outlier_alpha": 0.05,
         "leaderboard_elo_shuffle_rounds": 5,
         "leaderboard_elo_shuffle_seed": 13,
         "leaderboard_elo_bootstrap_rounds": 50,
@@ -66,6 +70,58 @@ def _settings(**overrides: object) -> SimpleNamespace:
     }
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+def test_finalize_leaderboard_rows_assigns_rank_and_confidence_rank() -> None:
+    rows = [
+        LeaderboardRow(
+            model_id="model-a",
+            display_name="Model A",
+            rating=1100.0,
+            rating_lower=1080.0,
+            rating_upper=1120.0,
+            games_played=30,
+        ),
+        LeaderboardRow(
+            model_id="model-b",
+            display_name="Model B",
+            rating=1050.0,
+            rating_lower=1040.0,
+            rating_upper=1060.0,
+            games_played=30,
+        ),
+        LeaderboardRow(
+            model_id="model-c",
+            display_name="Model C",
+            rating=1000.0,
+            rating_lower=980.0,
+            rating_upper=1020.0,
+            games_played=30,
+        ),
+    ]
+
+    leaderboard._finalize_leaderboard_rows(rows, include_confidence=True)
+
+    assert [row.rank for row in rows] == [1, 2, 3]
+    assert [row.confidence_rank for row in rows] == [1, 2, 3]
+
+
+def test_finalize_leaderboard_rows_leaves_confidence_rank_none_without_ci() -> None:
+    rows = [
+        LeaderboardRow(
+            model_id="model-a",
+            display_name="Model A",
+            rating=1100.0,
+            rating_lower=1080.0,
+            rating_upper=1120.0,
+            games_played=30,
+        )
+    ]
+
+    leaderboard._finalize_leaderboard_rows(rows, include_confidence=False)
+
+    assert rows[0].rank == 1
+    assert rows[0].confidence_rank is None
 
 
 class _Result:
@@ -308,6 +364,8 @@ def test_get_leaderboard_elo_uses_persisted_ratings_without_confidence() -> None
     assert response.method == "elo"
     assert response.ci is False
     assert [row.display_name for row in response.models] == ["Model B", "Model A"]
+    assert [row.rank for row in response.models] == [1, 2]
+    assert [row.confidence_rank for row in response.models] == [None, None]
     assert response.models[0].rating == 1120.5
     assert response.models[0].games_played == 42
     assert response.models[1].rating == 998.0
@@ -409,6 +467,8 @@ def test_get_leaderboard_elo_with_confidence_applies_daily_cap(
     assert response.ci is True
     assert response.bootstrap_rounds == settings.leaderboard_elo_bootstrap_rounds
     assert [row.display_name for row in response.models] == ["Model B", "Model A"]
+    assert [row.rank for row in response.models] == [1, 2]
+    assert [row.confidence_rank for row in response.models] == [1, 2]
     assert response.models[0].rating_lower == 1180.0
     assert response.models[0].rating_upper == 1230.0
     assert response.models[1].rating_lower == 890.0
@@ -455,6 +515,8 @@ def test_get_leaderboard_elo_with_confidence_skips_daily_cap_when_disabled(
     )
 
     assert response.models[0].rating == 1001.0
+    assert response.models[0].rank == 1
+    assert response.models[0].confidence_rank == 1
     assert response.models[0].games_played == 1
     assert response.models[0].rating_lower == 999.0
     assert response.models[0].rating_upper == 1003.0
@@ -594,6 +656,8 @@ def test_get_leaderboard_bt_without_confidence_computes_from_votes_not_model_rat
     assert response.ci is False
     assert response.bootstrap_rounds is None
     assert [row.display_name for row in response.models] == ["Model A", "Model B"]
+    assert [row.rank for row in response.models] == [1, 2]
+    assert [row.confidence_rank for row in response.models] == [None, None]
     assert captured["model_ids"] == [model_a, model_b]
     assert captured["daily_vote_cap"] == settings.leaderboard_refresh_daily_vote_cap
     assert len(db.statements) == 1
@@ -609,6 +673,100 @@ def test_get_leaderboard_bt_without_confidence_computes_from_votes_not_model_rat
     assert captured["tolerance"] == settings.leaderboard_bt_tolerance
     assert captured["prior"] == settings.leaderboard_bt_prior
     assert db.execute_calls == 1
+
+
+def test_get_leaderboard_bt_applies_outlier_filter_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import datetime, timezone
+
+    from app.services.leaderboard_refresh import VoteSample
+
+    model_a = uuid.uuid4()
+    model_b = uuid.uuid4()
+    db = _QueueDB(rows_by_call=[[(model_a, "Model A"), (model_b, "Model B")]])
+    now = datetime.now(tz=timezone.utc)
+    raw_vote_samples = [
+        VoteSample(
+            vote_id=uuid.uuid4(),
+            created_at=now,
+            winner="A",
+            judge_key="judge:kept",
+            model_a_id=model_a,
+            model_b_id=model_b,
+        ),
+        VoteSample(
+            vote_id=uuid.uuid4(),
+            created_at=now,
+            winner="B",
+            judge_key="judge:filtered",
+            model_a_id=model_a,
+            model_b_id=model_b,
+        ),
+    ]
+    filtered_vote_samples = [raw_vote_samples[0]]
+    captured: dict[str, object] = {}
+
+    settings = _settings(
+        leaderboard_outlier_filter_enabled=True,
+        leaderboard_outlier_min_votes=2,
+        leaderboard_outlier_max_votes=20,
+        leaderboard_outlier_alpha=0.01,
+    )
+
+    monkeypatch.setattr(
+        leaderboard,
+        "load_vote_samples",
+        lambda _db, *, daily_vote_cap: raw_vote_samples,
+    )
+
+    def fake_filter_outlier_judge_votes(
+        vote_samples: list[VoteSample],
+        *,
+        min_votes: int,
+        max_votes: int,
+        alpha: float,
+    ) -> list[VoteSample]:
+        captured["filter_vote_samples"] = vote_samples
+        captured["filter_min_votes"] = min_votes
+        captured["filter_max_votes"] = max_votes
+        captured["filter_alpha"] = alpha
+        return filtered_vote_samples
+
+    def fake_compute_bt_ratings(
+        *,
+        model_ids: list[uuid.UUID],
+        votes: list[PairwiseVote],
+        **_kwargs: object,
+    ) -> dict[uuid.UUID, tuple[float, int]]:
+        captured["model_ids"] = model_ids
+        captured["votes"] = votes
+        return {
+            model_a: (1020.0, 1),
+            model_b: (980.0, 1),
+        }
+
+    monkeypatch.setattr(
+        leaderboard,
+        "filter_outlier_judge_votes",
+        fake_filter_outlier_judge_votes,
+    )
+    monkeypatch.setattr(leaderboard, "compute_bt_ratings", fake_compute_bt_ratings)
+
+    response = leaderboard._get_leaderboard_bt(
+        db=db,  # type: ignore[arg-type]
+        include_confidence=False,
+        settings=settings,  # type: ignore[arg-type]
+    )
+
+    assert response.models[0].display_name == "Model A"
+    assert captured["filter_vote_samples"] is raw_vote_samples
+    assert captured["filter_min_votes"] == settings.leaderboard_outlier_min_votes
+    assert captured["filter_max_votes"] == settings.leaderboard_outlier_max_votes
+    assert captured["filter_alpha"] == settings.leaderboard_outlier_alpha
+    assert captured["votes"] == [
+        PairwiseVote(model_a_id=model_a, model_b_id=model_b, winner="A")
+    ]
 
 
 def test_get_leaderboard_bt_confidence_populates_intervals(
@@ -703,6 +861,8 @@ def test_get_leaderboard_bt_confidence_populates_intervals(
     assert response.ci is True
     assert response.bootstrap_rounds == settings.leaderboard_bt_bootstrap_rounds
     assert response.models[0].display_name == "Model A"
+    assert [row.rank for row in response.models] == [1, 2]
+    assert [row.confidence_rank for row in response.models] == [1, 2]
     assert response.models[0].rating_lower == 1090.0
     assert response.models[0].rating_upper == 1130.0
     assert response.models[1].rating_lower == 950.0
@@ -842,6 +1002,38 @@ def test_bt_cache_key_includes_daily_vote_cap() -> None:
     assert key_cap10 != key_cap0, (
         "BT cache key must differ when daily_vote_cap differs (10 vs 0)"
     )
+
+
+def test_confidence_cache_key_includes_outlier_filter_settings() -> None:
+    elo_disabled = leaderboard._confidence_cache_key(
+        method="elo",
+        settings=_settings(leaderboard_outlier_filter_enabled=False),  # type: ignore[arg-type]
+    )
+    elo_enabled = leaderboard._confidence_cache_key(
+        method="elo",
+        settings=_settings(leaderboard_outlier_filter_enabled=True),  # type: ignore[arg-type]
+    )
+    elo_min_votes = leaderboard._confidence_cache_key(
+        method="elo",
+        settings=_settings(leaderboard_outlier_min_votes=10),  # type: ignore[arg-type]
+    )
+    bt_disabled = leaderboard._confidence_cache_key(
+        method="bt",
+        settings=_settings(leaderboard_outlier_filter_enabled=False),  # type: ignore[arg-type]
+    )
+    bt_max_votes = leaderboard._confidence_cache_key(
+        method="bt",
+        settings=_settings(leaderboard_outlier_max_votes=50),  # type: ignore[arg-type]
+    )
+    bt_alpha = leaderboard._confidence_cache_key(
+        method="bt",
+        settings=_settings(leaderboard_outlier_alpha=0.01),  # type: ignore[arg-type]
+    )
+
+    assert elo_disabled != elo_enabled
+    assert elo_disabled != elo_min_votes
+    assert bt_disabled != bt_max_votes
+    assert bt_disabled != bt_alpha
 
 
 def test_daily_vote_cap_cache_invalidation() -> None:

@@ -49,8 +49,10 @@ from app.services.leaderboard_bt import (
     compute_bt_ratings,
 )
 from app.services.leaderboard_refresh import (
+    VoteSample,
     compute_elo_confidence_intervals,
     compute_elo_ratings,
+    filter_outlier_judge_votes,
     load_vote_samples,
 )
 from app.utils.rate_limit import RollingWindowRateLimiter
@@ -90,6 +92,8 @@ def _confidence_cache_key(*, method: str, settings: Settings) -> str:
     becomes a dead entry that is cleaned up on the next eviction pass).
     """
 
+    outlier_fragment = _confidence_cache_outlier_fragment(settings)
+
     if method == "elo":
         return (
             "elo"
@@ -100,6 +104,7 @@ def _confidence_cache_key(*, method: str, settings: Settings) -> str:
             f":{settings.leaderboard_elo_bootstrap_rounds}"
             f":{settings.leaderboard_elo_bootstrap_seed}"
             f":{settings.leaderboard_elo_confidence_level}"
+            f":{outlier_fragment}"
         )
 
     return (
@@ -111,6 +116,16 @@ def _confidence_cache_key(*, method: str, settings: Settings) -> str:
         f":{settings.leaderboard_bt_bootstrap_rounds}"
         f":{settings.leaderboard_bt_bootstrap_seed}"
         f":{settings.leaderboard_bt_confidence_level}"
+        f":{outlier_fragment}"
+    )
+
+
+def _confidence_cache_outlier_fragment(settings: Settings) -> str:
+    return (
+        f"outlier:{int(settings.leaderboard_outlier_filter_enabled)}"
+        f":{settings.leaderboard_outlier_min_votes}"
+        f":{settings.leaderboard_outlier_max_votes}"
+        f":{settings.leaderboard_outlier_alpha}"
     )
 
 
@@ -141,7 +156,9 @@ def _load_cached_confidence_leaderboard(
     try:
         if isinstance(payload, bytes):
             payload = payload.decode("utf-8")
-        return LeaderboardResponse.model_validate_json(payload)
+        response = LeaderboardResponse.model_validate_json(payload)
+        _finalize_leaderboard_rows(response.models, include_confidence=response.ci)
+        return response
     except (UnicodeDecodeError, ValidationError, ValueError):
         return None
 
@@ -180,6 +197,54 @@ def _get_confidence_cache_client() -> object | None:
 def _confidence_cache_redis_key(*, cache_key: str, settings: Settings) -> str:
     prefix = settings.rate_limit_redis_key_prefix.strip().strip(":") or "arena"
     return f"{prefix}:{_CONFIDENCE_CACHE_NAMESPACE}:{cache_key}"
+
+
+def _finalize_leaderboard_rows(
+    rows: list[LeaderboardRow],
+    *,
+    include_confidence: bool,
+) -> None:
+    _assign_ordinal_ranks(rows)
+    for row in rows:
+        row.confidence_rank = None
+    if include_confidence:
+        _assign_confidence_ranks(rows)
+
+
+def _assign_ordinal_ranks(rows: list[LeaderboardRow]) -> None:
+    for index, row in enumerate(rows, start=1):
+        row.rank = index
+
+
+def _assign_confidence_ranks(rows: list[LeaderboardRow]) -> None:
+    for row in rows:
+        if row.rating_lower is None or row.rating_upper is None:
+            row.confidence_rank = None
+            continue
+
+        row.confidence_rank = 1 + sum(
+            1
+            for other_row in rows
+            if other_row is not row
+            and other_row.rating_lower is not None
+            and other_row.rating_upper is not None
+            and other_row.rating_lower > row.rating_upper
+        )
+
+
+def _filter_vote_samples_for_leaderboard(
+    vote_samples: list[VoteSample],
+    *,
+    settings: Settings,
+) -> list[VoteSample]:
+    if not settings.leaderboard_outlier_filter_enabled:
+        return vote_samples
+    return filter_outlier_judge_votes(
+        vote_samples,
+        min_votes=settings.leaderboard_outlier_min_votes,
+        max_votes=settings.leaderboard_outlier_max_votes,
+        alpha=settings.leaderboard_outlier_alpha,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +398,11 @@ def _get_leaderboard_elo(
             )
             .outerjoin(ModelRating, ModelRating.model_id == Model.id)
             .where(Model.visibility == "public", Model.enabled.is_(True))
-            .order_by(func.coalesce(ModelRating.rating, 1000.0).desc())
+            .order_by(
+                func.coalesce(ModelRating.rating, 1000.0).desc(),
+                Model.created_at.asc(),
+                Model.id.asc(),
+            )
         ).all()
 
         rows = [
@@ -345,11 +414,15 @@ def _get_leaderboard_elo(
             )
             for model_id, display_name, rating, games_played in ratings
         ]
+        _finalize_leaderboard_rows(rows, include_confidence=False)
         return LeaderboardResponse(models=rows, method="elo", ci=False)
 
-    vote_samples = load_vote_samples(
-        db,
-        daily_vote_cap=settings.leaderboard_refresh_daily_vote_cap,
+    vote_samples = _filter_vote_samples_for_leaderboard(
+        load_vote_samples(
+            db,
+            daily_vote_cap=settings.leaderboard_refresh_daily_vote_cap,
+        ),
+        settings=settings,
     )
 
     baseline = compute_elo_ratings(
@@ -386,6 +459,7 @@ def _get_leaderboard_elo(
         )
 
     rows.sort(key=lambda row: row.rating, reverse=True)
+    _finalize_leaderboard_rows(rows, include_confidence=True)
     return LeaderboardResponse(
         models=rows,
         method="elo",
@@ -419,9 +493,12 @@ def _get_leaderboard_bt(
 
     # BT is always computed on demand from vote samples. ``model_ratings``
     # persists Elo snapshots only and must not be treated as a BT fast path.
-    vote_samples = load_vote_samples(
-        db,
-        daily_vote_cap=settings.leaderboard_refresh_daily_vote_cap,
+    vote_samples = _filter_vote_samples_for_leaderboard(
+        load_vote_samples(
+            db,
+            daily_vote_cap=settings.leaderboard_refresh_daily_vote_cap,
+        ),
+        settings=settings,
     )
 
     votes = [
@@ -468,6 +545,7 @@ def _get_leaderboard_bt(
         )
         rows.append(row)
     rows.sort(key=lambda row: row.rating, reverse=True)
+    _finalize_leaderboard_rows(rows, include_confidence=include_confidence)
 
     return LeaderboardResponse(
         models=rows,
