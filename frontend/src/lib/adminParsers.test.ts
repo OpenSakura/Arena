@@ -14,10 +14,10 @@ describe("parseNumberOrNull", () => {
     expect(parseNumberOrNull("-3")).toBe(-3);
   });
 
-  it("returns null for non-finite values", () => {
-    expect(parseNumberOrNull("NaN")).toBeNull();
-    expect(parseNumberOrNull("Infinity")).toBeNull();
-    expect(parseNumberOrNull("not-a-number")).toBeNull();
+  it("throws an error for non-finite values", () => {
+    expect(() => parseNumberOrNull("NaN")).toThrow("Invalid number");
+    expect(() => parseNumberOrNull("Infinity")).toThrow("Invalid number");
+    expect(() => parseNumberOrNull("not-a-number")).toThrow("Invalid number");
   });
 });
 

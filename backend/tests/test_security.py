@@ -7,7 +7,9 @@ import uuid
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 import pytest
+from sqlalchemy import String, UniqueConstraint, create_engine, func, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 from app.core import security
 from app.models.user import User
@@ -143,6 +145,70 @@ def test_upsert_user_reraises_integrity_error_if_user_still_missing() -> None:
 
     assert db.flush_calls == 1
     assert db.rollback_calls == 0
+
+
+def test_upsert_user_duplicate_insert_race_keeps_outer_transaction_usable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    class _Base(DeclarativeBase):
+        pass
+
+    class SqlUser(_Base):
+        __tablename__ = "users"
+        __table_args__ = (
+            UniqueConstraint(
+                "oidc_issuer",
+                "oidc_sub",
+                name="uq_users_oidc_issuer_sub",
+            ),
+        )
+
+        id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+        oidc_issuer: Mapped[str] = mapped_column(String(512), nullable=False)
+        oidc_sub: Mapped[str] = mapped_column(String(512), nullable=False)
+
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'oidc.db'}")
+    _Base.metadata.create_all(engine)
+
+    issuer = "https://issuer.example"
+    sub = "sub-123"
+
+    class RaceSession(Session):
+        race_inserted = False
+
+        def execute(self, statement, *args, **kwargs):
+            result = super().execute(statement, *args, **kwargs)
+            if not self.race_inserted and "FROM users" in str(statement):
+                self.race_inserted = True
+                self.connection().execute(
+                    SqlUser.__table__.insert().values(
+                        oidc_issuer=issuer,
+                        oidc_sub=sub,
+                    )
+                )
+            return result
+
+    monkeypatch.setattr(security, "User", SqlUser)
+
+    with RaceSession(bind=engine, autoflush=False, expire_on_commit=False) as db:
+        db.add(SqlUser(oidc_issuer=issuer, oidc_sub="outer-marker"))
+
+        user = security._upsert_user(
+            db,  # type: ignore[arg-type]
+            issuer=issuer,
+            sub=sub,
+        )
+
+        assert user.oidc_issuer == issuer
+        assert user.oidc_sub == sub
+
+        db.add(SqlUser(oidc_issuer=issuer, oidc_sub="after-race"))
+        db.commit()
+
+    with Session(engine) as db:
+        assert db.scalar(select(func.count()).select_from(SqlUser)) == 3
+        assert db.scalar(select(func.count()).where(SqlUser.oidc_sub == sub)) == 1
 
 
 class _Verifier:

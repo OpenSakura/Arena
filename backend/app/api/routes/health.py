@@ -59,16 +59,17 @@ def _check_readiness() -> tuple[dict[str, bool], bool]:
 
     # Database connectivity check.
     try:
-        from app.db.session import _engine  # noqa: PLC0415
+        from sqlalchemy import text  # noqa: PLC0415
 
-        if _engine is not None:
-            from sqlalchemy import text  # noqa: PLC0415
+        from app.db.session import get_engine  # noqa: PLC0415
 
-            with _engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
-                conn.commit()
-            checks["database"] = True
+        engine = get_engine()
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+            conn.commit()
+        checks["database"] = True
     except Exception:  # noqa: BLE001
+        logger.warning("Health check: database unreachable", exc_info=True)
         checks["database"] = False
         healthy = False
 
@@ -113,9 +114,10 @@ def public_config(
     settings: Settings = Depends(get_settings),
 ) -> PublicConfigResponse:
     return PublicConfigResponse(
-        anon_battle_turnstile_required=bool(
-            (settings.turnstile_secret_key or "").strip()
-        ),
+        # Retained for older SPA clients, but Turnstile is currently a
+        # deprecated placeholder from the former anonymous battle flow and is
+        # not enforced for authenticated battle creation.
+        anon_battle_turnstile_required=False,
         oidc=PublicOidcConfig(
             issuer=settings.oidc_issuer,
             client_id=settings.frontend_oidc_client_id,

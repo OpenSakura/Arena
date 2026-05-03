@@ -96,8 +96,21 @@ def _seed_task_and_models(db_session, *, suffix: str) -> tuple[Task, Model, Mode
     return task, model_a, model_b
 
 
+def _authenticated_user_id(backend_client, token: str) -> str:
+    response = backend_client.get(
+        "/api/v1/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    user = response.json()["user"]
+    assert isinstance(user, dict)
+    user_id = user.get("id")
+    assert isinstance(user_id, str)
+    return user_id
+
+
 def _seed_completed_battle(
-    db_session, *, suffix: str
+    db_session, *, suffix: str, requester_user_id: str | None = None
 ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
     task = Task(
         source_lang="ja",
@@ -124,7 +137,14 @@ def _seed_completed_battle(
     db_session.add_all([task, model_a, model_b])
     db_session.flush()
 
-    battle = Battle(task_id=task.id, mode="jp2zh_ab", status="completed")
+    battle = Battle(
+        task_id=task.id,
+        mode="jp2zh_ab",
+        status="completed",
+        metadata_json={"requester_user_id": requester_user_id}
+        if requester_user_id
+        else None,
+    )
     db_session.add(battle)
     db_session.flush()
 
@@ -218,7 +238,7 @@ def backend_client_with_token_claim_as_admin(
 
 
 @pytest.fixture
-def backend_client_with_turnstile_enabled(
+def backend_client_with_deprecated_turnstile_config(
     configured_backend_env: None,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -310,8 +330,9 @@ def test_vote_pipeline_handles_idempotency_and_conflicts(
     authentik_token: str,
 ) -> None:
     suffix = uuid.uuid4().hex[:8]
+    requester_user_id = _authenticated_user_id(backend_client, authentik_token)
     battle_id, model_a_id, model_b_id = _seed_completed_battle(
-        db_session, suffix=suffix
+        db_session, suffix=suffix, requester_user_id=requester_user_id
     )
     auth_headers = {"Authorization": f"Bearer {authentik_token}"}
 
@@ -481,8 +502,8 @@ def test_battle_stream_vote_and_leaderboard_reflect_rating_updates(
     assert row_b["rating"] < before_b_rating
 
 
-def test_battle_create_requires_authentication_even_when_turnstile_is_enabled(
-    backend_client_with_turnstile_enabled,
+def test_battle_create_requires_authentication_with_deprecated_turnstile_config(
+    backend_client_with_deprecated_turnstile_config,
     db_session,
     monkeypatch: pytest.MonkeyPatch,
     authentik_token: str,
@@ -522,7 +543,7 @@ def test_battle_create_requires_authentication_even_when_turnstile_is_enabled(
     )
 
     # 1. Unauthenticated battle creation is rejected before Turnstile runs.
-    missing_token = backend_client_with_turnstile_enabled.post(
+    missing_token = backend_client_with_deprecated_turnstile_config.post(
         "/api/v1/battles",
         headers={"User-Agent": "arena-e2e-turnstile-missing"},
         json={},
@@ -532,7 +553,7 @@ def test_battle_create_requires_authentication_even_when_turnstile_is_enabled(
     assert verification_calls == []
 
     # 2. Turnstile still does not rescue unauthenticated callers.
-    valid_token = backend_client_with_turnstile_enabled.post(
+    valid_token = backend_client_with_deprecated_turnstile_config.post(
         "/api/v1/battles",
         headers={"User-Agent": "arena-e2e-turnstile-valid"},
         json={"turnstile_token": "valid-turnstile-token"},
@@ -549,7 +570,7 @@ def test_battle_create_requires_authentication_even_when_turnstile_is_enabled(
 
     monkeypatch.setattr(battles_route, "_get_turnstile_http_client", fail_if_called)
 
-    authed_battle = backend_client_with_turnstile_enabled.post(
+    authed_battle = backend_client_with_deprecated_turnstile_config.post(
         "/api/v1/battles",
         headers={"Authorization": f"Bearer {authentik_token}"},
         json={},

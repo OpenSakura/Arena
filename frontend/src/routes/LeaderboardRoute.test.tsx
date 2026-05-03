@@ -1,8 +1,17 @@
 // @vitest-environment jsdom
 
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const useArenaAuthMock = vi.fn();
+vi.mock("@/hooks/useArenaAuth", () => {
+  return {
+    useArenaAuth: () => useArenaAuthMock(),
+  };
+});
+
 
 import LeaderboardRoute from "./LeaderboardRoute";
 
@@ -13,6 +22,7 @@ vi.mock("@/lib/api", () => ({
 }));
 
 beforeEach(() => {
+  useArenaAuthMock.mockReturnValue({ authStatus: "unauthenticated", signinRedirect: vi.fn() });
   apiGetMock.mockReset();
 });
 
@@ -32,6 +42,7 @@ describe("LeaderboardRoute", () => {
 
     expect(apiGetMock).toHaveBeenCalledWith("/leaderboard?method=elo");
     expect(screen.getByText("ELO")).toBeDefined();
+    expect(screen.queryByText("No ratings yet")).toBeNull();
 
     // Resolve API
     resolveApi!({
@@ -50,6 +61,27 @@ describe("LeaderboardRoute", () => {
       "/leaderboard?method=elo&include_confidence=true"
     );
     expect(screen.queryByRole("columnheader", { name: "95% CI" })).toBeNull();
+  });
+
+  it("sends anonymous empty-state battle CTA through login", async () => {
+    const signinRedirect = vi.fn();
+    useArenaAuthMock.mockReturnValue({ authStatus: "unauthenticated", signinRedirect });
+    apiGetMock.mockResolvedValue({
+      method: "elo",
+      ci: false,
+      bootstrap_rounds: null,
+      models: [],
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/leaderboard"]}>
+        <LeaderboardRoute />
+      </MemoryRouter>
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: /Start a battle/i }));
+
+    expect(signinRedirect).toHaveBeenCalledWith({ state: { returnTo: "/battle/new" } });
   });
 
   it("renders BT rows with confidence intervals when requested", async () => {
@@ -188,6 +220,7 @@ describe("LeaderboardRoute", () => {
 
     expect(await screen.findByText("backend unavailable")).toBeDefined();
     expect(screen.queryByText("No ratings yet")).toBeNull();
+    expect(screen.queryByRole("table")).toBeNull();
   });
 
   it("requests BT without confidence using correct endpoint without model_ratings", async () => {

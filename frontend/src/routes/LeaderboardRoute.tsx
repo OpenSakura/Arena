@@ -8,6 +8,7 @@ import { useState, useEffect } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import { apiGet } from "@/lib/api";
+import { useArenaAuth } from "@/hooks/useArenaAuth";
 import {
   buildLeaderboardQuery,
   hasConfidenceIntervals,
@@ -107,6 +108,8 @@ function podiumClass(index: number) {
 }
 
 export default function LeaderboardRoute() {
+  const auth = useArenaAuth();
+
   const [searchParams] = useSearchParams();
   
   const searchParamsObj: Record<string, string> = {};
@@ -115,17 +118,18 @@ export default function LeaderboardRoute() {
   });
 
   const request = buildLeaderboardQuery(searchParamsObj);
-  
   const [data, setData] = useState<{
     models: LeaderboardRow[];
     selectedMethod: "elo" | "bt";
     includeConfidence: boolean;
     bootstrapRounds: number | null;
+    isLoading: boolean;
   }>({
     models: [],
     selectedMethod: request.selectedMethod,
     includeConfidence: request.includeConfidence,
     bootstrapRounds: null,
+    isLoading: true,
   });
   
   const [errorText, setErrorText] = useState<string | null>(null);
@@ -136,8 +140,11 @@ export default function LeaderboardRoute() {
     // We optimistically set method and CI from the URL params while loading
     setData(prev => ({
       ...prev,
+      models: [],
       selectedMethod: request.selectedMethod,
       includeConfidence: request.includeConfidence,
+      bootstrapRounds: null,
+      isLoading: true,
     }));
     setErrorText(null);
 
@@ -150,11 +157,18 @@ export default function LeaderboardRoute() {
             selectedMethod: parsed.method,
             includeConfidence: parsed.ci,
             bootstrapRounds: parsed.bootstrap_rounds,
+            isLoading: false,
           });
         }
       })
       .catch((err) => {
         if (!ignore) {
+          setData(prev => ({
+            ...prev,
+            models: [],
+            bootstrapRounds: null,
+            isLoading: false,
+          }));
           setErrorText(err instanceof Error ? err.message : "Failed to load leaderboard");
         }
       });
@@ -164,7 +178,7 @@ export default function LeaderboardRoute() {
     };
   }, [request.query, request.selectedMethod, request.includeConfidence]);
 
-  const { models, selectedMethod, includeConfidence, bootstrapRounds } = data;
+  const { models, selectedMethod, includeConfidence, bootstrapRounds, isLoading } = data;
 
   const hasConfidence = hasConfidenceIntervals(models);
   const confidenceToggleHref = includeConfidence
@@ -241,7 +255,7 @@ export default function LeaderboardRoute() {
         </div>
       ) : null}
 
-      {!errorText && models.length === 0 ? (
+      {!isLoading && !errorText && models.length === 0 ? (
         <div className="empty-state animate-fade-in-up">
           <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl border border-primary/15 bg-primary/[0.06]">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6 text-primary/50" aria-hidden>
@@ -254,17 +268,32 @@ export default function LeaderboardRoute() {
           <p className="text-muted-foreground text-sm max-w-xs">
             Start a battle and cast some votes to see models ranked here.
           </p>
-          <Link
-            to="/battle/new"
-            className="mt-5 inline-block rounded-full border border-primary/20 bg-primary/10 px-6 py-2 text-sm font-semibold text-primary transition-all hover:bg-primary/20 hover:scale-[1.02]"
-          >
-            Start a battle
-          </Link>
+          {auth.authStatus === "authenticated" ? (
+            <Link
+              to="/battle/new"
+              className="mt-5 inline-block rounded-full border border-primary/20 bg-primary/10 px-6 py-2 text-sm font-semibold text-primary transition-all hover:bg-primary/20 hover:scale-[1.02]"
+            >
+              Start a battle
+            </Link>
+          ) : (
+            <button
+              onClick={() => void auth.signinRedirect({ state: { returnTo: "/battle/new" } })}
+              className="mt-5 inline-block rounded-full border border-primary/20 bg-primary/10 px-6 py-2 text-sm font-semibold text-primary transition-all hover:bg-primary/20 hover:scale-[1.02]"
+            >
+              Start a battle
+            </button>
+          )}
+        </div>
+      ) : null}
+
+      {isLoading ? (
+        <div className="glass-panel p-12 flex justify-center items-center">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
         </div>
       ) : null}
 
       {/* Table */}
-      {models.length > 0 ? (
+      {!isLoading && models.length > 0 ? (
         <>
           {/* Podium cards for top 3 */}
           {models.length >= 2 && (

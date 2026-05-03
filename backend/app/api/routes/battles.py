@@ -343,10 +343,10 @@ def _select_task(*, db: Session, payload: BattleCreate) -> Task:
             raise HTTPException(status_code=404, detail="Task not found")
         return task
 
-    # Single-query weighted random selection: tasks with fewer battles are
-    # sampled more often.  `random() / (1 + battle_count)` gives higher
-    # scores to under-represented tasks, achieving the same inverse-frequency
-    # weighting as the old two-query approach without loading IDs into memory.
+    # Single-query exponential race weighted sampling. Each task's weight is
+    # inverse battle count: weight = 1 / (1 + battle_count). Choosing the
+    # lowest -ln(U) / weight score makes selection probability proportional to
+    # that weight, favoring under-represented tasks without loading IDs.
     battle_count = (
         select(Battle.task_id, func.count(Battle.id).label("cnt"))
         .group_by(Battle.task_id)
@@ -358,9 +358,9 @@ def _select_task(*, db: Session, payload: BattleCreate) -> Task:
         task_set_uuid = parse_uuid_or_422(payload.task_set_id, "task_set_id")
         stmt = stmt.where(Task.task_set_id == task_set_uuid)
 
-    stmt = stmt.order_by(
-        func.random() / (1 + func.coalesce(battle_count.c.cnt, 0))
-    ).limit(1)
+    battle_count_penalty = 1 + func.coalesce(battle_count.c.cnt, 0)
+    random_unit = func.greatest(func.random(), 1e-12)
+    stmt = stmt.order_by((-func.ln(random_unit)) * battle_count_penalty).limit(1)
 
     task = db.execute(stmt).scalar_one_or_none()
     if task is None:

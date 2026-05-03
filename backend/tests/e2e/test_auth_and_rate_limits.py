@@ -343,8 +343,25 @@ def test_authenticated_vote_rate_limit_is_enforced_with_redis(
     db_session.add_all([task_a, task_b, model_a, model_b])
     db_session.flush()
 
-    battle_a = Battle(task_id=task_a.id, mode="jp2zh_ab", status="completed")
-    battle_b = Battle(task_id=task_b.id, mode="jp2zh_ab", status="completed")
+    me_response = backend_client.get(
+        "/api/v1/me",
+        headers={"Authorization": f"Bearer {authentik_token}"},
+    )
+    assert me_response.status_code == 200
+    requester_user_id = me_response.json()["user"]["id"]
+
+    battle_a = Battle(
+        task_id=task_a.id,
+        mode="jp2zh_ab",
+        status="completed",
+        metadata_json={"requester_user_id": requester_user_id},
+    )
+    battle_b = Battle(
+        task_id=task_b.id,
+        mode="jp2zh_ab",
+        status="completed",
+        metadata_json={"requester_user_id": requester_user_id},
+    )
     db_session.add_all([battle_a, battle_b])
     db_session.flush()
 

@@ -55,10 +55,10 @@ Notes:
 - Set `RATE_LIMIT_REDIS_URL=redis://localhost:6379/0` to enable Redis-backed
   throttling and shared caching. If unset, rate limits and the shared
   confidence-interval cache are disabled.
-- Cloudflare Turnstile can optionally be enabled as an extra anti-abuse layer
-  by setting `TURNSTILE_SECRET_KEY` in the backend. Battle creation requires
-  authentication regardless of Turnstile configuration. Leave it empty to
-  skip Turnstile locally.
+- Cloudflare Turnstile settings are currently a deprecated placeholder from the
+  original anonymous battle-creation flow. Battle creation now requires
+  authentication, and Turnstile verification is not enforced locally even if
+  `TURNSTILE_SECRET_KEY` is set. Leave it empty unless re-enabling that flow.
 - Tune `BATTLE_RUNNING_WAIT_TIMEOUT_SECONDS` to control how long an active
   battle execution task may run before being force-failed (default: 600s).
 - Set `ACCESS_LOG_ENABLED=true` to emit per-request latency/access logs.

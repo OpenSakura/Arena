@@ -7,6 +7,7 @@
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
+import { useArenaAuth } from "@/hooks/useArenaAuth";
 
 /* ---------- Inline SVG icons ---------- */
 
@@ -162,6 +163,8 @@ const STEPS = [
 ] as const;
 
 export default function HomePage() {
+  const auth = useArenaAuth();
+
   return (
     <div className="relative flex flex-col items-center p-6">
       {/* ======= Hero Section ======= */}
@@ -246,11 +249,17 @@ export default function HomePage() {
             <div
               className="flex flex-wrap items-center justify-center gap-4"
             >
-              <Link to="/battle/new">
-                <Button size="lg" className="rounded-full px-8 text-base shadow-lg shadow-primary/20 hover:shadow-primary/30 hover:scale-[1.02] transition-all duration-200 animate-border-glow">
+              {auth.authStatus === "authenticated" ? (
+                <Link to="/battle/new">
+                  <Button size="lg" className="rounded-full px-8 text-base shadow-lg shadow-primary/20 hover:shadow-primary/30 hover:scale-[1.02] transition-all duration-200 animate-border-glow">
+                    Start a Battle
+                  </Button>
+                </Link>
+              ) : (
+                <Button size="lg" className="rounded-full px-8 text-base shadow-lg shadow-primary/20 hover:shadow-primary/30 hover:scale-[1.02] transition-all duration-200 animate-border-glow" onClick={() => void auth.signinRedirect({ state: { returnTo: "/battle/new" } })}>
                   Start a Battle
                 </Button>
-              </Link>
+              )}
               <Link to="/leaderboard">
                 <Button variant="outline" size="lg" className="rounded-full px-8 text-base bg-background/50 hover:bg-background/80 border-border/50 hover:scale-[1.02] transition-all duration-200">
                   View Leaderboard

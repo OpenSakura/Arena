@@ -9,15 +9,26 @@ from fastapi import HTTPException, Response
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.api.routes import votes
+from app.api.routes import battles, votes
 from app.core.security import Principal
 from app.models.vote import Vote
 from app.schemas.votes import VoteCreate, VoteSubmitResponse
 from app.utils.requester_identity import RequesterIdentity
 
 
-def _authenticated_principal() -> Principal:
-    return Principal(is_authenticated=True, user_id=str(uuid.uuid4()))
+_CREATOR_USER_ID = uuid.uuid4()
+
+
+def _authenticated_principal(
+    *,
+    user_id: str | None = None,
+    claims: dict[str, object] | None = None,
+) -> Principal:
+    return Principal(
+        is_authenticated=True,
+        user_id=user_id or str(_CREATOR_USER_ID),
+        claims=claims or {},
+    )
 
 
 def _settings(**overrides: object) -> SimpleNamespace:
@@ -103,12 +114,19 @@ class _VoteDB:
 
 
 def _battle_and_runs(
-    *, status: str = "completed", side_b_output: str | None = "Translation B"
+    *,
+    status: str = "completed",
+    side_b_output: str | None = "Translation B",
+    requester_user_id: str | None = None,
 ) -> tuple[SimpleNamespace, list[SimpleNamespace], uuid.UUID, uuid.UUID]:
     battle_id = uuid.uuid4()
     model_a_id = uuid.uuid4()
     model_b_id = uuid.uuid4()
-    battle = SimpleNamespace(id=battle_id, status=status)
+    battle = SimpleNamespace(
+        id=battle_id,
+        status=status,
+        metadata_json={"requester_user_id": requester_user_id or str(_CREATOR_USER_ID)},
+    )
     runs = [
         SimpleNamespace(side="A", model_id=model_a_id, output_text="Translation A"),
         SimpleNamespace(side="B", model_id=model_b_id, output_text=side_b_output),
@@ -434,7 +452,11 @@ def test_submit_vote_rejects_vote_when_selected_side_has_no_output(
     model_a_id = uuid.uuid4()
     model_b_id = uuid.uuid4()
     db = _VoteDB(
-        battle=SimpleNamespace(id=battle_id, status="completed"),
+        battle=SimpleNamespace(
+            id=battle_id,
+            status="completed",
+            metadata_json={"requester_user_id": str(_CREATOR_USER_ID)},
+        ),
         runs=[
             SimpleNamespace(side="A", model_id=model_a_id, output_text="A"),
             SimpleNamespace(side="B", model_id=model_b_id, output_text=None),
@@ -453,6 +475,87 @@ def test_submit_vote_rejects_vote_when_selected_side_has_no_output(
         )
 
     assert exc_info.value.status_code in (409, 422)
+
+
+def test_submit_vote_rejects_authenticated_non_creator_before_reveal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    creator_id = str(uuid.uuid4())
+    non_creator_id = str(uuid.uuid4())
+    battle, runs, _, _ = _battle_and_runs(requester_user_id=creator_id)
+    db = _VoteDB(battle=battle, runs=runs)
+
+    monkeypatch.setattr(
+        votes,
+        "find_existing_battle_vote",
+        lambda *_a, **_kw: pytest.fail("vote lookup must not run before auth"),
+    )
+    monkeypatch.setattr(
+        votes,
+        "_enforce_auth_vote_rate_limit",
+        lambda **_kw: pytest.fail("rate limit must not run before auth"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        votes.submit_vote(
+            battle_id=str(battle.id),
+            payload=VoteCreate(winner="A"),
+            response=Response(),
+            db=db,  # type: ignore[arg-type]
+            principal=_authenticated_principal(user_id=non_creator_id),
+            settings=_settings(),  # type: ignore[arg-type]
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Only the battle creator or an admin may vote on this battle"
+    assert db.added == []
+    assert db.commit_calls == 0
+
+
+def test_submit_vote_allows_admin_non_creator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    battle, runs, model_a_id, model_b_id = _battle_and_runs(
+        requester_user_id=str(uuid.uuid4())
+    )
+    db = _VoteDB(
+        battle=battle,
+        runs=runs,
+        model_lookup={
+            model_a_id: SimpleNamespace(id=model_a_id, display_name="Model A"),
+            model_b_id: SimpleNamespace(id=model_b_id, display_name="Model B"),
+        },
+    )
+    admin_group_name = "arena-admins"
+    monkeypatch.setattr(votes, "find_existing_battle_vote", lambda *_a, **_kw: None)
+    monkeypatch.setattr(votes, "_enforce_auth_vote_rate_limit", lambda **_kw: None)
+    monkeypatch.setattr(
+        battles,
+        "get_settings",
+        lambda: SimpleNamespace(
+            oidc_admin_group_claim="groups",
+            oidc_admin_group_name=admin_group_name,
+        ),
+    )
+
+    response = votes.submit_vote(
+        battle_id=str(battle.id),
+        payload=VoteCreate(winner="B"),
+        response=Response(),
+        db=db,  # type: ignore[arg-type]
+        principal=_authenticated_principal(
+            user_id=str(uuid.uuid4()),
+            claims={"groups": [admin_group_name]},
+        ),
+        settings=_settings(),  # type: ignore[arg-type]
+    )
+
+    assert response.winner == "B"
+    assert response.reveal == {
+        "A": {"model_id": str(model_a_id), "display_name": "Model A"},
+        "B": {"model_id": str(model_b_id), "display_name": "Model B"},
+    }
+    assert db.commit_calls == 1
 
 
 def test_submit_vote_returns_existing_vote_response(

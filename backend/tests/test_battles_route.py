@@ -150,17 +150,18 @@ def test_select_task_raises_when_no_candidates_available() -> None:
 
 
 def test_select_task_returns_result_from_weighted_query() -> None:
-    """The current implementation uses a single SQL query with
-    func.random() / (1 + battle_count) for weighted task selection.
-    Test that the result is returned when available."""
     task = _task()
     db = _QueueDB([[task]])
 
     selected = battles._select_task(db=db, payload=BattleCreate())  # type: ignore[arg-type]
 
     assert selected is task
-    # One query should have been issued.
     assert len(db.statements) == 1
+    sql = str(db.statements[0]).lower()
+    assert "ln(" in sql
+    assert "greatest(random()" in sql
+    assert "random() /" not in sql
+    assert "coalesce" in sql
 
 
 def test_select_task_applies_task_set_filter() -> None:

@@ -431,7 +431,7 @@ export default function AdminTasksRoute() {
 
       dispatch({ type: "LOAD_TASK_SETS_START" });
       try {
-        const res = parseTaskSetsResponse(await apiGet("/admin/task-sets", { headers }));
+        const res = parseTaskSetsResponse(await apiGet("/admin/task-sets?limit=1000", { headers }));
         if (cancelled) return;
         dispatch({ type: "LOAD_TASK_SETS_SUCCESS", taskSets: res.task_sets });
       } catch (err) {
@@ -463,7 +463,7 @@ export default function AdminTasksRoute() {
         const qs = state.selectedTaskSetId
           ? `?task_set_id=${encodeURIComponent(state.selectedTaskSetId)}`
           : "";
-        const res = parseTasksResponse(await apiGet(`/admin/tasks${qs}`, { headers }));
+        const res = parseTasksResponse(await apiGet(`/admin/tasks${qs ? qs + "&limit=1000" : "?limit=1000"}`, { headers }));
         if (cancelled) return;
         dispatch({
           type: "LOAD_TASKS_SUCCESS",
@@ -649,8 +649,8 @@ export default function AdminTasksRoute() {
         await apiGet(
           `/admin/tasks${
             state.selectedTaskSetId
-              ? `?task_set_id=${encodeURIComponent(state.selectedTaskSetId)}`
-              : ""
+              ? `?task_set_id=${encodeURIComponent(state.selectedTaskSetId)}&limit=1000`
+              : "?limit=1000"
           }`,
           { headers },
         ),

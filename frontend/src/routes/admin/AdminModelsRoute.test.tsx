@@ -99,7 +99,7 @@ describe("AdminModelsRoute", () => {
 
     await screen.findByText("Model One");
 
-    expect(apiGetMock).toHaveBeenCalledWith("/admin/models", {
+    expect(apiGetMock).toHaveBeenCalledWith("/admin/models?limit=1000", {
       headers: { Authorization: "Bearer admin-token" },
     });
 
@@ -167,8 +167,8 @@ describe("AdminModelsRoute", () => {
     apiGetMock.mockResolvedValue({ models: [modelRecord()] });
     apiPutMock.mockResolvedValue(
       modelRecord({
-        display_name: "Model One Renamed",
-        frequency_penalty: 0.25,
+        display_name: "Model One Server Normalized",
+        frequency_penalty: 0.5,
       }),
     );
 
@@ -214,7 +214,11 @@ describe("AdminModelsRoute", () => {
       );
     });
 
-    await screen.findByText("Model One Renamed");
+    await screen.findByText("Model One Server Normalized");
+    expect((displayNameInput as HTMLInputElement).value).toBe(
+      "Model One Server Normalized",
+    );
+    expect((frequencyPenaltyInput as HTMLInputElement).value).toBe("0.5");
   });
 
   it("deletes a model when confirmed", async () => {

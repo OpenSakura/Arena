@@ -187,9 +187,7 @@ function reducer(state: State, action: Action): State {
         ...state,
         savingEdit: false,
         models: state.models.map((model) => (model.id === action.updated.id ? action.updated : model)),
-        edit: state.edit
-          ? { ...state.edit, apiKeyText: "", clearApiKey: false }
-          : state.edit,
+        edit: state.edit ? toEditState(action.updated) : state.edit,
       };
     case "SAVE_EDIT_ERROR":
       return { ...state, savingEdit: false, errorText: action.error };
@@ -314,7 +312,7 @@ export default function AdminModelsRoute() {
 
       dispatch({ type: "LOAD_START" });
       try {
-        const res = parseListModelsResponse(await apiGet("/admin/models", { headers }));
+        const res = parseListModelsResponse(await apiGet("/admin/models?limit=1000", { headers }));
         if (cancelled) return;
         dispatch({ type: "LOAD_SUCCESS", models: res.models });
       } catch (err) {

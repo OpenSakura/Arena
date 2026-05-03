@@ -30,9 +30,9 @@ Notes:
   JSON via `LOG_JSON=true` for easier ingestion.
 - Redis-backed throttling and shared caching use `RATE_LIMIT_REDIS_URL`; leaving
   it unset disables rate limits and the shared confidence-interval result cache.
-- Cloudflare Turnstile (`TURNSTILE_SECRET_KEY`) can still be enabled as an
-  extra anti-abuse layer, but it is no longer the primary gate for battle
-  creation. All battle creation now requires authentication.
+- Cloudflare Turnstile settings are retained as a deprecated placeholder from
+  the original anonymous battle-creation design. Battle creation now requires
+  authentication, and Turnstile verification is not currently enforced.
 
 Local quickstart (dev):
 1. Start local infra (Postgres + Redis): `docker compose -f ../infra/compose.yaml up -d`

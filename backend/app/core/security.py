@@ -54,9 +54,6 @@ def _upsert_user(db: Session, *, issuer: str, sub: str) -> User:
     if user is not None:
         return user
 
-    user = User(oidc_issuer=issuer, oidc_sub=sub)
-    db.add(user)
-
     try:
         # Use flush (not commit) to keep the user upsert inside the
         # per-request transaction boundary. Committing here would break
@@ -67,6 +64,8 @@ def _upsert_user(db: Session, *, issuer: str, sub: str) -> User:
         # rolls back this insert attempt, preserving any prior work in
         # the same request transaction.
         with db.begin_nested():
+            user = User(oidc_issuer=issuer, oidc_sub=sub)
+            db.add(user)
             db.flush()
     except IntegrityError:
         user = db.execute(stmt).scalar_one_or_none()

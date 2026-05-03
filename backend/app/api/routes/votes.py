@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.routes.battles import _require_battle_creator_or_admin
 from app.core.config import Settings, get_settings
 from app.core.security import Principal, get_principal_required
 from app.db.session import get_db
@@ -51,6 +52,13 @@ def submit_vote(
     battle = db.get(Battle, battle_uuid)
     if battle is None:
         raise HTTPException(status_code=404, detail="Battle not found")
+
+    _require_battle_creator_or_admin(
+        battle=battle,
+        principal=principal,
+        forbidden_detail="Only the battle creator or an admin may vote on this battle",
+    )
+
     if battle.status != "completed":
         raise HTTPException(status_code=409, detail="Battle is not ready for voting")
 

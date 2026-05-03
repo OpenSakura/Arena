@@ -63,6 +63,8 @@ def _emit_startup_warnings(settings: Settings) -> None:
 def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(settings)
+    env = settings.app_env.lower()
+    is_production = env not in _NON_PRODUCTION_ENVS
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -118,13 +120,16 @@ def create_app() -> FastAPI:
             with suppress(Exception):
                 await asyncio.to_thread(release_battle_process_lock)
 
-    app = FastAPI(title=settings.app_name, lifespan=lifespan)
-
-    if settings.app_env.lower() == "production":
-        app.openapi_url = None
+    app = FastAPI(
+        title=settings.app_name,
+        lifespan=lifespan,
+        openapi_url=None if is_production else "/openapi.json",
+        docs_url=None if is_production else "/docs",
+        redoc_url=None if is_production else "/redoc",
+    )
 
     _REQUEST_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
-    _is_production = settings.app_env.lower() == "production"
+    _is_production = is_production
 
     def _apply_security_headers(response_headers, *, request_id: str) -> None:
         """Apply security headers to a response (shared between success and

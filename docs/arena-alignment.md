@@ -161,8 +161,10 @@ Notes:
 ### Rate Limits / Anti-abuse
 
 - Authenticated users: no rate limit by default (acknowledged cost/abuse risk).
-- Cloudflare Turnstile can be enabled as an optional extra verification layer
-  on top of authentication.
+- Cloudflare Turnstile remains as a deprecated placeholder from the original
+  anonymous battle-creation design. It is not currently enforced now that
+  battle creation requires authentication, but can be revisited for a future
+  anonymous or extra-challenge flow.
 
 Notes / best assumptions:
 
@@ -306,7 +308,9 @@ Operational:
 
 ## Open Items / TBD
 
-- Weighted sampling algorithm details (pending FastChat reference).
+- Weighted model sampling follows FastChat-style probability-proportional-to-weight
+  selection; task sampling uses inverse battle-count weights to favor
+  under-represented tasks.
 - Exact upstream gateway streaming format and how usage stats are returned.
 - Admin UX: whether to expose `base_url` publicly (likely no, to avoid leaking internals).
 - Authentik claims mapping details for admin gating (which claim contains groups/roles).

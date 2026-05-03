@@ -94,11 +94,11 @@ describe("AdminTasksRoute", () => {
     authenticatedSession();
 
     apiGetMock.mockImplementation((path: string) => {
-      if (path === "/admin/task-sets") {
+      if (path.startsWith("/admin/task-sets")) {
         return Promise.resolve({ task_sets: [taskSetRecord()] });
       }
 
-      if (path === "/admin/tasks") {
+      if (path.startsWith("/admin/tasks")) {
         return Promise.resolve({ tasks: [taskRecord({ source_text: "テストです" })] });
       }
 
@@ -110,10 +110,10 @@ describe("AdminTasksRoute", () => {
     await screen.findByText("Public Samples");
     await screen.findByText("テストです");
 
-    expect(apiGetMock).toHaveBeenCalledWith("/admin/task-sets", {
+    expect(apiGetMock).toHaveBeenCalledWith("/admin/task-sets?limit=1000", {
       headers: { Authorization: "Bearer admin-token" },
     });
-    expect(apiGetMock).toHaveBeenCalledWith("/admin/tasks", {
+    expect(apiGetMock).toHaveBeenCalledWith("/admin/tasks?limit=1000", {
       headers: { Authorization: "Bearer admin-token" },
     });
 
@@ -126,17 +126,17 @@ describe("AdminTasksRoute", () => {
     authenticatedSession();
 
     apiGetMock.mockImplementation((path: string) => {
-      if (path === "/admin/task-sets") {
+      if (path.startsWith("/admin/task-sets")) {
         return Promise.resolve({ task_sets: [] });
       }
-      if (path === "/admin/tasks") {
+      if (path.startsWith("/admin/tasks")) {
         return Promise.resolve({ tasks: [] });
       }
       throw new Error(`unexpected path: ${path}`);
     });
 
     apiPostMock.mockImplementation((path: string) => {
-      if (path === "/admin/task-sets") {
+      if (path.startsWith("/admin/task-sets")) {
         return Promise.resolve(
           taskSetRecord({
             id: "set-2",
@@ -146,7 +146,7 @@ describe("AdminTasksRoute", () => {
           }),
         );
       }
-      if (path === "/admin/tasks") {
+      if (path.startsWith("/admin/tasks")) {
         return Promise.resolve(
           taskRecord({
             id: "task-2",
@@ -220,10 +220,10 @@ describe("AdminTasksRoute", () => {
     authenticatedSession();
 
     apiGetMock.mockImplementation((path: string) => {
-      if (path === "/admin/task-sets") {
+      if (path.startsWith("/admin/task-sets")) {
         return Promise.resolve({ task_sets: [taskSetRecord()] });
       }
-      if (path === "/admin/tasks") {
+      if (path.startsWith("/admin/tasks")) {
         return Promise.resolve({ tasks: [] });
       }
       throw new Error(`unexpected path: ${path}`);
@@ -283,10 +283,10 @@ describe("AdminTasksRoute", () => {
     authenticatedSession();
 
     apiGetMock.mockImplementation((path: string) => {
-      if (path === "/admin/task-sets") {
+      if (path.startsWith("/admin/task-sets")) {
         return Promise.resolve({ task_sets: [taskSetRecord()] });
       }
-      if (path === "/admin/tasks") {
+      if (path.startsWith("/admin/tasks")) {
         return Promise.resolve({ tasks: [taskRecord()] });
       }
       throw new Error(`unexpected path: ${path}`);
@@ -350,10 +350,10 @@ describe("AdminTasksRoute", () => {
     let refreshedTasks = { tasks: [] as Array<Record<string, unknown>> };
 
     apiGetMock.mockImplementation((path: string) => {
-      if (path === "/admin/task-sets") {
+      if (path.startsWith("/admin/task-sets")) {
         return Promise.resolve({ task_sets: [taskSetRecord()] });
       }
-      if (path === "/admin/tasks") {
+      if (path.startsWith("/admin/tasks")) {
         return Promise.resolve(refreshedTasks);
       }
       throw new Error(`unexpected path: ${path}`);
@@ -413,17 +413,21 @@ describe("AdminTasksRoute", () => {
 
     await screen.findByText("Imported 1 tasks from batch.jsonl");
     await screen.findByText("Imported source");
-    expect(apiGetMock.mock.calls.filter(([path]) => path === "/admin/tasks").length).toBeGreaterThan(1);
+    expect(apiGetMock.mock.calls.filter(([path]) => path.startsWith("/admin/tasks")).length).toBeGreaterThan(1);
+    expect(apiGetMock.mock.calls).toContainEqual([
+      "/admin/tasks?limit=1000",
+      { headers: { Authorization: "Bearer admin-token" } },
+    ]);
   });
 
   it("shows an error when import is requested without a file", async () => {
     authenticatedSession();
 
     apiGetMock.mockImplementation((path: string) => {
-      if (path === "/admin/task-sets") {
+      if (path.startsWith("/admin/task-sets")) {
         return Promise.resolve({ task_sets: [] });
       }
-      if (path === "/admin/tasks") {
+      if (path.startsWith("/admin/tasks")) {
         return Promise.resolve({ tasks: [] });
       }
       throw new Error(`unexpected path: ${path}`);

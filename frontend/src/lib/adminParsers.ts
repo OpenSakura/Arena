@@ -8,7 +8,8 @@ export function parseNumberOrNull(raw: string): number | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
   const num = Number(trimmed);
-  return Number.isFinite(num) ? num : null;
+  if (!Number.isFinite(num)) throw new Error("Invalid number");
+  return num;
 }
 
 export function parseJsonObjectOrNull(raw: string): Record<string, unknown> | null {

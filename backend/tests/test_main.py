@@ -12,19 +12,43 @@ import app.core.config as config_module
 from app.core import logging as app_logging
 import app.main as main
 from app.utils import redis as redis_utils
-import app.utils.process_guard as process_guard_module
+
+
+class _HealthyConnection:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
+
+    def execute(self, _stmt: object) -> None:
+        return None
+
+    def commit(self) -> None:
+        return None
+
+
+class _HealthyEngine:
+    def connect(self) -> _HealthyConnection:
+        return _HealthyConnection()
+
+
+class _BrokenEngine:
+    def connect(self) -> _HealthyConnection:
+        raise ConnectionError("database down")
 
 
 def _settings(
     *,
     access_log_enabled: bool = False,
+    app_env: str = "test",
     leaderboard_refresh_enabled: bool = False,
     turnstile_secret_key: str = "",
     web_concurrency: int = 1,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         app_name="OpenSakura Arena API (tests)",
-        app_env="test",
+        app_env=app_env,
         leaderboard_refresh_enabled=leaderboard_refresh_enabled,
         access_log_enabled=access_log_enabled,
         turnstile_secret_key=turnstile_secret_key,
@@ -48,6 +72,7 @@ def _create_test_app(
     monkeypatch,
     *,
     access_log_enabled: bool = False,
+    app_env: str = "test",
     leaderboard_refresh_enabled: bool = False,
     turnstile_secret_key: str = "",
     web_concurrency: int = 1,
@@ -56,6 +81,7 @@ def _create_test_app(
 ):
     settings_obj = _settings(
         access_log_enabled=access_log_enabled,
+        app_env=app_env,
         leaderboard_refresh_enabled=leaderboard_refresh_enabled,
         turnstile_secret_key=turnstile_secret_key,
         web_concurrency=web_concurrency,
@@ -90,6 +116,7 @@ def _create_test_app(
 
     session_module._engine = None
     session_module._SessionLocal = None
+    monkeypatch.setattr(session_module, "get_engine", lambda: _HealthyEngine())
     monkeypatch.setattr(main, "configure_logging", lambda _settings: None)
     return main.create_app()
 
@@ -130,7 +157,7 @@ def test_request_id_is_generated_when_header_is_missing(monkeypatch) -> None:
     int(request_id, 16)
 
 
-def test_public_config_exposes_turnstile_requirement(monkeypatch) -> None:
+def test_public_config_keeps_turnstile_disabled_while_deprecated(monkeypatch) -> None:
     from app.core.config import get_settings as core_get_settings
 
     app = _create_test_app(monkeypatch)
@@ -144,7 +171,7 @@ def test_public_config_exposes_turnstile_requirement(monkeypatch) -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["anon_battle_turnstile_required"] is True
+    assert body["anon_battle_turnstile_required"] is False
     assert body["oidc"] == {
         "issuer": "https://auth.example",
         "client_id": "spa-client",
@@ -153,6 +180,26 @@ def test_public_config_exposes_turnstile_requirement(monkeypatch) -> None:
         "silent_redirect_path": "/auth/silent-callback",
         "post_logout_redirect_path": "/auth/logout-callback",
     }
+
+
+def test_prod_like_env_disables_docs_routes_at_construction(monkeypatch) -> None:
+    app = _create_test_app(monkeypatch, app_env="staging")
+
+    route_paths = {route.path for route in app.routes}
+    assert app.openapi_url is None
+    assert "/openapi.json" not in route_paths
+    assert "/docs" not in route_paths
+    assert "/redoc" not in route_paths
+
+
+def test_non_production_env_preserves_docs_routes(monkeypatch) -> None:
+    app = _create_test_app(monkeypatch, app_env="development")
+
+    route_paths = {route.path for route in app.routes}
+    assert app.openapi_url == "/openapi.json"
+    assert "/openapi.json" in route_paths
+    assert "/docs" in route_paths
+    assert "/redoc" in route_paths
 
 
 def test_access_log_is_not_emitted_when_disabled(monkeypatch) -> None:
@@ -317,6 +364,44 @@ def test_readyz_returns_200_when_deps_are_healthy(monkeypatch) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
+    assert body["checks"]["database"] is True
+
+
+def test_readyz_checks_database_on_cold_start(monkeypatch) -> None:
+    import app.db.session as session_module
+
+    calls: list[str] = []
+
+    class _RecordingEngine(_HealthyEngine):
+        def connect(self) -> _HealthyConnection:
+            calls.append("connect")
+            return super().connect()
+
+    app = _create_test_app(monkeypatch)
+    session_module._engine = None
+    monkeypatch.setattr(session_module, "get_engine", lambda: _RecordingEngine())
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/readyz")
+
+    assert response.status_code == 200
+    assert response.json()["checks"]["database"] is True
+    assert calls == ["connect"]
+
+
+def test_readyz_returns_503_when_database_is_unreachable(monkeypatch) -> None:
+    import app.db.session as session_module
+
+    app = _create_test_app(monkeypatch)
+    monkeypatch.setattr(session_module, "get_engine", lambda: _BrokenEngine())
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/readyz")
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["ok"] is False
+    assert body["checks"]["database"] is False
 
 
 def test_readyz_returns_503_when_redis_is_unreachable(monkeypatch) -> None:
