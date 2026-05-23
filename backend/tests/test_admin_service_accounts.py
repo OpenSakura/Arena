@@ -84,6 +84,7 @@ def client_context(
     monkeypatch.setattr(security, "get_settings", lambda: settings)
     monkeypatch.setattr(service_tokens, "get_settings", lambda: settings)
     monkeypatch.setattr(main, "configure_logging", lambda _settings: None)
+    monkeypatch.setattr(main, "bootstrap_schema", lambda: None)
     monkeypatch.setattr(main, "acquire_battle_process_lock", lambda: None)
     monkeypatch.setattr(main, "release_battle_process_lock", lambda: None)
     monkeypatch.setattr(main, "close_all_redis_clients", lambda: None)

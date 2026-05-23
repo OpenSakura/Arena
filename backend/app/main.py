@@ -23,6 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.core.config import Settings, get_settings
+from app.db.bootstrap import bootstrap_schema
 from app.core.logging import clear_request_id, configure_logging, set_request_id
 from app.services.leaderboard_refresh import get_leaderboard_refresher
 from app.services.battle_orchestrator import get_battle_orchestrator
@@ -69,6 +70,7 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         _emit_startup_warnings(settings)
+        await asyncio.to_thread(bootstrap_schema)
         await asyncio.to_thread(acquire_battle_process_lock)
 
         stop_event = asyncio.Event()

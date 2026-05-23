@@ -98,6 +98,8 @@ def _create_test_app(
     monkeypatch.setattr(redis_utils, "get_settings", lambda: settings_obj)
     redis_utils.get_rate_limit_redis_client.cache_clear()
 
+    monkeypatch.setattr(main, "bootstrap_schema", lambda: None)
+
     # Patch out the Postgres process guard so unit tests don't need a live DB.
     monkeypatch.setattr(
         main,
@@ -488,6 +490,26 @@ def test_process_guard_acquired_during_lifespan(monkeypatch) -> None:
     assert released == [True]
 
 
+def test_schema_bootstrap_runs_before_leaderboard_refresh(monkeypatch) -> None:
+    sequence: list[str] = []
+
+    class _FakeRefresher:
+        def run_forever(self, stop_event):
+            sequence.append("refresh")
+
+            async def _wait_for_shutdown():
+                await stop_event.wait()
+
+            return _wait_for_shutdown()
+
+    app = _create_test_app(monkeypatch, leaderboard_refresh_enabled=True)
+    monkeypatch.setattr(main, "bootstrap_schema", lambda: sequence.append("bootstrap"))
+    monkeypatch.setattr(main, "get_leaderboard_refresher", lambda: _FakeRefresher())
+
+    with TestClient(app):
+        assert sequence == ["bootstrap", "refresh"]
+
+
 def test_process_guard_released_on_shutdown(monkeypatch) -> None:
     released: list[bool] = []
 
@@ -520,6 +542,7 @@ def test_process_guard_acquire_called_before_serving_requests(monkeypatch) -> No
         main, "acquire_battle_process_lock", lambda: sequence.append("acquire")
     )
     monkeypatch.setattr(main, "release_battle_process_lock", lambda: None)
+    monkeypatch.setattr(main, "bootstrap_schema", lambda: sequence.append("bootstrap"))
 
     settings_obj = _settings()
     monkeypatch.setattr(main, "get_settings", lambda: settings_obj)
@@ -540,4 +563,5 @@ def test_process_guard_acquire_called_before_serving_requests(monkeypatch) -> No
         assert "acquire" in sequence, (
             "guard must be acquired before requests are served"
         )
+        assert sequence.index("bootstrap") < sequence.index("acquire")
         client.get("/api/v1/livez")
