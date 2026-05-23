@@ -1,19 +1,22 @@
 """Alembic environment configuration.
 
-Reads the database URL from app settings (same as the main application)
-so that migrations always target the correct database.
+Reads the database URL directly from ``DATABASE_URL`` in the environment
+so migrations stay independent of the application's runtime security
+validators (e.g. ``ARENA_MASTER_KEY``, ``SERVICE_TOKEN_HASH_SECRET``),
+which are enforced when constructing ``Settings`` but are irrelevant
+to schema upgrades.
 """
 
 # pyright: reportMissingImports=false, reportAttributeAccessIssue=false
 
 from __future__ import annotations
 
+import os
 from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from app.core.config import get_settings
 from app.db.base import Base
 
 # Import all models so Base.metadata is fully populated.
@@ -35,8 +38,18 @@ target_metadata = Base.metadata
 
 
 def get_url() -> str:
-    """Return the database URL from application settings."""
-    return get_settings().database_url
+    """Return the database URL for migrations.
+
+    Read directly from the environment rather than constructing the full
+    ``Settings`` object so migrations do not trip the production-only
+    security validators (master key, service token hash, etc.) that are
+    irrelevant to schema upgrades.
+    """
+    url = os.environ.get("DATABASE_URL")
+    if url:
+        return url
+    # Fall back to the same default the application uses for local dev.
+    return "postgresql+psycopg://postgres:postgres@localhost:5432/arena"
 
 
 def run_migrations_offline() -> None:
