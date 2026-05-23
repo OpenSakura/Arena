@@ -77,7 +77,7 @@ async function readSuccessBody(res: Response): Promise<unknown> {
 }
 
 async function apiRequest<T = unknown>(
-  method: "GET" | "POST" | "PUT" | "DELETE",
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
   path: string,
   body?: unknown,
   init?: RequestInit,
@@ -134,6 +134,14 @@ export async function apiPut<T = unknown>(
   init?: RequestInit,
 ): Promise<T> {
   return apiRequest<T>("PUT", path, body, init);
+}
+
+export async function apiPatch<T = unknown>(
+  path: string,
+  body: unknown,
+  init?: RequestInit,
+): Promise<T> {
+  return apiRequest<T>("PATCH", path, body, init);
 }
 
 export async function apiDelete<T = unknown>(path: string, init?: RequestInit): Promise<T> {

@@ -28,8 +28,10 @@ class _ScalarResult:
 class _QueueDB:
     def __init__(self, result_sets: list[list[object]]) -> None:
         self._result_sets = [list(items) for items in result_sets]
+        self.statements: list[object] = []
 
-    def execute(self, _stmt: object) -> _ScalarResult:
+    def execute(self, stmt: object) -> _ScalarResult:
+        self.statements.append(stmt)
         assert self._result_sets, "Unexpected execute() call"
         return _ScalarResult(self._result_sets.pop(0))
 
@@ -211,7 +213,46 @@ def test_export_battles_and_votes_capture_expected_fields() -> None:
     assert vote_record["battle_id"] == str(battle.id)
     assert vote_record["winner"] == "A"
     assert vote_record["voter_user_id"] == str(vote.voter_user_id)
+    assert vote_record["voter_actor_type"] == "human"
+    assert vote_record["service_account_id"] is None
+    assert vote_record["service_account_name"] is None
+    assert vote_record["service_account_token_id"] is None
+    assert vote_record["bot_metadata"] is None
     assert vote_record["created_at"] == created_at.isoformat()
+
+
+def test_export_votes_serializes_bot_fields_and_service_account_filter() -> None:
+    created_at = datetime(2026, 2, 18, 11, 5, tzinfo=timezone.utc)
+    service_account_id = uuid.uuid4()
+    token_id = uuid.uuid4()
+    vote = SimpleNamespace(
+        id=uuid.uuid4(),
+        battle_id=uuid.uuid4(),
+        winner="B",
+        rubric={"fluency": "high"},
+        comment=None,
+        voter_user_id=uuid.uuid4(),
+        service_account_id=service_account_id,
+        service_account_token_id=token_id,
+        bot_metadata={"judge": "auto", "score": 0.91},
+        created_at=created_at,
+    )
+    db = _QueueDB([[(vote, "bot", "Judge Bot")]])
+
+    response = admin_exports.export_votes(
+        service_account_id=service_account_id,
+        db=db,  # type: ignore[arg-type]
+    )
+    records = _jsonl_records(response)
+
+    assert len(records) == 1
+    record = records[0]
+    assert record["voter_actor_type"] == "bot"
+    assert record["service_account_id"] == str(service_account_id)
+    assert record["service_account_name"] == "Judge Bot"
+    assert record["service_account_token_id"] == str(token_id)
+    assert record["bot_metadata"] == {"judge": "auto", "score": 0.91}
+    assert "service_account_id" in str(db.statements[0]).lower()
 
 
 def test_export_ratings_emits_model_ratings() -> None:

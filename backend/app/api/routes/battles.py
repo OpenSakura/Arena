@@ -32,6 +32,7 @@ from app.core.security import (
     claim_by_path,
     get_principal_optional,
     get_principal_required,
+    require_human_principal,
     normalize_groups,
 )
 from app.db.session import get_db
@@ -62,6 +63,7 @@ def create_battle(
     principal: Principal = Depends(get_principal_required),
     settings: Settings = Depends(get_settings),
 ) -> BattlePublic:
+    _require_human_battle_principal(principal)
     _enforce_auth_battle_rate_limit(
         principal=principal,
         settings=settings,
@@ -134,6 +136,7 @@ def get_battle(
     principal: Principal = Depends(get_principal_optional),
 ) -> BattlePublic:
     battle_uuid = parse_uuid_or_422(battle_id, "battle_id")
+    _require_human_battle_principal(principal)
 
     battle = db.get(Battle, battle_uuid)
     if battle is None:
@@ -195,6 +198,7 @@ async def stream_battle(
     settings: Settings = Depends(get_settings),
 ) -> StreamingResponse:
     battle_uuid = parse_uuid_or_422(battle_id, "battle_id")
+    _require_human_battle_principal(principal)
 
     # Pre-flight check: return a proper 404 instead of streaming an SSE
     # error event over an HTTP 200 response.
@@ -249,6 +253,7 @@ def retry_battle(
     Allowed for the authenticated battle creator and admins.
     """
     battle_uuid = parse_uuid_or_422(battle_id, "battle_id")
+    _require_human_battle_principal(principal)
     battle = db.execute(
         select(Battle).where(Battle.id == battle_uuid).with_for_update()
     ).scalar_one_or_none()
@@ -508,11 +513,25 @@ def _is_battle_creator(
 def _is_admin_principal(principal: Principal) -> bool:
     if not principal.is_authenticated:
         return False
+    if getattr(principal, "actor_type", "human") != "human":
+        return False
 
     settings = get_settings()
     claim_value = claim_by_path(principal.claims, settings.oidc_admin_group_claim)
     groups = normalize_groups(claim_value)
     return settings.oidc_admin_group_name in groups
+
+
+def _require_human_battle_principal(principal: Principal) -> None:
+    try:
+        require_human_principal(principal)
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            raise HTTPException(
+                status_code=403,
+                detail="Bot principals cannot use human battle endpoints",
+            ) from exc
+        raise
 
 
 def _require_battle_creator_or_admin(

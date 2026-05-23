@@ -30,7 +30,7 @@ CPU-expensive because they run bootstrap resampling.  To prevent abuse:
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Protocol, cast
+from typing import Annotated, Protocol, cast
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query  # pyright: ignore[reportMissingImports]
@@ -42,7 +42,11 @@ from app.core.config import Settings, get_settings
 from app.db.session import get_db
 from app.models.model_registry import Model
 from app.models.rating import ModelRating
-from app.schemas.leaderboard import LeaderboardResponse, LeaderboardRow
+from app.schemas.leaderboard import (
+    LeaderboardResponse,
+    LeaderboardRow,
+    VoteSourceCounts,
+)
 from app.services.leaderboard_bt import (
     PairwiseVote,
     compute_bt_confidence_intervals,
@@ -52,8 +56,10 @@ from app.services.leaderboard_refresh import (
     VoteSample,
     compute_elo_confidence_intervals,
     compute_elo_ratings,
+    count_vote_sources,
     filter_outlier_judge_votes,
     load_vote_samples,
+    normalize_judge_type,
 )
 from app.utils.rate_limit import RollingWindowRateLimiter
 from app.utils import redis as redis_utils
@@ -84,7 +90,13 @@ def _confidence_cache_ttl_seconds(settings: Settings) -> int:
     return max(int(settings.leaderboard_confidence_cache_ttl_seconds), 0)
 
 
-def _confidence_cache_key(*, method: str, settings: Settings) -> str:
+def _confidence_cache_key(
+    *,
+    method: str,
+    settings: Settings,
+    judge_type: str = "all",
+    service_account_id: uuid.UUID | None = None,
+) -> str:
     """Build a cache key that incorporates all parameters affecting the result.
 
     When any setting changes (e.g. ``elo_k``, ``bootstrap_rounds``), the
@@ -93,10 +105,15 @@ def _confidence_cache_key(*, method: str, settings: Settings) -> str:
     """
 
     outlier_fragment = _confidence_cache_outlier_fragment(settings)
+    source_fragment = _confidence_cache_source_fragment(
+        judge_type=judge_type,
+        service_account_id=service_account_id,
+    )
 
     if method == "elo":
         return (
             "elo"
+            f":{source_fragment}"
             f":{settings.leaderboard_refresh_daily_vote_cap}"
             f":{settings.leaderboard_refresh_elo_k}"
             f":{settings.leaderboard_elo_shuffle_rounds}"
@@ -109,6 +126,7 @@ def _confidence_cache_key(*, method: str, settings: Settings) -> str:
 
     return (
         "bt"
+        f":{source_fragment}"
         f":{settings.leaderboard_refresh_daily_vote_cap}"
         f":{settings.leaderboard_bt_max_iterations}"
         f":{settings.leaderboard_bt_tolerance}"
@@ -118,6 +136,12 @@ def _confidence_cache_key(*, method: str, settings: Settings) -> str:
         f":{settings.leaderboard_bt_confidence_level}"
         f":{outlier_fragment}"
     )
+
+
+def _confidence_cache_source_fragment(
+    *, judge_type: str, service_account_id: uuid.UUID | None
+) -> str:
+    return f"judge:{judge_type}:service_account:{service_account_id or 'all'}"
 
 
 def _confidence_cache_outlier_fragment(settings: Settings) -> str:
@@ -247,6 +271,48 @@ def _filter_vote_samples_for_leaderboard(
     )
 
 
+def _parse_judge_type_or_422(judge_type: str) -> str:
+    try:
+        return normalize_judge_type(judge_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _parse_service_account_id_or_422(value: str | None) -> uuid.UUID | None:
+    if value is None:
+        return None
+    try:
+        return uuid.UUID(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid service_account_id") from exc
+
+
+def _load_vote_samples_and_counts(
+    *,
+    db: Session,
+    settings: Settings,
+    judge_type: str,
+    service_account_id: uuid.UUID | None,
+) -> tuple[list[VoteSample], VoteSourceCounts]:
+    if judge_type != "all" or service_account_id is not None:
+        vote_samples = load_vote_samples(
+            db,
+            daily_vote_cap=settings.leaderboard_refresh_daily_vote_cap,
+            judge_type=judge_type,
+            service_account_id=service_account_id,
+        )
+    else:
+        vote_samples = load_vote_samples(
+            db,
+            daily_vote_cap=settings.leaderboard_refresh_daily_vote_cap,
+        )
+    vote_samples = _filter_vote_samples_for_leaderboard(
+        vote_samples,
+        settings=settings,
+    )
+    return vote_samples, VoteSourceCounts(**count_vote_sources(vote_samples))
+
+
 # ---------------------------------------------------------------------------
 # Confidence leaderboard rate limiter (Redis-backed)
 # ---------------------------------------------------------------------------
@@ -276,7 +342,13 @@ def _get_confidence_rate_limiter() -> RollingWindowRateLimiter:
     )
 
 
-def _enforce_confidence_request_rate_limit(*, method: str, settings: Settings) -> None:
+def _enforce_confidence_request_rate_limit(
+    *,
+    method: str,
+    settings: Settings,
+    judge_type: str = "all",
+    service_account_id: uuid.UUID | None = None,
+) -> None:
     """Raise HTTP 429 if the global confidence recomputation rate is exceeded.
 
     This is a **global** (not per-user) rate limit because the expensive
@@ -292,7 +364,10 @@ def _enforce_confidence_request_rate_limit(*, method: str, settings: Settings) -
 
     limiter = _get_confidence_rate_limiter()
     # Use a global key for CPU protection — intentionally not per-user.
-    key = f"leaderboard_confidence_global:{method}"
+    key = (
+        f"leaderboard_confidence_global:{method}:"
+        f"judge:{judge_type}:service_account:{service_account_id or 'all'}"
+    )
     if limiter.is_limited(key):
         raise HTTPException(
             status_code=429,
@@ -312,8 +387,10 @@ def _enforce_confidence_request_rate_limit(*, method: str, settings: Settings) -
 
 @router.get("/leaderboard")
 def get_leaderboard(
-    method: str = Query(default="elo", pattern="^(elo|bt)$"),
-    include_confidence: bool = Query(default=False),
+    method: Annotated[str, Query(pattern="^(elo|bt)$")] = "elo",
+    include_confidence: Annotated[bool, Query()] = False,
+    judge_type: Annotated[str, Query(pattern="^(all|human|bot)$")] = "all",
+    service_account_id: str | None = None,
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> LeaderboardResponse:
@@ -328,9 +405,42 @@ def get_leaderboard(
         CPU-expensive and is therefore cached and rate-limited.
     """
 
+    if service_account_id is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="service_account_id filter is admin-only",
+        )
+    return build_leaderboard_response(
+        method=method,
+        include_confidence=include_confidence,
+        judge_type=judge_type,
+        service_account_id=None,
+        db=db,
+        settings=settings,
+    )
+
+
+def build_leaderboard_response(
+    *,
+    method: str,
+    include_confidence: bool,
+    judge_type: str,
+    service_account_id: uuid.UUID | None,
+    db: Session,
+    settings: Settings,
+) -> LeaderboardResponse:
+    judge_type = _parse_judge_type_or_422(judge_type)
+    if method not in {"elo", "bt"}:
+        raise HTTPException(status_code=422, detail="method must be one of: elo, bt")
+
     cache_key: str | None = None
     if include_confidence:
-        cache_key = _confidence_cache_key(method=method, settings=settings)
+        cache_key = _confidence_cache_key(
+            method=method,
+            settings=settings,
+            judge_type=judge_type,
+            service_account_id=service_account_id,
+        )
         cached = _load_cached_confidence_leaderboard(
             cache_key=cache_key,
             settings=settings,
@@ -338,19 +448,28 @@ def get_leaderboard(
         if cached is not None:
             return cached
 
-        _enforce_confidence_request_rate_limit(method=method, settings=settings)
+        _enforce_confidence_request_rate_limit(
+            method=method,
+            settings=settings,
+            judge_type=judge_type,
+            service_account_id=service_account_id,
+        )
 
     if method == "bt":
         response = _get_leaderboard_bt(
             db=db,
             include_confidence=include_confidence,
             settings=settings,
+            judge_type=judge_type,
+            service_account_id=service_account_id,
         )
     else:
         response = _get_leaderboard_elo(
             db=db,
             include_confidence=include_confidence,
             settings=settings,
+            judge_type=judge_type,
+            service_account_id=service_account_id,
         )
 
     if include_confidence and cache_key is not None:
@@ -373,6 +492,8 @@ def _get_leaderboard_elo(
     db: Session,
     include_confidence: bool,
     settings: Settings,
+    judge_type: str = "all",
+    service_account_id: uuid.UUID | None = None,
 ) -> LeaderboardResponse:
     # Use an outer join so public models with no votes still appear.
     model_rows = db.execute(
@@ -386,9 +507,14 @@ def _get_leaderboard_elo(
 
     public_model_ids = [row[0] for row in model_rows]
     public_model_names = {row[0]: row[1] for row in model_rows}
+    vote_samples, vote_source_counts = _load_vote_samples_and_counts(
+        db=db,
+        settings=settings,
+        judge_type=judge_type,
+        service_account_id=service_account_id,
+    )
 
-    # Fast path: no confidence requested, use persisted ratings.
-    if not include_confidence:
+    if not include_confidence and judge_type == "all" and service_account_id is None:
         ratings = db.execute(
             select(
                 Model.id,
@@ -415,15 +541,12 @@ def _get_leaderboard_elo(
             for model_id, display_name, rating, games_played in ratings
         ]
         _finalize_leaderboard_rows(rows, include_confidence=False)
-        return LeaderboardResponse(models=rows, method="elo", ci=False)
-
-    vote_samples = _filter_vote_samples_for_leaderboard(
-        load_vote_samples(
-            db,
-            daily_vote_cap=settings.leaderboard_refresh_daily_vote_cap,
-        ),
-        settings=settings,
-    )
+        return LeaderboardResponse(
+            models=rows,
+            method="elo",
+            ci=False,
+            vote_source_counts=vote_source_counts,
+        )
 
     baseline = compute_elo_ratings(
         vote_samples,
@@ -432,16 +555,18 @@ def _get_leaderboard_elo(
         shuffle_seed=settings.leaderboard_elo_shuffle_seed,
     )
 
-    intervals = compute_elo_confidence_intervals(
-        vote_samples,
-        model_ids=public_model_ids,
-        bootstrap_rounds=settings.leaderboard_elo_bootstrap_rounds,
-        seed=settings.leaderboard_elo_bootstrap_seed,
-        k=settings.leaderboard_refresh_elo_k,
-        confidence_level=settings.leaderboard_elo_confidence_level,
-        shuffle_rounds=settings.leaderboard_elo_shuffle_rounds,
-        shuffle_seed=settings.leaderboard_elo_shuffle_seed,
-    )
+    intervals: dict[uuid.UUID, tuple[float, float]] = {}
+    if include_confidence:
+        intervals = compute_elo_confidence_intervals(
+            vote_samples,
+            model_ids=public_model_ids,
+            bootstrap_rounds=settings.leaderboard_elo_bootstrap_rounds,
+            seed=settings.leaderboard_elo_bootstrap_seed,
+            k=settings.leaderboard_refresh_elo_k,
+            confidence_level=settings.leaderboard_elo_confidence_level,
+            shuffle_rounds=settings.leaderboard_elo_shuffle_rounds,
+            shuffle_seed=settings.leaderboard_elo_shuffle_seed,
+        )
 
     rows: list[LeaderboardRow] = []
     for model_id in public_model_ids:
@@ -459,12 +584,15 @@ def _get_leaderboard_elo(
         )
 
     rows.sort(key=lambda row: row.rating, reverse=True)
-    _finalize_leaderboard_rows(rows, include_confidence=True)
+    _finalize_leaderboard_rows(rows, include_confidence=include_confidence)
     return LeaderboardResponse(
         models=rows,
         method="elo",
-        ci=True,
-        bootstrap_rounds=settings.leaderboard_elo_bootstrap_rounds,
+        ci=include_confidence,
+        bootstrap_rounds=(
+            settings.leaderboard_elo_bootstrap_rounds if include_confidence else None
+        ),
+        vote_source_counts=vote_source_counts,
     )
 
 
@@ -478,6 +606,8 @@ def _get_leaderboard_bt(
     db: Session,
     include_confidence: bool,
     settings: Settings,
+    judge_type: str = "all",
+    service_account_id: uuid.UUID | None = None,
 ) -> LeaderboardResponse:
     model_rows = db.execute(
         select(Model.id, Model.display_name)
@@ -491,14 +621,11 @@ def _get_leaderboard_bt(
     public_model_ids = [row[0] for row in model_rows]
     public_models = [(row[0], row[1]) for row in model_rows]
 
-    # BT is always computed on demand from vote samples. ``model_ratings``
-    # persists Elo snapshots only and must not be treated as a BT fast path.
-    vote_samples = _filter_vote_samples_for_leaderboard(
-        load_vote_samples(
-            db,
-            daily_vote_cap=settings.leaderboard_refresh_daily_vote_cap,
-        ),
+    vote_samples, vote_source_counts = _load_vote_samples_and_counts(
+        db=db,
         settings=settings,
+        judge_type=judge_type,
+        service_account_id=service_account_id,
     )
 
     votes = [
@@ -554,4 +681,5 @@ def _get_leaderboard_bt(
         bootstrap_rounds=(
             settings.leaderboard_bt_bootstrap_rounds if include_confidence else None
         ),
+        vote_source_counts=vote_source_counts,
     )

@@ -23,7 +23,8 @@ describe("buildLeaderboardQuery", () => {
     expect(buildLeaderboardQuery()).toEqual({
       selectedMethod: "elo",
       includeConfidence: false,
-      query: "/leaderboard?method=elo",
+      judgeType: "all",
+      query: "/leaderboard?method=elo&judge_type=all",
     });
   });
 
@@ -31,7 +32,8 @@ describe("buildLeaderboardQuery", () => {
     expect(buildLeaderboardQuery({ method: "bt" })).toEqual({
       selectedMethod: "bt",
       includeConfidence: false,
-      query: "/leaderboard?method=bt",
+      judgeType: "all",
+      query: "/leaderboard?method=bt&judge_type=all",
     });
   });
 
@@ -39,7 +41,8 @@ describe("buildLeaderboardQuery", () => {
     expect(buildLeaderboardQuery({ method: "bt", include_confidence: "true" })).toEqual({
       selectedMethod: "bt",
       includeConfidence: true,
-      query: "/leaderboard?method=bt&include_confidence=true",
+      judgeType: "all",
+      query: "/leaderboard?method=bt&include_confidence=true&judge_type=all",
     });
   });
 
@@ -47,7 +50,8 @@ describe("buildLeaderboardQuery", () => {
     expect(buildLeaderboardQuery({ method: "bt", include_confidence: "1" })).toEqual({
       selectedMethod: "bt",
       includeConfidence: true,
-      query: "/leaderboard?method=bt&include_confidence=true",
+      judgeType: "all",
+      query: "/leaderboard?method=bt&include_confidence=true&judge_type=all",
     });
   });
 
@@ -55,7 +59,8 @@ describe("buildLeaderboardQuery", () => {
     expect(buildLeaderboardQuery({ method: "elo", include_confidence: "true" })).toEqual({
       selectedMethod: "elo",
       includeConfidence: true,
-      query: "/leaderboard?method=elo&include_confidence=true",
+      judgeType: "all",
+      query: "/leaderboard?method=elo&include_confidence=true&judge_type=all",
     });
   });
 
@@ -63,7 +68,35 @@ describe("buildLeaderboardQuery", () => {
     expect(buildLeaderboardQuery({ method: "glicko", include_confidence: "1" })).toEqual({
       selectedMethod: "elo",
       includeConfidence: true,
-      query: "/leaderboard?method=elo&include_confidence=true",
+      judgeType: "all",
+      query: "/leaderboard?method=elo&include_confidence=true&judge_type=all",
+    });
+  });
+
+  it("supports judge_type human", () => {
+    expect(buildLeaderboardQuery({ judge_type: "human" })).toEqual({
+      selectedMethod: "elo",
+      includeConfidence: false,
+      judgeType: "human",
+      query: "/leaderboard?method=elo&judge_type=human",
+    });
+  });
+
+  it("supports judge_type bot", () => {
+    expect(buildLeaderboardQuery({ judge_type: "bot" })).toEqual({
+      selectedMethod: "elo",
+      includeConfidence: false,
+      judgeType: "bot",
+      query: "/leaderboard?method=elo&judge_type=bot",
+    });
+  });
+
+  it("normalizes invalid judge_type to all", () => {
+    expect(buildLeaderboardQuery({ judge_type: "invalid" })).toEqual({
+      selectedMethod: "elo",
+      includeConfidence: false,
+      judgeType: "all",
+      query: "/leaderboard?method=elo&judge_type=all",
     });
   });
 });

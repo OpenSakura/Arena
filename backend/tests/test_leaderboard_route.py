@@ -6,7 +6,7 @@ import uuid
 from fastapi import HTTPException  # pyright: ignore[reportMissingImports]
 import pytest
 
-from app.api.routes import leaderboard
+from app.api.routes import admin_leaderboard, leaderboard
 from app.schemas.leaderboard import LeaderboardResponse, LeaderboardRow
 from app.services.leaderboard_bt import PairwiseVote
 
@@ -183,7 +183,7 @@ def test_get_leaderboard_dispatches_to_bt_handler(
         method="bt",
         include_confidence=True,
         db=object(),  # type: ignore[arg-type]
-        settings=_settings(),  # type: ignore[arg-type]
+        settings=_settings(leaderboard_refresh_daily_vote_cap=0),  # type: ignore[arg-type]
     )
 
     assert response is expected
@@ -231,6 +231,60 @@ def test_get_leaderboard_dispatches_to_elo_handler(
     assert response is expected
 
 
+def test_get_leaderboard_rejects_public_service_account_filter() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        leaderboard.get_leaderboard(
+            service_account_id=str(uuid.uuid4()),
+            db=object(),  # type: ignore[arg-type]
+            settings=_settings(),  # type: ignore[arg-type]
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "service_account_id filter is admin-only"
+
+
+def test_get_leaderboard_rejects_invalid_judge_type() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        leaderboard.get_leaderboard(
+            judge_type="machine",
+            db=object(),  # type: ignore[arg-type]
+            settings=_settings(),  # type: ignore[arg-type]
+        )
+
+    assert exc_info.value.status_code == 422
+
+
+def test_admin_leaderboard_allows_service_account_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service_account_id = uuid.uuid4()
+    expected = LeaderboardResponse(models=[], method="elo", ci=False)
+    captured: dict[str, object] = {}
+
+    def fake_build_leaderboard_response(**kwargs: object) -> LeaderboardResponse:
+        captured.update(kwargs)
+        return expected
+
+    monkeypatch.setattr(
+        admin_leaderboard.leaderboard_route,
+        "build_leaderboard_response",
+        fake_build_leaderboard_response,
+    )
+
+    response = admin_leaderboard.get_admin_leaderboard(
+        method="elo",
+        include_confidence=False,
+        judge_type="bot",
+        service_account_id=str(service_account_id),
+        db=object(),  # type: ignore[arg-type]
+        settings=_settings(),  # type: ignore[arg-type]
+    )
+
+    assert response is expected
+    assert captured["judge_type"] == "bot"
+    assert captured["service_account_id"] == service_account_id
+
+
 def test_get_leaderboard_confidence_uses_cache_for_repeated_requests(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -272,6 +326,55 @@ def test_get_leaderboard_confidence_uses_cache_for_repeated_requests(
     assert second == expected
     assert len(cache_client.store) == 1
     assert set(cache_client.ttls.values()) == {30}
+
+
+def test_get_leaderboard_confidence_cache_isolated_by_judge_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    cache_client = _FakeConfidenceRedis()
+
+    def fake_get_leaderboard_elo(**kwargs: object) -> LeaderboardResponse:
+        calls.append(str(kwargs["judge_type"]))
+        return LeaderboardResponse(models=[], method="elo", ci=True)
+
+    monkeypatch.setattr(leaderboard, "_get_leaderboard_elo", fake_get_leaderboard_elo)
+    monkeypatch.setattr(
+        leaderboard,
+        "_get_confidence_cache_client",
+        lambda: cache_client,
+    )
+    settings = _settings(
+        leaderboard_confidence_cache_ttl_seconds=30,
+        leaderboard_confidence_rate_limit=20,
+    )
+
+    leaderboard.get_leaderboard(
+        method="elo",
+        include_confidence=True,
+        judge_type="human",
+        db=object(),  # type: ignore[arg-type]
+        settings=settings,  # type: ignore[arg-type]
+    )
+    leaderboard.get_leaderboard(
+        method="elo",
+        include_confidence=True,
+        judge_type="human",
+        db=object(),  # type: ignore[arg-type]
+        settings=settings,  # type: ignore[arg-type]
+    )
+    leaderboard.get_leaderboard(
+        method="elo",
+        include_confidence=True,
+        judge_type="bot",
+        db=object(),  # type: ignore[arg-type]
+        settings=settings,  # type: ignore[arg-type]
+    )
+
+    assert calls == ["human", "bot"]
+    assert len(cache_client.store) == 2
+    assert any(":judge:human:" in key for key in cache_client.store)
+    assert any(":judge:bot:" in key for key in cache_client.store)
 
 
 def test_get_leaderboard_confidence_rate_limits_uncached_recomputes(
@@ -333,7 +436,7 @@ def test_get_leaderboard_elo_returns_empty_response_without_public_models() -> N
     response = leaderboard._get_leaderboard_elo(
         db=db,  # type: ignore[arg-type]
         include_confidence=False,
-        settings=_settings(),  # type: ignore[arg-type]
+        settings=_settings(leaderboard_refresh_daily_vote_cap=0),  # type: ignore[arg-type]
     )
 
     assert response.method == "elo"
@@ -348,6 +451,7 @@ def test_get_leaderboard_elo_uses_persisted_ratings_without_confidence() -> None
     db = _QueueDB(
         rows_by_call=[
             [(model_a, "Model A"), (model_b, "Model B")],
+            [],
             [
                 (model_b, "Model B", 1120.5, 42),
                 (model_a, "Model A", 998.0, 10),
@@ -358,7 +462,7 @@ def test_get_leaderboard_elo_uses_persisted_ratings_without_confidence() -> None
     response = leaderboard._get_leaderboard_elo(
         db=db,  # type: ignore[arg-type]
         include_confidence=False,
-        settings=_settings(),  # type: ignore[arg-type]
+        settings=_settings(leaderboard_refresh_daily_vote_cap=0),  # type: ignore[arg-type]
     )
 
     assert response.method == "elo"
@@ -370,6 +474,9 @@ def test_get_leaderboard_elo_uses_persisted_ratings_without_confidence() -> None
     assert response.models[0].games_played == 42
     assert response.models[1].rating == 998.0
     assert response.models[1].games_played == 10
+    assert response.vote_source_counts.human == 0
+    assert response.vote_source_counts.bot == 0
+    assert response.vote_source_counts.total == 0
 
 
 def test_get_leaderboard_elo_filters_disabled_models_in_queries() -> None:
@@ -377,6 +484,7 @@ def test_get_leaderboard_elo_filters_disabled_models_in_queries() -> None:
     db = _QueueDB(
         rows_by_call=[
             [(model_a, "Model A")],
+            [],
             [(model_a, "Model A", 1000.0, 0)],
         ]
     )
@@ -384,12 +492,12 @@ def test_get_leaderboard_elo_filters_disabled_models_in_queries() -> None:
     leaderboard._get_leaderboard_elo(
         db=db,  # type: ignore[arg-type]
         include_confidence=False,
-        settings=_settings(),  # type: ignore[arg-type]
+        settings=_settings(leaderboard_refresh_daily_vote_cap=0),  # type: ignore[arg-type]
     )
 
-    assert len(db.statements) == 2
+    assert len(db.statements) == 3
     first_stmt = str(db.statements[0]).lower()
-    second_stmt = str(db.statements[1]).lower()
+    second_stmt = str(db.statements[2]).lower()
     assert "models.enabled" in first_stmt
     assert "models.enabled" in second_stmt
 
@@ -521,6 +629,71 @@ def test_get_leaderboard_elo_with_confidence_skips_daily_cap_when_disabled(
     assert response.models[0].rating_lower == 999.0
     assert response.models[0].rating_upper == 1003.0
     assert captured == {"daily_vote_cap": 0}
+
+
+def test_get_leaderboard_elo_filtered_request_recomputes_from_samples(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import datetime, timezone
+
+    from app.services.leaderboard_refresh import VoteSample
+
+    model_a = uuid.uuid4()
+    model_b = uuid.uuid4()
+    service_account_id = uuid.uuid4()
+    db = _QueueDB(rows_by_call=[[(model_a, "Model A"), (model_b, "Model B")]])
+    vote_samples = [
+        VoteSample(
+            vote_id=uuid.uuid4(),
+            created_at=datetime.now(tz=timezone.utc),
+            winner="B",
+            judge_key=f"service_account:{service_account_id}",
+            model_a_id=model_a,
+            model_b_id=model_b,
+            voter_actor_type="bot",
+            service_account_id=service_account_id,
+        )
+    ]
+    captured: dict[str, object] = {}
+
+    def fake_load_vote_samples(
+        _db: object,
+        *,
+        daily_vote_cap: int,
+        judge_type: str,
+        service_account_id: uuid.UUID | None,
+    ) -> list[VoteSample]:
+        captured["daily_vote_cap"] = daily_vote_cap
+        captured["judge_type"] = judge_type
+        captured["service_account_id"] = service_account_id
+        return vote_samples
+
+    def fake_compute_elo_ratings(
+        votes: list[VoteSample], *, k: float, **_kwargs: object
+    ) -> dict[uuid.UUID, tuple[float, int]]:
+        captured["rating_votes"] = votes
+        captured["k"] = k
+        return {model_a: (984.0, 1), model_b: (1016.0, 1)}
+
+    monkeypatch.setattr(leaderboard, "load_vote_samples", fake_load_vote_samples)
+    monkeypatch.setattr(leaderboard, "compute_elo_ratings", fake_compute_elo_ratings)
+
+    response = leaderboard._get_leaderboard_elo(
+        db=db,  # type: ignore[arg-type]
+        include_confidence=False,
+        settings=_settings(),  # type: ignore[arg-type]
+        judge_type="bot",
+        service_account_id=service_account_id,
+    )
+
+    assert [row.display_name for row in response.models] == ["Model B", "Model A"]
+    assert response.ci is False
+    assert response.vote_source_counts.bot == 1
+    assert response.vote_source_counts.human == 0
+    assert captured["judge_type"] == "bot"
+    assert captured["service_account_id"] == service_account_id
+    assert captured["rating_votes"] is vote_samples
+    assert len(db.statements) == 1
 
 
 def test_get_leaderboard_bt_returns_empty_response_without_models() -> None:
@@ -1034,6 +1207,55 @@ def test_confidence_cache_key_includes_outlier_filter_settings() -> None:
     assert elo_disabled != elo_min_votes
     assert bt_disabled != bt_max_votes
     assert bt_disabled != bt_alpha
+
+
+def test_confidence_cache_key_includes_judge_type_and_service_account_id() -> None:
+    service_account_id = uuid.uuid4()
+    all_key = leaderboard._confidence_cache_key(
+        method="elo",
+        settings=_settings(),  # type: ignore[arg-type]
+        judge_type="all",
+    )
+    human_key = leaderboard._confidence_cache_key(
+        method="elo",
+        settings=_settings(),  # type: ignore[arg-type]
+        judge_type="human",
+    )
+    bot_service_key = leaderboard._confidence_cache_key(
+        method="elo",
+        settings=_settings(),  # type: ignore[arg-type]
+        judge_type="bot",
+        service_account_id=service_account_id,
+    )
+
+    assert all_key != human_key
+    assert human_key != bot_service_key
+    assert f"service_account:{service_account_id}" in bot_service_key
+
+
+def test_confidence_rate_limit_key_includes_judge_type_and_service_account_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service_account_id = uuid.uuid4()
+    captured: list[str] = []
+
+    class _Limiter:
+        def is_limited(self, key: str) -> bool:
+            captured.append(key)
+            return False
+
+    monkeypatch.setattr(leaderboard, "_get_confidence_rate_limiter", lambda: _Limiter())
+
+    leaderboard._enforce_confidence_request_rate_limit(
+        method="bt",
+        settings=_settings(leaderboard_confidence_rate_limit=1),  # type: ignore[arg-type]
+        judge_type="bot",
+        service_account_id=service_account_id,
+    )
+
+    assert captured == [
+        f"leaderboard_confidence_global:bt:judge:bot:service_account:{service_account_id}"
+    ]
 
 
 def test_daily_vote_cap_cache_invalidation() -> None:

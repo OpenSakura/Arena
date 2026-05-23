@@ -1,21 +1,38 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+import asyncio
+from collections.abc import Iterator, Sequence
 from types import SimpleNamespace
 from typing import cast
 import uuid
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Response
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import create_engine, select
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm import Session
 
-from app.api.routes import battles
+from app.api.routes import battles, bot_battles
 from app.core.config import Settings
 from app.core.security import Principal
+from app.db.base import Base
+import app.models  # noqa: F401
 from app.models.battle import Battle
+from app.models.model_registry import Model
+from app.models.service_account import ServiceAccount
 from app.models.task import Task
+from app.models.user import User
 from app.schemas.battles import BattleCreate
+from app.schemas.bot import BotBattleCreateAndWaitRequest
 from app.services.sampling import CandidateModel, SamplingPolicy
+
+
+@compiles(JSONB, "sqlite")
+def _compile_jsonb_sqlite(_type: JSONB, _compiler: object, **_kw: object) -> str:
+    return "JSON"
 
 
 class _Result:
@@ -355,6 +372,78 @@ def _creator_principal_and_battle(
         _principal(authenticated=True, user_id=user_id),
     )
     return principal, battle
+
+
+def _bot_principal() -> Principal:
+    return Principal(
+        is_authenticated=True,
+        actor_type="bot",
+        user_id=str(uuid.uuid4()),
+        service_account_id=str(uuid.uuid4()),
+        service_account_name="Auto Judge",
+        token_id=str(uuid.uuid4()),
+        scopes=("battle:create", "battle:read"),
+    )
+
+
+class _NoBattleDB:
+    def get(self, *_args: object, **_kwargs: object) -> object:
+        raise AssertionError("bot principal should be rejected before DB lookup")
+
+    def execute(self, *_args: object, **_kwargs: object) -> object:
+        raise AssertionError("bot principal should be rejected before DB lookup")
+
+
+def test_human_battle_create_read_and_retry_routes_reject_bot_principals() -> None:
+    bot_principal = _bot_principal()
+    settings = cast(Settings, _settings())
+
+    with pytest.raises(HTTPException) as create_exc:
+        battles.create_battle(
+            payload=BattleCreate(),
+            request=_request(),
+            db=_NoBattleDB(),  # type: ignore[arg-type]
+            principal=bot_principal,
+            settings=settings,
+        )
+    assert create_exc.value.status_code == 403
+    assert create_exc.value.detail == "Bot principals cannot use human battle endpoints"
+
+    with pytest.raises(HTTPException) as read_exc:
+        battles.get_battle(
+            str(uuid.uuid4()),
+            db=_NoBattleDB(),  # type: ignore[arg-type]
+            principal=bot_principal,
+        )
+    assert read_exc.value.status_code == 403
+    assert read_exc.value.detail == "Bot principals cannot use human battle endpoints"
+
+    with pytest.raises(HTTPException) as retry_exc:
+        battles.retry_battle(
+            str(uuid.uuid4()),
+            request=_request(),
+            db=_NoBattleDB(),  # type: ignore[arg-type]
+            principal=bot_principal,
+        )
+    assert retry_exc.value.status_code == 403
+    assert retry_exc.value.detail == "Bot principals cannot use human battle endpoints"
+
+
+def test_human_battle_stream_route_rejects_bot_principals() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            battles.stream_battle(
+                str(uuid.uuid4()),
+                request=_request(),
+                db=_NoBattleDB(),  # type: ignore[arg-type]
+                orchestrator=object(),  # type: ignore[arg-type]
+                principal=_bot_principal(),
+                settings=cast(Settings, _settings()),
+            )
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Bot principals cannot use human battle endpoints"
 
 
 def test_enforce_daily_vote_cap_allows_when_disabled() -> None:
@@ -1114,3 +1203,514 @@ def test_create_battle_records_authenticated_requester_id(
     assert len(battles_added) == 1
     assert battles_added[0].metadata_json["requester_user_id"] == principal.user_id
     assert result.retry_allowed is False
+
+
+@pytest.fixture()
+def bot_battle_db(tmp_path) -> Iterator[Session]:
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'bot-battles.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine, expire_on_commit=False) as session:
+        yield session
+    engine.dispose()
+
+
+def _seed_bot_battle_context(db: Session, *, suffix: str) -> SimpleNamespace:
+    service_account_id = uuid.uuid4()
+    bot_user = User(
+        oidc_issuer="system:service-account",
+        oidc_sub=f"service-account:{service_account_id}",
+        actor_type="bot",
+    )
+    db.add(bot_user)
+    db.flush()
+
+    service_account = ServiceAccount(
+        id=service_account_id,
+        name=f"Auto Judge {suffix}",
+        bot_user_id=bot_user.id,
+    )
+    task = Task(source_text=f"原文 {suffix}", source_lang="ja", target_lang="zh")
+    model_a = Model(
+        display_name=f"Model A {suffix}",
+        provider_type="test",
+        model_name=f"model-a-{suffix}",
+        base_url="https://llm.example/v1",
+    )
+    model_b = Model(
+        display_name=f"Model B {suffix}",
+        provider_type="test",
+        model_name=f"model-b-{suffix}",
+        base_url="https://llm.example/v1",
+    )
+    db.add_all([service_account, task, model_a, model_b])
+    db.commit()
+
+    return SimpleNamespace(
+        service_account=service_account,
+        bot_user=bot_user,
+        task=task,
+        model_a=model_a,
+        model_b=model_b,
+    )
+
+
+def _bot_battle_principal(context: SimpleNamespace) -> Principal:
+    return Principal(
+        is_authenticated=True,
+        actor_type="bot",
+        user_id=str(context.bot_user.id),
+        service_account_id=str(context.service_account.id),
+        service_account_name=context.service_account.name,
+        token_id=str(uuid.uuid4()),
+        scopes=("battle:create", "battle:execute", "battle:read"),
+    )
+
+
+class _BotRouteOrchestrator:
+    def __init__(self, db: Session, *, outcome: str) -> None:
+        self._db = db
+        self._outcome = outcome
+        self.calls: list[tuple[uuid.UUID, int, str | None]] = []
+
+    async def execute_battle_and_wait(
+        self,
+        battle_id: uuid.UUID,
+        *,
+        timeout_seconds: int,
+        request_id: str | None = None,
+    ) -> str:
+        self.calls.append((battle_id, timeout_seconds, request_id))
+        battle = self._db.get(Battle, battle_id)
+        assert battle is not None
+        runs = (
+            self._db.execute(
+                select(bot_battles.Run)
+                .where(bot_battles.Run.battle_id == battle_id)
+                .order_by(bot_battles.Run.side.asc())
+            )
+            .scalars()
+            .all()
+        )
+        if self._outcome == "timeout":
+            battle.status = "running"
+            self._db.commit()
+            return "timeout"
+        if self._outcome == "timeout_completed":
+            battle.status = "completed"
+            for run in runs:
+                run.output_text = f"{run.side} late output"
+            self._db.commit()
+            return "timeout"
+
+        battle.status = "completed"
+        for run in runs:
+            run.output_text = f"{run.side} output"
+        self._db.commit()
+        return "completed"
+
+
+def _patch_bot_battle_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    context: SimpleNamespace,
+) -> list[tuple[str, object]]:
+    calls: list[tuple[str, object]] = []
+
+    def fake_select_task(*, db: Session, payload: BattleCreate) -> Task:
+        _ = db
+        calls.append(("task", payload))
+        return cast(Task, context.task)
+
+    def fake_select_model_pair(
+        db: Session,
+        *,
+        settings: Settings,
+    ) -> tuple[uuid.UUID, uuid.UUID]:
+        _ = (db, settings)
+        calls.append(("models", settings))
+        return context.model_a.id, context.model_b.id
+
+    monkeypatch.setattr(bot_battles.human_battles, "_select_task", fake_select_task)
+    monkeypatch.setattr(
+        bot_battles.human_battles,
+        "_select_model_pair",
+        fake_select_model_pair,
+    )
+    return calls
+
+
+def test_bot_create_and_wait_success_returns_completed_outputs_and_model_ids(
+    bot_battle_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _seed_bot_battle_context(bot_battle_db, suffix="success")
+    selection_calls = _patch_bot_battle_selection(monkeypatch, context)
+    orchestrator = _BotRouteOrchestrator(bot_battle_db, outcome="completed")
+    response = Response()
+
+    result = asyncio.run(
+        bot_battles.create_and_wait_battle(
+            payload=BotBattleCreateAndWaitRequest(
+                task_id=str(context.task.id),
+                timeout_seconds=5,
+            ),
+            request=_request(),
+            response=response,
+            idempotency_key="task-7-success",
+            db=bot_battle_db,
+            principal=_bot_battle_principal(context),
+            settings=cast(Settings, _settings()),
+            orchestrator=cast(bot_battles.BattleOrchestrator, orchestrator),
+        )
+    )
+
+    assert response.status_code == 200
+    assert result.status == "completed"
+    assert result.status_url == f"/api/v1/bot/battles/{result.battle_id}"
+    assert result.result is not None
+    assert result.result.run_a is not None
+    assert result.result.run_a.output_text == "A output"
+    assert result.result.run_a.model_id == str(context.model_a.id)
+    assert result.result.run_b is not None
+    assert result.result.run_b.output_text == "B output"
+    assert result.result.run_b.model_id == str(context.model_b.id)
+    assert not hasattr(result.result, "winner")
+    assert not hasattr(result.result, "reveal")
+
+    battle = bot_battle_db.get(Battle, uuid.UUID(result.battle_id))
+    assert battle is not None
+    assert battle.requester_service_account_id == context.service_account.id
+    assert battle.idempotency_key == "task-7-success"
+    assert battle.metadata_json == {
+        "task_snapshot": {
+            "source_text": context.task.source_text,
+            "source_lang": "ja",
+            "target_lang": "zh",
+        },
+        "sampling": {
+            "task": "weighted_v1",
+            "models": "fastchat_weighted_v2",
+        },
+        "requester_user_id": str(context.bot_user.id),
+        "requester_service_account_id": str(context.service_account.id),
+        "automatic_retry_count": 0,
+    }
+
+    assert [name for name, _ in selection_calls] == ["task", "models"]
+    task_payload = cast(BattleCreate, selection_calls[0][1])
+    assert task_payload.task_id == str(context.task.id)
+
+
+def test_bot_create_and_wait_timeout_returns_202_without_partial_outputs(
+    bot_battle_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _seed_bot_battle_context(bot_battle_db, suffix="timeout")
+    _patch_bot_battle_selection(monkeypatch, context)
+    orchestrator = _BotRouteOrchestrator(bot_battle_db, outcome="timeout")
+    response = Response()
+
+    result = asyncio.run(
+        bot_battles.create_and_wait_battle(
+            payload=BotBattleCreateAndWaitRequest(
+                task_id=str(context.task.id),
+                timeout_seconds=1,
+            ),
+            request=_request(),
+            response=response,
+            idempotency_key="task-7-timeout",
+            db=bot_battle_db,
+            principal=_bot_battle_principal(context),
+            settings=cast(Settings, _settings()),
+            orchestrator=cast(bot_battles.BattleOrchestrator, orchestrator),
+        )
+    )
+
+    assert response.status_code == 202
+    assert result.status == "timeout"
+    assert result.status_url == f"/api/v1/bot/battles/{result.battle_id}"
+    assert result.result is None
+
+    runs = (
+        bot_battle_db.execute(
+            select(bot_battles.Run).where(
+                bot_battles.Run.battle_id == uuid.UUID(result.battle_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [run.output_text for run in runs] == [None, None]
+
+
+def test_bot_create_and_wait_timeout_suppresses_concurrent_completed_result(
+    bot_battle_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _seed_bot_battle_context(bot_battle_db, suffix="late-timeout")
+    _patch_bot_battle_selection(monkeypatch, context)
+    orchestrator = _BotRouteOrchestrator(bot_battle_db, outcome="timeout_completed")
+    response = Response()
+
+    result = asyncio.run(
+        bot_battles.create_and_wait_battle(
+            payload=BotBattleCreateAndWaitRequest(
+                task_id=str(context.task.id),
+                timeout_seconds=1,
+            ),
+            request=_request(),
+            response=response,
+            idempotency_key="task-7-timeout-completed",
+            db=bot_battle_db,
+            principal=_bot_battle_principal(context),
+            settings=cast(Settings, _settings()),
+            orchestrator=cast(bot_battles.BattleOrchestrator, orchestrator),
+        )
+    )
+
+    assert response.status_code == 202
+    assert result.status == "timeout"
+    assert result.status_url == f"/api/v1/bot/battles/{result.battle_id}"
+    assert result.result is None
+
+    battle = bot_battle_db.get(Battle, uuid.UUID(result.battle_id))
+    assert battle is not None
+    assert battle.status == "completed"
+    runs = (
+        bot_battle_db.execute(
+            select(bot_battles.Run)
+            .where(bot_battles.Run.battle_id == battle.id)
+            .order_by(bot_battles.Run.side.asc())
+        )
+        .scalars()
+        .all()
+    )
+    assert [run.output_text for run in runs] == ["A late output", "B late output"]
+
+
+def test_bot_create_and_wait_repeated_idempotency_key_returns_existing_battle(
+    bot_battle_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _seed_bot_battle_context(bot_battle_db, suffix="idempotent")
+    _patch_bot_battle_selection(monkeypatch, context)
+    orchestrator = _BotRouteOrchestrator(bot_battle_db, outcome="completed")
+    principal = _bot_battle_principal(context)
+
+    first = asyncio.run(
+        bot_battles.create_and_wait_battle(
+            payload=BotBattleCreateAndWaitRequest(task_id=str(context.task.id)),
+            request=_request(),
+            response=Response(),
+            idempotency_key="same-key",
+            db=bot_battle_db,
+            principal=principal,
+            settings=cast(Settings, _settings()),
+            orchestrator=cast(bot_battles.BattleOrchestrator, orchestrator),
+        )
+    )
+    second = asyncio.run(
+        bot_battles.create_and_wait_battle(
+            payload=BotBattleCreateAndWaitRequest(task_id=str(context.task.id)),
+            request=_request(),
+            response=Response(),
+            idempotency_key="same-key",
+            db=bot_battle_db,
+            principal=principal,
+            settings=cast(Settings, _settings()),
+            orchestrator=cast(bot_battles.BattleOrchestrator, orchestrator),
+        )
+    )
+
+    assert second.battle_id == first.battle_id
+    assert second.result is not None
+    assert second.result.run_a is not None
+    assert second.result.run_a.output_text == "A output"
+    assert len(bot_battle_db.execute(select(Battle)).scalars().all()) == 1
+
+
+def test_bot_status_route_isolates_battles_by_service_account(
+    bot_battle_db: Session,
+) -> None:
+    owner_context = _seed_bot_battle_context(bot_battle_db, suffix="owner")
+    other_context = _seed_bot_battle_context(bot_battle_db, suffix="other")
+    battle = Battle(
+        task_id=owner_context.task.id,
+        mode="jp2zh_ab",
+        status="completed",
+        requester_service_account_id=owner_context.service_account.id,
+        metadata_json={
+            "task_snapshot": {
+                "source_text": owner_context.task.source_text,
+                "source_lang": "ja",
+                "target_lang": "zh",
+            },
+            "requester_user_id": str(owner_context.bot_user.id),
+            "requester_service_account_id": str(owner_context.service_account.id),
+        },
+    )
+    bot_battle_db.add(battle)
+    bot_battle_db.flush()
+    bot_battle_db.add_all(
+        [
+            bot_battles.Run(
+                battle_id=battle.id,
+                side="A",
+                model_id=owner_context.model_a.id,
+                output_text="A done",
+            ),
+            bot_battles.Run(
+                battle_id=battle.id,
+                side="B",
+                model_id=owner_context.model_b.id,
+                output_text="B done",
+            ),
+        ]
+    )
+    bot_battle_db.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        bot_battles.get_bot_battle(
+            str(battle.id),
+            db=bot_battle_db,
+            principal=_bot_battle_principal(other_context),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Battle not found"
+
+    owner_response = bot_battles.get_bot_battle(
+        str(battle.id),
+        db=bot_battle_db,
+        principal=_bot_battle_principal(owner_context),
+    )
+    assert owner_response.battle_id == str(battle.id)
+    assert owner_response.status == "completed"
+    assert owner_response.result is not None
+    assert owner_response.result.run_a is not None
+    assert owner_response.result.run_a.model_id == str(owner_context.model_a.id)
+
+
+def test_bot_create_reloads_idempotent_battle_after_integrity_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service_account_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    task = _task()
+    existing = Battle(
+        id=uuid.uuid4(),
+        task_id=task.id,
+        requester_service_account_id=service_account_id,
+        idempotency_key="race-key",
+    )
+    monkeypatch.setattr(bot_battles.human_battles, "_select_task", lambda **_kw: task)
+    monkeypatch.setattr(
+        bot_battles.human_battles,
+        "_select_model_pair",
+        lambda *_args, **_kw: (uuid.uuid4(), uuid.uuid4()),
+    )
+
+    class _IntegrityRaceDB:
+        def __init__(self) -> None:
+            self.rollback_called = False
+            self.added: list[object] = []
+
+        def add(self, obj: object) -> None:
+            self.added.append(obj)
+
+        def add_all(self, objs: list[object]) -> None:
+            self.added.extend(objs)
+
+        def flush(self) -> None:
+            for item in self.added:
+                if isinstance(item, Battle) and item.id is None:
+                    item.id = uuid.uuid4()
+
+        def commit(self) -> None:
+            raise IntegrityError("insert", {}, Exception("duplicate"))
+
+        def rollback(self) -> None:
+            self.rollback_called = True
+
+        def execute(self, _stmt: object) -> _Result:
+            return _Result([existing])
+
+    fake_db = _IntegrityRaceDB()
+    returned = bot_battles._create_bot_battle(
+        db=cast(Session, fake_db),
+        payload=BotBattleCreateAndWaitRequest(task_id=str(task.id)),
+        principal=Principal(
+            is_authenticated=True,
+            actor_type="bot",
+            user_id=str(user_id),
+            service_account_id=str(service_account_id),
+        ),
+        service_account_id=service_account_id,
+        idempotency_key="race-key",
+        settings=cast(Settings, _settings()),
+    )
+
+    assert returned is existing
+    assert fake_db.rollback_called is True
+
+
+def test_bot_create_reloads_idempotent_battle_after_flush_integrity_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service_account_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    task = _task()
+    existing = Battle(
+        id=uuid.uuid4(),
+        task_id=task.id,
+        requester_service_account_id=service_account_id,
+        idempotency_key="flush-race-key",
+    )
+    monkeypatch.setattr(bot_battles.human_battles, "_select_task", lambda **_kw: task)
+    monkeypatch.setattr(
+        bot_battles.human_battles,
+        "_select_model_pair",
+        lambda *_args, **_kw: (uuid.uuid4(), uuid.uuid4()),
+    )
+
+    class _FlushIntegrityRaceDB:
+        def __init__(self) -> None:
+            self.rollback_called = False
+            self.commit_called = False
+            self.added: list[object] = []
+
+        def add(self, obj: object) -> None:
+            self.added.append(obj)
+
+        def add_all(self, objs: list[object]) -> None:
+            self.added.extend(objs)
+
+        def flush(self) -> None:
+            raise IntegrityError("flush", {}, Exception("duplicate"))
+
+        def commit(self) -> None:
+            self.commit_called = True
+
+        def rollback(self) -> None:
+            self.rollback_called = True
+
+        def execute(self, _stmt: object) -> _Result:
+            return _Result([existing])
+
+    fake_db = _FlushIntegrityRaceDB()
+    returned = bot_battles._create_bot_battle(
+        db=cast(Session, fake_db),
+        payload=BotBattleCreateAndWaitRequest(task_id=str(task.id)),
+        principal=Principal(
+            is_authenticated=True,
+            actor_type="bot",
+            user_id=str(user_id),
+            service_account_id=str(service_account_id),
+        ),
+        service_account_id=service_account_id,
+        idempotency_key="flush-race-key",
+        settings=cast(Settings, _settings()),
+    )
+
+    assert returned is existing
+    assert fake_db.rollback_called is True
+    assert fake_db.commit_called is False

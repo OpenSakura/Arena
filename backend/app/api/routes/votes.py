@@ -19,12 +19,21 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.routes.battles import _require_battle_creator_or_admin
+from app.api.routes.battles import (
+    _is_admin_principal,
+    _require_battle_creator_or_admin,
+)
 from app.core.config import Settings, get_settings
-from app.core.security import Principal, get_principal_required
+from app.core.security import (
+    Principal,
+    get_principal_required,
+    is_bot_principal,
+    require_scopes,
+)
 from app.db.session import get_db
 from app.models.battle import Battle, Run
 from app.models.model_registry import Model
+from app.models.service_account import ServiceAccount
 from app.models.vote import Vote
 from app.schemas.votes import VoteCreate, VoteSubmitResponse
 from app.utils.id import parse_uuid_or_422
@@ -36,6 +45,29 @@ from app.utils.rate_limit import (
 from app.utils.redis import get_rate_limit_redis_client
 
 router = APIRouter(prefix="/battles", tags=["votes"])
+require_bot_vote_create_scope = require_scopes(["vote:create"])
+
+
+def _validated_bot_vote_identity(principal: Principal) -> tuple[uuid.UUID, uuid.UUID]:
+    return (
+        _required_bot_principal_uuid(principal.service_account_id),
+        _required_bot_principal_uuid(principal.token_id),
+    )
+
+
+def _required_bot_principal_uuid(value: str | None) -> uuid.UUID:
+    if not value:
+        raise HTTPException(
+            status_code=403,
+            detail="Bot principal service account context required",
+        )
+    try:
+        return uuid.UUID(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail="Bot principal service account context required",
+        ) from exc
 
 
 @router.post("/{battle_id}/vote", status_code=201)
@@ -47,6 +79,20 @@ def submit_vote(
     principal: Principal = Depends(get_principal_required),
     settings: Settings = Depends(get_settings),
 ) -> VoteSubmitResponse:
+    is_bot_vote = is_bot_principal(principal)
+    service_account_id: uuid.UUID | None = None
+    service_account_token_id: uuid.UUID | None = None
+    if is_bot_vote:
+        require_bot_vote_create_scope(principal)
+        service_account_id, service_account_token_id = _validated_bot_vote_identity(
+            principal
+        )
+    elif payload.bot_metadata is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="Human principals cannot submit bot_metadata",
+        )
+
     battle_uuid = parse_uuid_or_422(battle_id, "battle_id")
 
     battle = db.get(Battle, battle_uuid)
@@ -83,6 +129,7 @@ def submit_vote(
         )
 
     winner = payload.winner
+    rubric = payload.rubric.model_dump() if payload.rubric else None
 
     if winner in ("A", "B"):
         chosen_run = run_map.get(winner)
@@ -93,6 +140,8 @@ def submit_vote(
             )
 
     voter_user_id = uuid.UUID(principal.user_id)
+    bot_metadata = payload.bot_metadata if is_bot_vote else None
+
     requester_identity = RequesterIdentity(voter_user_id=voter_user_id)
 
     existing_vote = find_existing_battle_vote(
@@ -110,33 +159,32 @@ def submit_vote(
                     status_code=409,
                     detail="Vote already revealed and cannot be changed",
                 )
-            return VoteSubmitResponse(
-                vote_id=str(existing_vote.id),
-                battle_id=str(battle_uuid),
+            return _build_vote_submit_response(
+                db,
+                vote_id=existing_vote.id,
+                battle_id=battle_uuid,
                 winner=existing_vote.winner,
-                reveal=_build_vote_submit_response(
-                    db,
-                    vote_id=existing_vote.id,
-                    battle_id=battle_uuid,
-                    winner=existing_vote.winner,
-                    model_a_id=run_a.model_id,
-                    model_b_id=run_b.model_id,
-                ).reveal,
+                model_a_id=run_a.model_id,
+                model_b_id=run_b.model_id,
+                vote=existing_vote,
+                principal=principal,
             )
 
         # Compatibility-safe path: unrevealed historical votes are updated,
         # then revealed immediately to match the current contract.
-        if (
-            existing_vote.winner != winner
-            or existing_vote.rubric
-            != (payload.rubric.model_dump() if payload.rubric else None)
-            or existing_vote.comment != payload.comment
-        ):
+        if existing_vote.winner != winner:
             existing_vote.winner = winner
-            existing_vote.rubric = (
-                payload.rubric.model_dump() if payload.rubric else None
-            )
+        if existing_vote.rubric != rubric:
+            existing_vote.rubric = rubric
+        if existing_vote.comment != payload.comment:
             existing_vote.comment = payload.comment
+        if is_bot_vote:
+            if existing_vote.service_account_id != service_account_id:
+                existing_vote.service_account_id = service_account_id
+            if existing_vote.service_account_token_id != service_account_token_id:
+                existing_vote.service_account_token_id = service_account_token_id
+            if existing_vote.bot_metadata != bot_metadata:
+                existing_vote.bot_metadata = bot_metadata
         existing_vote.revealed = True
         db.commit()
 
@@ -147,10 +195,15 @@ def submit_vote(
             winner=existing_vote.winner,
             model_a_id=run_a.model_id,
             model_b_id=run_b.model_id,
+            vote=existing_vote,
+            principal=principal,
         )
 
     _enforce_auth_vote_rate_limit(
         voter_user_id=voter_user_id,
+        service_account_id=service_account_id,
+        service_account_token_id=service_account_token_id,
+        principal=principal,
         settings=settings,
     )
 
@@ -158,9 +211,12 @@ def submit_vote(
         battle_id=battle_uuid,
         winner=winner,
         # Store a plain JSON object in JSONB (not a Pydantic model instance).
-        rubric=(payload.rubric.model_dump() if payload.rubric else None),
+        rubric=rubric,
         comment=payload.comment,
         voter_user_id=voter_user_id,
+        service_account_id=service_account_id,
+        service_account_token_id=service_account_token_id,
+        bot_metadata=bot_metadata,
         revealed=True,
     )
     db.add(vote)
@@ -173,11 +229,15 @@ def submit_vote(
             response=response,
             battle_id=battle_uuid,
             winner=winner,
-            rubric=(payload.rubric.model_dump() if payload.rubric else None),
+            rubric=rubric,
             comment=payload.comment,
             requester_identity=requester_identity,
             model_a_id=run_a.model_id,
             model_b_id=run_b.model_id,
+            service_account_id=service_account_id,
+            service_account_token_id=service_account_token_id,
+            bot_metadata=bot_metadata,
+            principal=principal,
         )
 
     # Ratings are updated exclusively by the background leaderboard refresh
@@ -193,11 +253,15 @@ def submit_vote(
             response=response,
             battle_id=battle_uuid,
             winner=winner,
-            rubric=(payload.rubric.model_dump() if payload.rubric else None),
+            rubric=rubric,
             comment=payload.comment,
             requester_identity=requester_identity,
             model_a_id=run_a.model_id,
             model_b_id=run_b.model_id,
+            service_account_id=service_account_id,
+            service_account_token_id=service_account_token_id,
+            bot_metadata=bot_metadata,
+            principal=principal,
         )
 
     return _build_vote_submit_response(
@@ -207,6 +271,8 @@ def submit_vote(
         winner=winner,
         model_a_id=run_a.model_id,
         model_b_id=run_b.model_id,
+        vote=vote,
+        principal=principal,
     )
 
 
@@ -221,6 +287,10 @@ def _resolve_duplicate_vote_conflict(
     requester_identity: RequesterIdentity,
     model_a_id: uuid.UUID,
     model_b_id: uuid.UUID,
+    service_account_id: uuid.UUID | None = None,
+    service_account_token_id: uuid.UUID | None = None,
+    bot_metadata: dict[str, Any] | None = None,
+    principal: Principal | None = None,
 ) -> VoteSubmitResponse:
     existing_vote = find_existing_battle_vote(
         db,
@@ -247,6 +317,13 @@ def _resolve_duplicate_vote_conflict(
             existing_vote.rubric = rubric
         if existing_vote.comment != comment:
             existing_vote.comment = comment
+        if service_account_id is not None:
+            if existing_vote.service_account_id != service_account_id:
+                existing_vote.service_account_id = service_account_id
+            if existing_vote.service_account_token_id != service_account_token_id:
+                existing_vote.service_account_token_id = service_account_token_id
+            if existing_vote.bot_metadata != bot_metadata:
+                existing_vote.bot_metadata = bot_metadata
         existing_vote.revealed = True
 
     # Commit explicitly so that identity upgrades and payload updates are
@@ -262,6 +339,8 @@ def _resolve_duplicate_vote_conflict(
         winner=existing_vote.winner,
         model_a_id=model_a_id,
         model_b_id=model_b_id,
+        vote=existing_vote,
+        principal=principal,
     )
 
 
@@ -273,11 +352,25 @@ def _build_vote_submit_response(
     winner: str,
     model_a_id: uuid.UUID,
     model_b_id: uuid.UUID,
+    vote: object | None = None,
+    principal: Principal | None = None,
 ) -> VoteSubmitResponse:
     model_a = db.get(Model, model_a_id)
     model_b = db.get(Model, model_b_id)
     if model_a is None or model_b is None:
         raise HTTPException(status_code=500, detail="Model not found")
+
+    voter_actor_type = _vote_actor_type(vote)
+    service_account_uuid = _uuid_attr(vote, "service_account_id")
+    service_account_token_uuid = _uuid_attr(vote, "service_account_token_id")
+
+    service_account_name = None
+    if service_account_uuid is not None:
+        service_account_name = _service_account_name_for_response(
+            db,
+            service_account_id=service_account_uuid,
+            principal=principal,
+        )
 
     return VoteSubmitResponse(
         vote_id=str(vote_id),
@@ -287,7 +380,62 @@ def _build_vote_submit_response(
             "A": {"model_id": str(model_a.id), "display_name": model_a.display_name},
             "B": {"model_id": str(model_b.id), "display_name": model_b.display_name},
         },
+        voter_actor_type=voter_actor_type,
+        service_account_id=(
+            str(service_account_uuid) if service_account_uuid is not None else None
+        ),
+        service_account_name=service_account_name,
+        service_account_token_id=(
+            str(service_account_token_uuid)
+            if service_account_token_uuid is not None
+            else None
+        ),
+        bot_metadata=(
+            getattr(vote, "bot_metadata", None)
+            if voter_actor_type == "bot" and _can_echo_bot_metadata(principal)
+            else None
+        ),
     )
+
+
+def _vote_actor_type(vote: object | None) -> Literal["human", "bot"]:
+    if _uuid_attr(vote, "service_account_id") is not None:
+        return "bot"
+    return "human"
+
+
+def _uuid_attr(vote: object | None, attr_name: str) -> uuid.UUID | None:
+    if vote is None:
+        return None
+    value = getattr(vote, attr_name, None)
+    if value is None:
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    return uuid.UUID(str(value))
+
+
+def _service_account_name_for_response(
+    db: Session,
+    *,
+    service_account_id: uuid.UUID,
+    principal: Principal | None,
+) -> str | None:
+    if principal is not None and principal.service_account_id == str(service_account_id):
+        return principal.service_account_name
+
+    service_account = db.get(ServiceAccount, service_account_id)
+    if service_account is None:
+        return None
+    return service_account.name
+
+
+def _can_echo_bot_metadata(principal: Principal | None) -> bool:
+    if principal is None:
+        return False
+    if is_bot_principal(principal):
+        return True
+    return _is_admin_principal(principal)
 
 
 @lru_cache(maxsize=1)
@@ -306,11 +454,30 @@ def _enforce_auth_vote_rate_limit(
     *,
     voter_user_id: uuid.UUID,
     settings: Settings,
+    principal: Principal | None = None,
+    service_account_id: uuid.UUID | str | None = None,
+    service_account_token_id: uuid.UUID | str | None = None,
 ) -> None:
+    service_account_key = str(service_account_id) if service_account_id else None
+    token_key = str(service_account_token_id) if service_account_token_id else None
+    user_key = str(voter_user_id)
+
+    if principal is not None and is_bot_principal(principal):
+        service_account_key = service_account_key or principal.service_account_id
+        token_key = token_key or principal.token_id
+        user_key = ""
+        if not service_account_key and not token_key:
+            raise HTTPException(
+                status_code=403,
+                detail="Bot principal service account context required",
+            )
+
     limiter = _get_auth_vote_submit_rate_limiter()
     key = build_auth_rate_limit_key(
         scope="auth_vote_submit",
-        user_id=str(voter_user_id),
+        user_id=user_key or None,
+        service_account_id=service_account_key,
+        token_id=token_key,
     )
     if limiter.is_limited(key):
         raise HTTPException(

@@ -35,6 +35,7 @@ def _production_settings(**overrides) -> dict:
         oidc_issuer="https://auth.example",
         oidc_audience="arena",
         arena_master_key="secret-key",
+        service_token_hash_secret="service-token-secret",
         database_url="postgresql+psycopg://prod:prod@db:5432/arena",
         turnstile_secret_key="turnstile-secret",
         cors_allow_origins="https://arena.example",
@@ -90,6 +91,11 @@ def test_dev_allows_web_concurrency_of_one() -> None:
 def test_production_accepts_empty_turnstile_secret_key() -> None:
     settings = Settings(**_production_settings(turnstile_secret_key=""))
     assert settings.turnstile_secret_key == ""
+
+
+def test_production_rejects_missing_service_token_hash_secret() -> None:
+    with pytest.raises(ValueError, match="SERVICE_TOKEN_HASH_SECRET"):
+        Settings(**_production_settings(service_token_hash_secret=""))
 
 
 def test_production_rejects_missing_frontend_oidc_client_id_when_issuer_set() -> None:

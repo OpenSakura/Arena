@@ -40,7 +40,7 @@ describe("LeaderboardRoute", () => {
       </MemoryRouter>
     );
 
-    expect(apiGetMock).toHaveBeenCalledWith("/leaderboard?method=elo");
+    expect(apiGetMock).toHaveBeenCalledWith("/leaderboard?method=elo&judge_type=all");
     expect(screen.getByText("ELO")).toBeDefined();
     expect(screen.queryByText("No ratings yet")).toBeNull();
 
@@ -97,7 +97,7 @@ describe("LeaderboardRoute", () => {
       </MemoryRouter>
     );
 
-    expect(apiGetMock).toHaveBeenCalledWith("/leaderboard?method=bt&include_confidence=true");
+    expect(apiGetMock).toHaveBeenCalledWith("/leaderboard?method=bt&include_confidence=true&judge_type=all");
     expect(screen.getByText("BT")).toBeDefined();
 
     resolveApi!({
@@ -142,7 +142,7 @@ describe("LeaderboardRoute", () => {
       </MemoryRouter>
     );
 
-    expect(apiGetMock).toHaveBeenCalledWith("/leaderboard?method=bt");
+    expect(apiGetMock).toHaveBeenCalledWith("/leaderboard?method=bt&judge_type=all");
 
     resolveApi!({
       method: "bt",
@@ -180,7 +180,7 @@ describe("LeaderboardRoute", () => {
       </MemoryRouter>
     );
 
-    expect(apiGetMock).toHaveBeenCalledWith("/leaderboard?method=elo&include_confidence=true");
+    expect(apiGetMock).toHaveBeenCalledWith("/leaderboard?method=elo&include_confidence=true&judge_type=all");
 
     resolveApi!({
       method: "elo",
@@ -236,7 +236,7 @@ describe("LeaderboardRoute", () => {
       </MemoryRouter>
     );
 
-    expect(apiGetMock).toHaveBeenCalledWith("/leaderboard?method=bt");
+    expect(apiGetMock).toHaveBeenCalledWith("/leaderboard?method=bt&judge_type=all");
     expect(apiGetMock).not.toHaveBeenCalledWith(
       expect.stringContaining("include_confidence")
     );

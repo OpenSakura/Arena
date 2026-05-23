@@ -254,6 +254,9 @@ def configured_backend_env(
     monkeypatch.setenv("RATE_LIMIT_REDIS_URL", RATE_LIMIT_REDIS_URL)
     monkeypatch.setenv("OIDC_ISSUER", AUTHENTIK_ISSUER)
     monkeypatch.setenv("OIDC_AUDIENCE", AUTHENTIK_CLIENT_ID)
+    monkeypatch.setenv(
+        "SERVICE_TOKEN_HASH_SECRET", "arena-e2e-service-token-hmac-secret"
+    )
     monkeypatch.setenv("AUTH_BATTLE_CREATE_RATE_LIMIT", "1")
     monkeypatch.setenv("AUTH_BATTLE_CREATE_RATE_LIMIT_WINDOW_SECONDS", "60")
     monkeypatch.setenv("AUTH_VOTE_SUBMIT_RATE_LIMIT", "1")

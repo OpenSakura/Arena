@@ -6,10 +6,16 @@ Admin endpoints for leaderboard maintenance.
 from __future__ import annotations
 
 import asyncio
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
 
+from app.api.routes import leaderboard as leaderboard_route
+from app.core.config import Settings, get_settings
 from app.core.security import require_admin
+from app.db.session import get_db
+from app.schemas.leaderboard import LeaderboardResponse
 from app.services.leaderboard_refresh import get_leaderboard_refresher
 
 router = APIRouter(
@@ -17,6 +23,27 @@ router = APIRouter(
     tags=["admin", "leaderboard"],
     dependencies=[Depends(require_admin)],
 )
+
+
+@router.get("")
+def get_admin_leaderboard(
+    method: Annotated[str, Query(pattern="^(elo|bt)$")] = "elo",
+    include_confidence: Annotated[bool, Query()] = False,
+    judge_type: Annotated[str, Query(pattern="^(all|human|bot)$")] = "all",
+    service_account_id: str | None = None,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> LeaderboardResponse:
+    return leaderboard_route.build_leaderboard_response(
+        method=method,
+        include_confidence=include_confidence,
+        judge_type=judge_type,
+        service_account_id=leaderboard_route._parse_service_account_id_or_422(
+            service_account_id
+        ),
+        db=db,
+        settings=settings,
+    )
 
 
 @router.get("/status")

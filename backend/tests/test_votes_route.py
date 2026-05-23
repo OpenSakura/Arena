@@ -7,6 +7,7 @@ import uuid
 
 from fastapi import HTTPException, Response
 import pytest
+from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from app.api.routes import battles, votes
@@ -28,6 +29,26 @@ def _authenticated_principal(
         is_authenticated=True,
         user_id=user_id or str(_CREATOR_USER_ID),
         claims=claims or {},
+    )
+
+
+def _bot_principal(
+    *,
+    user_id: str | None = None,
+    service_account_id: uuid.UUID | None = None,
+    service_account_token_id: uuid.UUID | None = None,
+    scopes: tuple[str, ...] = ("vote:create",),
+    service_account_name: str = "Auto Judge",
+) -> Principal:
+    return Principal(
+        is_authenticated=True,
+        actor_type="bot",
+        user_id=user_id or str(uuid.uuid4()),
+        service_account_id=str(service_account_id or uuid.uuid4()),
+        service_account_name=service_account_name,
+        token_id=str(service_account_token_id or uuid.uuid4()),
+        scopes=scopes,
+        claims={},
     )
 
 
@@ -113,6 +134,16 @@ class _VoteDB:
         self.rollback_calls += 1
 
 
+class _CaptureRateLimiter:
+    def __init__(self, *, limited: bool = False) -> None:
+        self.limited = limited
+        self.keys: list[str] = []
+
+    def is_limited(self, key: str) -> bool:
+        self.keys.append(key)
+        return self.limited
+
+
 def _battle_and_runs(
     *,
     status: str = "completed",
@@ -161,6 +192,27 @@ def test_parse_uuid_or_422_rejects_invalid_values() -> None:
 
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail == "Invalid battle_id"
+
+
+def test_vote_create_accepts_bounded_bot_metadata() -> None:
+    metadata = {"external_run_id": "run-001", "score": 0.87}
+
+    payload = VoteCreate(winner="A", bot_metadata=metadata)
+
+    assert payload.winner == "A"
+    assert payload.bot_metadata == metadata
+
+
+def test_vote_create_rejects_invalid_bot_metadata_before_route_use() -> None:
+    db = _VoteDB(battle=None, runs=[])
+
+    with pytest.raises(ValidationError) as exc_info:
+        VoteCreate.model_validate({"winner": "A", "bot_metadata": "not an object"})
+
+    assert exc_info.value.errors()[0]["loc"] == ("bot_metadata",)
+    assert db.added == []
+    assert db.flush_calls == 0
+    assert db.commit_calls == 0
 
 
 def test_build_vote_submit_response_includes_reveal_metadata() -> None:
@@ -634,7 +686,7 @@ def test_submit_vote_rejects_conflicting_existing_revealed_vote(
     assert exc_info.value.detail == "Vote already revealed and cannot be changed"
 
 
-def test_submit_vote_records_vote_and_uses_auth_rate_limit(
+def test_submit_vote_records_vote_and_uses_human_auth_rate_limit_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     battle, runs, model_a_id, model_b_id = _battle_and_runs()
@@ -647,13 +699,11 @@ def test_submit_vote_records_vote_and_uses_auth_rate_limit(
         },
     )
     principal = _authenticated_principal()
-    calls: dict[str, object] = {}
+    limiter = _CaptureRateLimiter()
 
     monkeypatch.setattr(votes, "find_existing_battle_vote", lambda *_a, **_kw: None)
     monkeypatch.setattr(
-        votes,
-        "_enforce_auth_vote_rate_limit",
-        lambda **_kw: calls.__setitem__("rate_limit", True),
+        votes, "_get_auth_vote_submit_rate_limiter", lambda: limiter
     )
 
     response = votes.submit_vote(
@@ -670,12 +720,273 @@ def test_submit_vote_records_vote_and_uses_auth_rate_limit(
         "B": {"model_id": str(model_b_id), "display_name": "Model B"},
     }
     assert response.winner == "A"
-    assert calls["rate_limit"] is True
+    assert limiter.keys == [f"auth_vote_submit:user:{principal.user_id}"]
     assert db.flush_calls == 1
     assert db.commit_calls == 1
     vote_row = next(row for row in db.added if isinstance(row, Vote))
     assert vote_row.voter_user_id == uuid.UUID(principal.user_id)
     assert vote_row.revealed is True
+
+
+def test_submit_vote_persists_bot_metadata_and_safe_attribution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot_user_id = str(uuid.uuid4())
+    service_account_id = uuid.uuid4()
+    service_account_token_id = uuid.uuid4()
+    principal = _bot_principal(
+        user_id=bot_user_id,
+        service_account_id=service_account_id,
+        service_account_token_id=service_account_token_id,
+    )
+    battle, runs, model_a_id, model_b_id = _battle_and_runs(
+        requester_user_id=bot_user_id
+    )
+    metadata = {"external_run_id": "judge-001", "score": 0.91}
+    db = _VoteDB(
+        battle=battle,
+        runs=runs,
+        model_lookup={
+            model_a_id: SimpleNamespace(id=model_a_id, display_name="Model A"),
+            model_b_id: SimpleNamespace(id=model_b_id, display_name="Model B"),
+        },
+    )
+    limiter = _CaptureRateLimiter()
+
+    monkeypatch.setattr(votes, "find_existing_battle_vote", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        votes, "_get_auth_vote_submit_rate_limiter", lambda: limiter
+    )
+
+    response = votes.submit_vote(
+        battle_id=str(battle.id),
+        payload=VoteCreate(winner="B", comment="auto", bot_metadata=metadata),
+        response=Response(),
+        db=db,  # type: ignore[arg-type]
+        principal=principal,
+        settings=_settings(),  # type: ignore[arg-type]
+    )
+
+    vote_row = next(row for row in db.added if isinstance(row, Vote))
+    assert vote_row.voter_user_id == uuid.UUID(bot_user_id)
+    assert vote_row.service_account_id == service_account_id
+    assert vote_row.service_account_token_id == service_account_token_id
+    assert vote_row.bot_metadata == metadata
+    assert vote_row.winner == "B"
+    assert vote_row.comment == "auto"
+    assert vote_row.revealed is True
+    assert limiter.keys == [f"auth_vote_submit:service_account:{service_account_id}"]
+    assert f"auth_vote_submit:user:{bot_user_id}" not in limiter.keys
+    assert response.voter_actor_type == "bot"
+    assert response.service_account_id == str(service_account_id)
+    assert response.service_account_name == "Auto Judge"
+    assert response.service_account_token_id == str(service_account_token_id)
+    assert response.bot_metadata == metadata
+    assert not hasattr(response, "token_hash")
+    assert not hasattr(response, "plaintext_token")
+
+
+def test_submit_vote_rejects_human_bot_metadata_without_writing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    battle, runs, _, _ = _battle_and_runs()
+    db = _VoteDB(battle=battle, runs=runs)
+    monkeypatch.setattr(
+        votes,
+        "find_existing_battle_vote",
+        lambda *_a, **_kw: pytest.fail("human bot_metadata must fail before lookup"),
+    )
+    monkeypatch.setattr(
+        votes,
+        "_enforce_auth_vote_rate_limit",
+        lambda **_kw: pytest.fail("human bot_metadata must fail before rate limit"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        votes.submit_vote(
+            battle_id=str(battle.id),
+            payload=VoteCreate(winner="A", bot_metadata={"spoof": True}),
+            response=Response(),
+            db=db,  # type: ignore[arg-type]
+            principal=_authenticated_principal(),
+            settings=_settings(),  # type: ignore[arg-type]
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Human principals cannot submit bot_metadata"
+    assert db.added == []
+    assert db.flush_calls == 0
+    assert db.commit_calls == 0
+
+
+def test_submit_vote_rejects_under_scoped_bot_without_writing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot_user_id = str(uuid.uuid4())
+    battle, runs, _, _ = _battle_and_runs(requester_user_id=bot_user_id)
+    db = _VoteDB(battle=battle, runs=runs)
+    principal = _bot_principal(user_id=bot_user_id, scopes=("battle:read",))
+    monkeypatch.setattr(
+        votes,
+        "find_existing_battle_vote",
+        lambda *_a, **_kw: pytest.fail("under-scoped bot must fail before lookup"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        votes.submit_vote(
+            battle_id=str(battle.id),
+            payload=VoteCreate(winner="A", bot_metadata={"run": "judge-001"}),
+            response=Response(),
+            db=db,  # type: ignore[arg-type]
+            principal=principal,
+            settings=_settings(),  # type: ignore[arg-type]
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Required service token scope missing"
+    assert db.added == []
+    assert db.flush_calls == 0
+    assert db.commit_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("field_name", "field_value"),
+    [
+        ("service_account_id", None),
+        ("token_id", None),
+        ("service_account_id", "not-a-uuid"),
+        ("token_id", "not-a-uuid"),
+    ],
+)
+def test_submit_vote_rejects_malformed_bot_principal_without_writing(
+    monkeypatch: pytest.MonkeyPatch,
+    field_name: str,
+    field_value: str | None,
+) -> None:
+    bot_user_id = str(uuid.uuid4())
+    battle, runs, _, _ = _battle_and_runs(requester_user_id=bot_user_id)
+    db = _VoteDB(battle=battle, runs=runs)
+    principal = _bot_principal(user_id=bot_user_id).model_copy(
+        update={field_name: field_value}
+    )
+    monkeypatch.setattr(
+        votes,
+        "find_existing_battle_vote",
+        lambda *_a, **_kw: pytest.fail("malformed bot must fail before lookup"),
+    )
+    monkeypatch.setattr(
+        votes,
+        "_enforce_auth_vote_rate_limit",
+        lambda **_kw: pytest.fail("malformed bot must fail before rate limit"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        votes.submit_vote(
+            battle_id=str(battle.id),
+            payload=VoteCreate(winner="A", bot_metadata={"run": "judge-001"}),
+            response=Response(),
+            db=db,  # type: ignore[arg-type]
+            principal=principal,
+            settings=_settings(),  # type: ignore[arg-type]
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Bot principal service account context required"
+    assert db.added == []
+    assert db.flush_calls == 0
+    assert db.commit_calls == 0
+
+
+def test_enforce_auth_vote_rate_limit_uses_bot_token_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot_user_id = uuid.uuid4()
+    token_id = uuid.uuid4()
+    principal = _bot_principal(
+        user_id=str(bot_user_id),
+        service_account_token_id=token_id,
+    ).model_copy(update={"service_account_id": None})
+    limiter = _CaptureRateLimiter()
+    monkeypatch.setattr(
+        votes, "_get_auth_vote_submit_rate_limiter", lambda: limiter
+    )
+
+    votes._enforce_auth_vote_rate_limit(
+        voter_user_id=bot_user_id,
+        principal=principal,
+        settings=_settings(),  # type: ignore[arg-type]
+    )
+
+    assert limiter.keys == [f"auth_vote_submit:token:{token_id}"]
+    assert f"auth_vote_submit:user:{bot_user_id}" not in limiter.keys
+
+
+def test_submit_vote_returns_existing_bot_vote_without_metadata_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot_user_id = str(uuid.uuid4())
+    service_account_id = uuid.uuid4()
+    service_account_token_id = uuid.uuid4()
+    principal = _bot_principal(
+        user_id=bot_user_id,
+        service_account_id=service_account_id,
+        service_account_token_id=service_account_token_id,
+    )
+    battle, runs, model_a_id, model_b_id = _battle_and_runs(
+        requester_user_id=bot_user_id
+    )
+    existing_vote = SimpleNamespace(
+        id=uuid.uuid4(),
+        winner="A",
+        revealed=True,
+        rubric={"tags": ["accuracy"]},
+        comment="existing",
+        service_account_id=service_account_id,
+        service_account_token_id=service_account_token_id,
+        bot_metadata={"external_run_id": "original"},
+    )
+    db = _VoteDB(
+        battle=battle,
+        runs=runs,
+        model_lookup={
+            model_a_id: SimpleNamespace(id=model_a_id, display_name="Model A"),
+            model_b_id: SimpleNamespace(id=model_b_id, display_name="Model B"),
+        },
+    )
+    route_response = Response()
+
+    monkeypatch.setattr(
+        votes, "find_existing_battle_vote", lambda *_a, **_kw: existing_vote
+    )
+    monkeypatch.setattr(
+        votes,
+        "_enforce_auth_vote_rate_limit",
+        lambda **_kw: pytest.fail("duplicate vote must not rate limit"),
+    )
+
+    response = votes.submit_vote(
+        battle_id=str(battle.id),
+        payload=VoteCreate(
+            winner="A",
+            comment="new",
+            bot_metadata={"external_run_id": "replacement"},
+        ),
+        response=route_response,
+        db=db,  # type: ignore[arg-type]
+        principal=principal,
+        settings=_settings(),  # type: ignore[arg-type]
+    )
+
+    assert route_response.status_code == 200
+    assert response.vote_id == str(existing_vote.id)
+    assert response.voter_actor_type == "bot"
+    assert response.service_account_id == str(service_account_id)
+    assert response.service_account_name == "Auto Judge"
+    assert response.service_account_token_id == str(service_account_token_id)
+    assert response.bot_metadata == {"external_run_id": "original"}
+    assert existing_vote.comment == "existing"
+    assert existing_vote.bot_metadata == {"external_run_id": "original"}
+    assert db.commit_calls == 0
 
 
 def test_submit_vote_resolves_duplicate_conflict_after_flush_error(

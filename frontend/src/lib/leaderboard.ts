@@ -6,9 +6,12 @@
 
 export type LeaderboardMethod = "elo" | "bt";
 
+export type JudgeType = "all" | "human" | "bot";
+
 export type LeaderboardSearchParams = {
   method?: string;
   include_confidence?: string;
+  judge_type?: string;
 };
 
 export type ConfidenceRow = {
@@ -24,13 +27,27 @@ export function isEnabled(value: string | undefined): boolean {
 export function buildLeaderboardQuery(searchParams?: LeaderboardSearchParams): {
   selectedMethod: LeaderboardMethod;
   includeConfidence: boolean;
+  judgeType: JudgeType;
   query: string;
 } {
   const selectedMethod: LeaderboardMethod = searchParams?.method === "bt" ? "bt" : "elo";
   const includeConfidence = isEnabled(searchParams?.include_confidence);
-  const query = `/leaderboard?method=${selectedMethod}${includeConfidence ? "&include_confidence=true" : ""}`;
+  
+  let judgeType: JudgeType = "all";
+  if (searchParams?.judge_type === "human" || searchParams?.judge_type === "bot") {
+    judgeType = searchParams.judge_type;
+  }
+  
+  const queryParams = new URLSearchParams();
+  queryParams.set("method", selectedMethod);
+  if (includeConfidence) {
+    queryParams.set("include_confidence", "true");
+  }
+  queryParams.set("judge_type", judgeType);
 
-  return { selectedMethod, includeConfidence, query };
+  const query = `/leaderboard?${queryParams.toString()}`;
+
+  return { selectedMethod, includeConfidence, judgeType, query };
 }
 
 export function hasConfidenceIntervals(rows: ConfidenceRow[]): boolean {

@@ -1,18 +1,50 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 import uuid
 
 import app.services.leaderboard_refresh as leaderboard_refresh_module
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm import Session
+from app.db.base import Base
+from app.models import (
+    Battle,
+    Model,
+    Run,
+    ServiceAccount,
+    ServiceAccountToken,
+    Task,
+    User,
+    Vote,
+)
 from app.services.leaderboard_refresh import (
     LeaderboardRefresher,
     VoteSample,
     compute_elo_confidence_intervals,
     compute_elo_ratings,
+    count_vote_sources,
     filter_outlier_judge_votes,
     limit_votes_per_judge_per_day,
     load_vote_samples,
 )
+
+
+@compiles(JSONB, "sqlite")
+def _compile_jsonb_sqlite(_type: JSONB, _compiler: object, **_kw: object) -> str:
+    return "JSON"
+
+
+@pytest.fixture()
+def leaderboard_db_session(tmp_path) -> Iterator[Session]:
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'leaderboard.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        yield session
+    engine.dispose()
 
 
 def _vote(
@@ -31,6 +63,109 @@ def _vote(
         model_b_id=model_b_id,
         judge_key=judge_key,
     )
+
+
+def _seed_mixed_vote_source_samples(db: Session) -> dict[str, object]:
+    created_at = datetime(2026, 5, 23, 8, 0, tzinfo=timezone.utc)
+    task = Task(source_text="原文")
+    model_a = Model(
+        display_name="Model A",
+        provider_type="openai",
+        model_name=f"model-a-{uuid.uuid4()}",
+        base_url="http://example.invalid",
+    )
+    model_b = Model(
+        display_name="Model B",
+        provider_type="openai",
+        model_name=f"model-b-{uuid.uuid4()}",
+        base_url="http://example.invalid",
+    )
+    db.add_all([task, model_a, model_b])
+    db.flush()
+
+    battle = Battle(task_id=task.id, status="completed")
+    db.add(battle)
+    db.flush()
+    db.add_all(
+        [
+            Run(battle_id=battle.id, side="A", model_id=model_a.id),
+            Run(battle_id=battle.id, side="B", model_id=model_b.id),
+        ]
+    )
+
+    human_user = User(oidc_issuer="https://issuer.example", oidc_sub="human")
+    bot_user_one = User(
+        oidc_issuer="system:service-account",
+        oidc_sub=f"service-account:{uuid.uuid4()}",
+        actor_type="bot",
+    )
+    bot_user_two = User(
+        oidc_issuer="system:service-account",
+        oidc_sub=f"service-account:{uuid.uuid4()}",
+        actor_type="bot",
+    )
+    db.add_all([human_user, bot_user_one, bot_user_two])
+    db.flush()
+
+    service_account_one = ServiceAccount(
+        name="Bot One",
+        bot_user_id=bot_user_one.id,
+    )
+    service_account_two = ServiceAccount(
+        name="Bot Two",
+        bot_user_id=bot_user_two.id,
+    )
+    db.add_all([service_account_one, service_account_two])
+    db.flush()
+    token_one = ServiceAccountToken(
+        service_account_id=service_account_one.id,
+        token_prefix="osa_bot_one",
+        token_hash=f"hash-{uuid.uuid4()}",
+        scopes=["vote:create"],
+    )
+    token_two = ServiceAccountToken(
+        service_account_id=service_account_two.id,
+        token_prefix="osa_bot_two",
+        token_hash=f"hash-{uuid.uuid4()}",
+        scopes=["vote:create"],
+    )
+    db.add_all([token_one, token_two])
+    db.flush()
+
+    human_vote = Vote(
+        battle_id=battle.id,
+        winner="A",
+        voter_user_id=human_user.id,
+        revealed=True,
+        created_at=created_at,
+    )
+    bot_vote_one = Vote(
+        battle_id=battle.id,
+        winner="B",
+        voter_user_id=bot_user_one.id,
+        service_account_id=service_account_one.id,
+        service_account_token_id=token_one.id,
+        revealed=True,
+        created_at=created_at + timedelta(minutes=1),
+    )
+    bot_vote_two = Vote(
+        battle_id=battle.id,
+        winner="tie",
+        voter_user_id=bot_user_two.id,
+        service_account_id=service_account_two.id,
+        service_account_token_id=token_two.id,
+        revealed=True,
+        created_at=created_at + timedelta(minutes=2),
+    )
+    db.add_all([human_vote, bot_vote_one, bot_vote_two])
+    db.commit()
+    return {
+        "human_vote_id": human_vote.id,
+        "bot_vote_one_id": bot_vote_one.id,
+        "bot_vote_two_id": bot_vote_two.id,
+        "service_account_one_id": service_account_one.id,
+        "service_account_two_id": service_account_two.id,
+    }
 
 
 def test_limit_votes_per_judge_per_day_caps_votes() -> None:
@@ -614,6 +749,8 @@ def test_load_vote_samples_day_cap_uses_db_side_utc_boundaries() -> None:
                             day1,
                             "A",
                             voter_user_id,
+                            "human",
+                            None,
                             model_a,
                             model_b,
                         ),
@@ -622,6 +759,8 @@ def test_load_vote_samples_day_cap_uses_db_side_utc_boundaries() -> None:
                             day1 + timedelta(minutes=5),
                             "B",
                             voter_user_id,
+                            "human",
+                            None,
                             model_a,
                             model_b,
                         ),
@@ -634,6 +773,8 @@ def test_load_vote_samples_day_cap_uses_db_side_utc_boundaries() -> None:
                             day2,
                             "A",
                             voter_user_id,
+                            "human",
+                            None,
                             model_a,
                             model_b,
                         )
@@ -656,6 +797,45 @@ def test_load_vote_samples_day_cap_uses_db_side_utc_boundaries() -> None:
         assert "votes.created_at <" in sql
         assert "::date" not in sql
         assert "date(" not in sql
+
+
+def test_load_vote_samples_filters_mixed_human_and_bot_sources(
+    leaderboard_db_session: Session,
+) -> None:
+    seeded = _seed_mixed_vote_source_samples(leaderboard_db_session)
+    service_account_one_id = seeded["service_account_one_id"]
+    assert isinstance(service_account_one_id, uuid.UUID)
+
+    all_samples = load_vote_samples(leaderboard_db_session, judge_type="all")
+    human_samples = load_vote_samples(leaderboard_db_session, judge_type="human")
+    bot_samples = load_vote_samples(leaderboard_db_session, judge_type="bot")
+    service_account_samples = load_vote_samples(
+        leaderboard_db_session,
+        judge_type="all",
+        service_account_id=service_account_one_id,
+    )
+
+    assert [sample.vote_id for sample in all_samples] == [
+        seeded["human_vote_id"],
+        seeded["bot_vote_one_id"],
+        seeded["bot_vote_two_id"],
+    ]
+    assert [sample.vote_id for sample in human_samples] == [seeded["human_vote_id"]]
+    assert [sample.vote_id for sample in bot_samples] == [
+        seeded["bot_vote_one_id"],
+        seeded["bot_vote_two_id"],
+    ]
+    assert [sample.vote_id for sample in service_account_samples] == [
+        seeded["bot_vote_one_id"]
+    ]
+    assert count_vote_sources(all_samples) == {"human": 1, "bot": 2, "total": 3}
+    assert count_vote_sources(human_samples) == {"human": 1, "bot": 0, "total": 1}
+    assert count_vote_sources(bot_samples) == {"human": 0, "bot": 2, "total": 2}
+    assert count_vote_sources(service_account_samples) == {
+        "human": 0,
+        "bot": 1,
+        "total": 1,
+    }
 
 
 # --- Shuffle-and-average Elo ------------------------------------------------

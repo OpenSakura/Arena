@@ -3,6 +3,7 @@ import { RootLayout } from "./layouts/RootLayout";
 import { AdminLayout } from "./routes/admin/AdminLayout";
 import AdminModelsRoute from "./routes/admin/AdminModelsRoute";
 import AdminTasksRoute from "./routes/admin/AdminTasksRoute";
+import AdminServiceAccountsRoute from "./routes/admin/AdminServiceAccountsRoute";
 import HomePage from "./routes/HomePage";
 import BattleRoute from "./routes/BattleRoute";
 import LeaderboardRoute from "./routes/LeaderboardRoute";
@@ -34,6 +35,7 @@ export const router = createBrowserRouter([
           { index: true, element: <Navigate to="/admin/models" replace /> },
           { path: "models", element: <AdminModelsRoute /> },
           { path: "tasks", element: <AdminTasksRoute /> },
+          { path: "service-accounts", element: <AdminServiceAccountsRoute /> },
         ],
       },
     ],

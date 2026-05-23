@@ -13,7 +13,8 @@ const REPO_ROOT = path.resolve(process.cwd(), "..");
 const BACKEND_DIR = path.join(REPO_ROOT, "backend");
 
 const FRONTEND_ORIGIN = `http://localhost:${FRONTEND_PORT}`;
-const BACKEND_BASE_URL = `http://localhost:${BACKEND_PORT}/api/v1`;
+const BACKEND_ORIGIN = `http://127.0.0.1:${BACKEND_PORT}`;
+const BACKEND_BASE_URL = `${BACKEND_ORIGIN}/api/v1`;
 const ENABLE_LIVE_STACK = process.env.PW_ENABLE_LIVE_STACK === "1";
 
 const PLAYWRIGHT_LIVE_STACK_PORT_ENV = {
@@ -29,6 +30,7 @@ const frontendServer = {
   reuseExistingServer: false,
   env: {
     ...process.env,
+    ...(ENABLE_LIVE_STACK ? { VITE_DEV_PROXY_TARGET: BACKEND_ORIGIN } : {}),
   },
 };
 
@@ -66,6 +68,7 @@ const liveStackServers = [
       CORS_ALLOW_ORIGINS: FRONTEND_ORIGIN,
       OIDC_ISSUER: `http://localhost:${PLAYWRIGHT_AUTHENTIK_PORT}/application/o/arena-e2e/`,
       OIDC_AUDIENCE: "arena-e2e-client",
+      FRONTEND_OIDC_CLIENT_ID: "arena-e2e-client",
       ARENA_MASTER_KEY: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
       PLAYWRIGHT_MOCK_LLM_BASE_URL: `http://127.0.0.1:${MOCK_LLM_PORT}`,
     },

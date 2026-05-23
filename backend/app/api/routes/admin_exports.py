@@ -8,9 +8,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import datetime
 import json
+from typing import Annotated, Any
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -19,7 +20,9 @@ from app.core.security import require_admin
 from app.db.session import get_db
 from app.models.battle import Battle, Run
 from app.models.rating import ModelRating
+from app.models.service_account import ServiceAccount
 from app.models.task import Task
+from app.models.user import User
 from app.models.vote import Vote
 
 SCHEMA_VERSION = "arena_export_v1"
@@ -106,11 +109,31 @@ def export_battles(db: Session = Depends(get_db)) -> StreamingResponse:
 
 
 @router.get("/votes.jsonl")
-def export_votes(db: Session = Depends(get_db)) -> StreamingResponse:
-    votes = db.execute(select(Vote).order_by(Vote.created_at.asc())).scalars().all()
+def export_votes(
+    service_account_id: Annotated[uuid.UUID | None, Query()] = None,
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    stmt = (
+        select(Vote, User.actor_type, ServiceAccount.name)
+        .join(User, User.id == Vote.voter_user_id)
+        .outerjoin(ServiceAccount, ServiceAccount.id == Vote.service_account_id)
+        .order_by(Vote.created_at.asc())
+    )
+    if service_account_id is not None:
+        stmt = stmt.where(Vote.service_account_id == service_account_id)
+    votes = db.execute(stmt).all()
 
     def records() -> Iterable[dict[str, object]]:
-        for vote in votes:
+        for row in votes:
+            vote, voter_actor_type, service_account_name = _vote_export_row(row)
+            voter_actor_type = _vote_actor_type_for_export(
+                vote=vote,
+                voter_actor_type=voter_actor_type,
+            )
+            vote_service_account_id = getattr(vote, "service_account_id", None)
+            vote_service_account_token_id = getattr(
+                vote, "service_account_token_id", None
+            )
             yield {
                 "schema_version": SCHEMA_VERSION,
                 "record_type": "vote",
@@ -122,6 +145,15 @@ def export_votes(db: Session = Depends(get_db)) -> StreamingResponse:
                 "voter_user_id": str(vote.voter_user_id)
                 if vote.voter_user_id
                 else None,
+                "voter_actor_type": voter_actor_type,
+                "service_account_id": str(vote_service_account_id)
+                if vote_service_account_id
+                else None,
+                "service_account_name": service_account_name,
+                "service_account_token_id": str(vote_service_account_token_id)
+                if vote_service_account_token_id
+                else None,
+                "bot_metadata": getattr(vote, "bot_metadata", None),
                 "created_at": vote.created_at,
             }
 
@@ -155,6 +187,35 @@ def export_ratings(db: Session = Depends(get_db)) -> StreamingResponse:
             }
 
     return _jsonl_response(records(), filename="ratings.jsonl")
+
+
+def _vote_export_row(row: object) -> tuple[object, str, str | None]:
+    if isinstance(row, tuple):
+        vote, actor_type, service_account_name = row
+        return vote, _safe_actor_type(actor_type), service_account_name
+
+    row_values = getattr(row, "_tuple", None)
+    if callable(row_values):
+        values = row_values()
+        if len(values) == 3:
+            vote, actor_type, service_account_name = values
+            return vote, _safe_actor_type(actor_type), service_account_name
+
+    return row, _safe_actor_type(getattr(row, "voter_actor_type", "human")), getattr(
+        row,
+        "service_account_name",
+        None,
+    )
+
+
+def _vote_actor_type_for_export(*, vote: object, voter_actor_type: str) -> str:
+    if getattr(vote, "service_account_id", None) is not None or voter_actor_type == "bot":
+        return "bot"
+    return "human"
+
+
+def _safe_actor_type(value: Any) -> str:
+    return value if value in {"human", "bot"} else "human"
 
 
 def _jsonl_response(

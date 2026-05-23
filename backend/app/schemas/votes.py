@@ -8,9 +8,11 @@ Notes:
 
 from __future__ import annotations
 
-from typing import Literal, TypeAlias
+from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, field_validator
+
+from app.utils.json_limits import validate_bounded_json_object
 
 # Predefined rubric tag categories for translation quality assessment.
 # Keep in sync with RUBRIC_TAGS in frontend/src/components/BattleView.tsx.
@@ -53,6 +55,14 @@ class VoteCreate(BaseModel):
     winner: Literal["A", "B", "tie"] = Field(..., description="A | B | tie")
     rubric: RubricPayload | None = None
     comment: str | None = Field(default=None, max_length=4096)
+    bot_metadata: dict[str, Any] | None = None
+
+    @field_validator("bot_metadata", mode="before")
+    @classmethod
+    def _validate_bot_metadata(cls, value: Any) -> Any:
+        if value is None:
+            return value
+        return validate_bounded_json_object(value, field_name="bot_metadata")
 
 
 VoteReveal: TypeAlias = dict[str, dict[str, str]]
@@ -63,3 +73,8 @@ class VoteSubmitResponse(BaseModel):
     battle_id: str
     winner: Literal["A", "B", "tie"]
     reveal: VoteReveal
+    voter_actor_type: Literal["human", "bot"] = "human"
+    service_account_id: str | None = None
+    service_account_name: str | None = None
+    service_account_token_id: str | None = None
+    bot_metadata: dict[str, Any] | None = None

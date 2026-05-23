@@ -6,6 +6,7 @@ import { useAdminAccess } from "@/hooks/useAdminAccess";
 const ADMIN_TABS = [
   { href: "/admin/models", label: "Models" },
   { href: "/admin/tasks", label: "Tasks" },
+  { href: "/admin/service-accounts", label: "Service Accounts" },
 ] as const;
 
 export function AdminLayout({ children }: { children?: ReactNode }) {

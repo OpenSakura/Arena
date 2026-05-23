@@ -16,8 +16,10 @@ from app.api.routes import (
     admin_exports,
     admin_leaderboard,
     admin_models,
+    admin_service_accounts,
     admin_tasks,
     battles,
+    bot_battles,
     health,
     leaderboard,
     me,
@@ -31,8 +33,10 @@ api_router.include_router(me.router)
 api_router.include_router(battles.router)
 api_router.include_router(votes.router)
 api_router.include_router(leaderboard.router)
+api_router.include_router(bot_battles.router)
 
 api_router.include_router(admin_models.router)
+api_router.include_router(admin_service_accounts.router)
 api_router.include_router(admin_tasks.router)
 api_router.include_router(admin_exports.router)
 api_router.include_router(admin_leaderboard.router)

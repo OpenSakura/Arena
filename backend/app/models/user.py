@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,6 +26,7 @@ class User(Base):
     __tablename__ = "users"
     __table_args__ = (
         UniqueConstraint("oidc_issuer", "oidc_sub", name="uq_users_oidc_issuer_sub"),
+        CheckConstraint("actor_type IN ('human', 'bot')", name="ck_users_actor_type"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -33,6 +34,13 @@ class User(Base):
     )
     oidc_issuer: Mapped[str] = mapped_column(String(512), nullable=False)
     oidc_sub: Mapped[str] = mapped_column(String(512), nullable=False)
+    actor_type: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="human",
+        server_default=text("'human'"),
+        index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

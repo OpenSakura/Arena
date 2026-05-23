@@ -12,6 +12,7 @@ type BattlePublic = {
   target_lang: string;
   mode: string;
   status: string;
+  retry_allowed: boolean;
   run_a: {
     id: string;
     side: Side;
@@ -37,6 +38,7 @@ function makeBattle(id: string, sourceText: string): BattlePublic {
     target_lang: "zh",
     mode: "jp2zh_ab",
     status: "pending",
+    retry_allowed: false,
     run_a: {
       id: `${id}-run-a`,
       side: "A",
@@ -182,9 +184,10 @@ test("surfaces battle.error details and can recover via restart", async ({ page 
   await expect(page.getByRole("button", { name: /Model A is better/i })).toHaveCount(0);
   await expect(page.getByLabel("Optional feedback")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Submit Vote" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Retry Battle" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry Battle" })).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Start another battle" }).click();
+  await expect(page.getByRole("button", { name: "Start another battle" })).toBeVisible();
+  await page.goto("/battle/new?r=recovered");
 
   await expect(page).toHaveURL(/\/battle\/battle-recovered$/);
   await expect(page.getByText(/^complete$/i)).toBeVisible({ timeout: 60_000 });
@@ -257,7 +260,7 @@ test("disables voting when stream terminal state is battle.failed", async ({ pag
   await expect(page.getByRole("button", { name: /Model B is better/i })).toHaveCount(0);
   await expect(page.getByLabel("Optional feedback")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Submit Vote" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Retry Battle" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry Battle" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Start another battle" })).toBeVisible();
 });
 
@@ -319,12 +322,14 @@ test("recovers when initial battle bootstrap fails and retry starts cleanly", as
 
   await page.goto("/battle/new");
 
-  await expect(page.getByText(/^error$/i)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole("heading", { name: "Unable to load battle" })).toBeVisible({
+    timeout: 60_000,
+  });
   await expect(
     page.getByText(/POST \/battles failed: 500 - No candidate model pair available/),
   ).toBeVisible();
 
-  await page.getByRole("button", { name: "Start another battle" }).click();
+  await page.goto("/battle/new?r=bootstrap-retry");
 
   await expect(page).toHaveURL(/\/battle\/battle-bootstrap-retry$/);
   await expect(page.getByText(/^complete$/i)).toBeVisible({
@@ -394,11 +399,15 @@ test("marks status as error on run.error and keeps voting disabled", async ({ pa
   await expect(page.getByRole("button", { name: /Model A is better/i })).toHaveCount(0);
   await expect(page.getByLabel("Optional feedback")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Submit Vote" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Retry Battle" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry Battle" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Start another battle" })).toBeVisible();
 });
 
 test("surfaces stream transport failures and keeps voting disabled", async ({ page }) => {
+  const battlesById = new Map<string, BattlePublic>();
+
   await mockAuthenticatedSession(page, "battle-stream-failure-access-token");
+  await mockBattleDetails(page, battlesById);
 
   await page.route("**/api/v1/battles", async (route) => {
     if (await handleCorsIfPreflight(route)) return;
@@ -407,16 +416,24 @@ test("surfaces stream transport failures and keeps voting disabled", async ({ pa
       return;
     }
 
+    const battle = makeBattle("battle-stream-disconnect", "Disconnect JP source");
+    battlesById.set(battle.id, battle);
+
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       headers: CORS_HEADERS,
-      body: JSON.stringify(makeBattle("battle-stream-disconnect", "Disconnect JP source")),
+      body: JSON.stringify(battle),
     });
   });
 
   await page.route(/\/api\/v1\/battles\/[^/]+\/stream$/, async (route) => {
-    await route.abort("failed");
+    await route.fulfill({
+      status: 400,
+      contentType: "application/json",
+      headers: CORS_HEADERS,
+      body: JSON.stringify({ detail: "stream disconnected" }),
+    });
   });
 
   await page.goto("/battle/new");

@@ -29,6 +29,11 @@ type LeaderboardResponse = {
   ci: boolean;
   bootstrap_rounds: number | null;
   models: LeaderboardRow[];
+  vote_source_counts?: {
+    human: number;
+    bot: number;
+    total: number;
+  };
 };
 
 const LEADERBOARD_METHODS: ReadonlyArray<LeaderboardResponse["method"]> = ["elo", "bt"];
@@ -46,15 +51,23 @@ function isLeaderboardRow(value: unknown): value is LeaderboardRow {
 }
 
 function isLeaderboardResponse(value: unknown): value is LeaderboardResponse {
-  return (
-    isRecord(value) &&
+  const isBaseValid = isRecord(value) &&
     typeof value.method === "string" &&
     LEADERBOARD_METHODS.includes(value.method as LeaderboardResponse["method"]) &&
     typeof value.ci === "boolean" &&
     (typeof value.bootstrap_rounds === "number" || value.bootstrap_rounds === null) &&
     Array.isArray(value.models) &&
-    value.models.every(isLeaderboardRow)
-  );
+    value.models.every(isLeaderboardRow);
+
+  if (!isBaseValid) return false;
+
+  if (value.vote_source_counts !== undefined) {
+    if (!isRecord(value.vote_source_counts)) return false;
+    const { human, bot, total } = value.vote_source_counts;
+    if (typeof human !== "number" || typeof bot !== "number" || typeof total !== "number") return false;
+  }
+
+  return true;
 }
 
 function parseLeaderboardResponse(value: unknown): LeaderboardResponse {
@@ -110,8 +123,17 @@ function podiumClass(index: number) {
 export default function LeaderboardRoute() {
   const auth = useArenaAuth();
 
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   
+  useEffect(() => {
+    const urlJudgeType = searchParams.get("judge_type");
+    if (urlJudgeType !== null && urlJudgeType !== "all" && urlJudgeType !== "human" && urlJudgeType !== "bot") {
+      const newParams = new URLSearchParams(searchParams);
+      newParams.delete("judge_type");
+      setSearchParams(newParams, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
+
   const searchParamsObj: Record<string, string> = {};
   searchParams.forEach((value, key) => {
     searchParamsObj[key] = value;
@@ -122,12 +144,15 @@ export default function LeaderboardRoute() {
     models: LeaderboardRow[];
     selectedMethod: "elo" | "bt";
     includeConfidence: boolean;
+    judgeType: "all" | "human" | "bot";
     bootstrapRounds: number | null;
+    voteSourceCounts?: { human: number; bot: number; total: number };
     isLoading: boolean;
   }>({
     models: [],
     selectedMethod: request.selectedMethod,
     includeConfidence: request.includeConfidence,
+    judgeType: request.judgeType,
     bootstrapRounds: null,
     isLoading: true,
   });
@@ -143,7 +168,9 @@ export default function LeaderboardRoute() {
       models: [],
       selectedMethod: request.selectedMethod,
       includeConfidence: request.includeConfidence,
+      judgeType: request.judgeType,
       bootstrapRounds: null,
+      voteSourceCounts: undefined,
       isLoading: true,
     }));
     setErrorText(null);
@@ -156,7 +183,9 @@ export default function LeaderboardRoute() {
             models: parsed.models,
             selectedMethod: parsed.method,
             includeConfidence: parsed.ci,
+            judgeType: request.judgeType,
             bootstrapRounds: parsed.bootstrap_rounds,
+            voteSourceCounts: parsed.vote_source_counts,
             isLoading: false,
           });
         }
@@ -167,6 +196,7 @@ export default function LeaderboardRoute() {
             ...prev,
             models: [],
             bootstrapRounds: null,
+            voteSourceCounts: undefined,
             isLoading: false,
           }));
           setErrorText(err instanceof Error ? err.message : "Failed to load leaderboard");
@@ -176,17 +206,25 @@ export default function LeaderboardRoute() {
     return () => {
       ignore = true;
     };
-  }, [request.query, request.selectedMethod, request.includeConfidence]);
+  }, [request.query, request.selectedMethod, request.includeConfidence, request.judgeType]);
 
-  const { models, selectedMethod, includeConfidence, bootstrapRounds, isLoading } = data;
+  const { models, selectedMethod, includeConfidence, judgeType, bootstrapRounds, voteSourceCounts, isLoading } = data;
 
   const hasConfidence = hasConfidenceIntervals(models);
   const confidenceToggleHref = includeConfidence
-    ? `/leaderboard?method=${selectedMethod}`
-    : `/leaderboard?method=${selectedMethod}&include_confidence=true`;
+    ? `/leaderboard?method=${selectedMethod}${judgeType !== "all" ? `&judge_type=${judgeType}` : ""}`
+    : `/leaderboard?method=${selectedMethod}&include_confidence=true${judgeType !== "all" ? `&judge_type=${judgeType}` : ""}`;
   const confidenceToggleLabel = includeConfidence ? "Hide 95% CI" : "Show 95% CI";
 
   const maxRating = models.length > 0 ? Math.max(...models.map((m) => m.rating ?? 0)) : 0;
+
+  const buildFilterLink = (type: "all" | "human" | "bot") => {
+    const params = new URLSearchParams();
+    params.set("method", selectedMethod);
+    if (includeConfidence) params.set("include_confidence", "true");
+    if (type !== "all") params.set("judge_type", type);
+    return `/leaderboard?${params.toString()}`;
+  };
 
   return (
     <div className="grid gap-6">
@@ -202,50 +240,101 @@ export default function LeaderboardRoute() {
           </div>
           <div>
             <h2 className="heading-gradient text-3xl">Leaderboard</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Method: <span className="font-semibold text-foreground/80">{selectedMethod.toUpperCase()}</span>
-              {includeConfidence && bootstrapRounds
-                ? ` (${bootstrapRounds} bootstrap rounds)`
-                : ""}
-            </p>
+            <div className="mt-1 flex flex-col gap-0.5 sm:flex-row sm:gap-2 sm:items-center text-sm text-muted-foreground">
+              <span>
+                Method: <span className="font-semibold text-foreground/80">{selectedMethod.toUpperCase()}</span>
+                {includeConfidence && bootstrapRounds
+                  ? ` (${bootstrapRounds} bootstrap rounds)`
+                  : ""}
+              </span>
+              {voteSourceCounts && (
+                <>
+                  <span className="hidden sm:inline">&bull;</span>
+                  <span>
+                    Votes: <span className="font-semibold text-foreground/80">{voteSourceCounts.total}</span> total
+                    {" "}(<span className="font-semibold text-foreground/80">{voteSourceCounts.human}</span> human,
+                    {" "}<span className="font-semibold text-foreground/80">{voteSourceCounts.bot}</span> bot)
+                  </span>
+                </>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* Method toggles */}
-        <div className="flex items-center gap-1.5 rounded-xl border border-border/50 bg-background/30 p-1 backdrop-blur">
-          <Link
-            to={`/leaderboard?method=elo${includeConfidence ? "&include_confidence=true" : ""}`}
-            aria-label="Elo (baseline)"
-            className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition-all ${
-              selectedMethod === "elo"
-                ? "bg-primary/10 text-primary shadow-sm"
-                : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
-            }`}
-          >
-            Elo
-          </Link>
-          <Link
-            to={`/leaderboard?method=bt${includeConfidence ? "&include_confidence=true" : ""}`}
-            className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition-all ${
-              selectedMethod === "bt"
-                ? "bg-primary/10 text-primary shadow-sm"
-                : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
-            }`}
-          >
-            Bradley-Terry
-          </Link>
-          <div className="h-4 w-px bg-border/50 mx-0.5" />
-          <Link
-            to={confidenceToggleHref}
-            aria-label={confidenceToggleLabel}
-            className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
-              includeConfidence
-                ? "bg-primary/10 text-primary"
-                : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
-            }`}
-          >
-            95% CI
-          </Link>
+        <div className="flex flex-col gap-2 items-end">
+          {/* Judge type toggles */}
+          <div className="flex items-center gap-1.5 rounded-xl border border-border/50 bg-background/30 p-1 backdrop-blur">
+            <Link
+              to={buildFilterLink("all")}
+              aria-label="All votes"
+              className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition-all ${
+                judgeType === "all"
+                  ? "bg-primary/10 text-primary shadow-sm"
+                  : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+              }`}
+            >
+              All votes
+            </Link>
+            <Link
+              to={buildFilterLink("human")}
+              aria-label="Human votes"
+              className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition-all ${
+                judgeType === "human"
+                  ? "bg-primary/10 text-primary shadow-sm"
+                  : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+              }`}
+            >
+              Human votes
+            </Link>
+            <Link
+              to={buildFilterLink("bot")}
+              aria-label="Bot votes"
+              className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition-all ${
+                judgeType === "bot"
+                  ? "bg-primary/10 text-primary shadow-sm"
+                  : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+              }`}
+            >
+              Bot votes
+            </Link>
+          </div>
+
+          {/* Method toggles */}
+          <div className="flex items-center gap-1.5 rounded-xl border border-border/50 bg-background/30 p-1 backdrop-blur">
+            <Link
+              to={`/leaderboard?method=elo${includeConfidence ? "&include_confidence=true" : ""}${judgeType !== "all" ? `&judge_type=${judgeType}` : ""}`}
+              aria-label="Elo (baseline)"
+              className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition-all ${
+                selectedMethod === "elo"
+                  ? "bg-primary/10 text-primary shadow-sm"
+                  : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+              }`}
+            >
+              Elo
+            </Link>
+            <Link
+              to={`/leaderboard?method=bt${includeConfidence ? "&include_confidence=true" : ""}${judgeType !== "all" ? `&judge_type=${judgeType}` : ""}`}
+              className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition-all ${
+                selectedMethod === "bt"
+                  ? "bg-primary/10 text-primary shadow-sm"
+                  : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+              }`}
+            >
+              Bradley-Terry
+            </Link>
+            <div className="h-4 w-px bg-border/50 mx-0.5" />
+            <Link
+              to={confidenceToggleHref}
+              aria-label={confidenceToggleLabel}
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                includeConfidence
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+              }`}
+            >
+              95% CI
+            </Link>
+          </div>
         </div>
       </div>
 

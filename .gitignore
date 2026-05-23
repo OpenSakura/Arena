@@ -39,6 +39,7 @@ backend/tests/e2e/test.env
 # Tool / IDE data
 .sisyphus/
 .playwright-mcp/
+.omo/
 
 # Third-party cloned repos
 3rdparty/

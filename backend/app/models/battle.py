@@ -22,6 +22,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -34,6 +35,15 @@ class Battle(Base):
     __table_args__ = (
         Index("ix_battles_task_id", "task_id"),
         Index("ix_battles_status_created_at", "status", "created_at"),
+        Index(
+            "ix_battles_service_account_idempotency_unique",
+            "requester_service_account_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text(
+                "requester_service_account_id IS NOT NULL AND idempotency_key IS NOT NULL"
+            ),
+        ),
         CheckConstraint(
             "status IN ('pending', 'running', 'completed', 'failed')",
             name="ck_battles_status",
@@ -57,6 +67,12 @@ class Battle(Base):
     )
 
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    requester_service_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("service_accounts.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

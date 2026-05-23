@@ -108,7 +108,7 @@ test("admin models supports test, update, clear key, and delete", async ({ page 
 
   await mockAuthenticatedSession(page);
 
-  await page.route("**/api/v1/admin/models", async (route) => {
+  await page.route(/\/api\/v1\/admin\/models(?:\?.*)?$/, async (route) => {
     if (route.request().method() !== "GET") {
       await route.abort();
       return;
@@ -253,7 +253,7 @@ test("admin tasks supports task-set/task CRUD and jsonl import", async ({ page }
 
   await mockAuthenticatedSession(page);
 
-  await page.route("**/api/v1/admin/task-sets", async (route) => {
+  await page.route(/\/api\/v1\/admin\/task-sets(?:\?.*)?$/, async (route) => {
     const method = route.request().method();
 
     if (method === "GET") {

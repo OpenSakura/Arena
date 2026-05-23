@@ -32,7 +32,8 @@ suitable for testing or low-concurrency environments.
 
 Key construction
 ~~~~~~~~~~~~~~~~
-Authenticated write paths use stable keys derived from the internal user UUID.
+Authenticated write paths use stable keys derived from the internal user UUID or
+service-token identity.
 """
 
 from __future__ import annotations
@@ -275,12 +276,25 @@ class RollingWindowRateLimiter:
         return f"{self._redis_prefix}:ratelimit:{key}:{bucket}"
 
 
-def build_auth_rate_limit_key(*, scope: str, user_id: str) -> str:
-    """Build a rate-limit key for an authenticated user.
+def build_auth_rate_limit_key(
+    *,
+    scope: str,
+    user_id: str | None = None,
+    service_account_id: str | None = None,
+    token_id: str | None = None,
+) -> str:
+    """Build a rate-limit key for an authenticated principal.
 
-    Keyed directly on the internal user UUID — stable and unspoofable.
+    Human keys use the internal user UUID. Bot keys prefer the service account
+    id and can fall back to the token id when account context is unavailable.
     """
-    return f"{scope}:user:{user_id}"
+    if service_account_id:
+        return f"{scope}:service_account:{service_account_id}"
+    if token_id:
+        return f"{scope}:token:{token_id}"
+    if user_id:
+        return f"{scope}:user:{user_id}"
+    raise ValueError("Rate-limit key requires user_id, service_account_id, or token_id")
 
 
 def _redis_int(value: object) -> int:

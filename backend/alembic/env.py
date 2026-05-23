@@ -20,6 +20,7 @@ from app.db.base import Base
 import app.models.battle  # noqa: F401
 import app.models.model_registry  # noqa: F401
 import app.models.rating  # noqa: F401
+import app.models.service_account  # noqa: F401
 import app.models.task  # noqa: F401
 import app.models.user  # noqa: F401
 import app.models.vote  # noqa: F401

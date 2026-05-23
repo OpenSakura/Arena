@@ -443,6 +443,76 @@ def test_stream_battle_second_consumer_reuses_single_owner(
     asyncio.run(exercise())
 
 
+def test_execute_battle_and_wait_uses_stream_terminal_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = BattleOrchestrator()
+    battle_id = uuid.uuid4()
+    calls: list[tuple[uuid.UUID, str | None]] = []
+
+    async def fake_stream_battle(
+        battle_id: uuid.UUID,
+        *,
+        request_id: str | None = None,
+    ):
+        calls.append((battle_id, request_id))
+        yield b"event: battle.started\ndata: {}\n\n"
+        yield b"event: battle.completed\ndata: {}\n\n"
+
+    monkeypatch.setattr(orchestrator, "stream_battle", fake_stream_battle)
+
+    result = asyncio.run(
+        orchestrator.execute_battle_and_wait(
+            battle_id,
+            timeout_seconds=5,
+            request_id="req-123",
+        )
+    )
+
+    assert result == "completed"
+    assert calls == [(battle_id, "req-123")]
+
+
+def test_execute_battle_and_wait_returns_timeout_without_terminal_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = BattleOrchestrator()
+    battle_id = uuid.uuid4()
+    closed = False
+    monotonic_values = iter([100.0, 100.0, 101.1])
+
+    monkeypatch.setattr(
+        orchestrator_module,
+        "time",
+        SimpleNamespace(monotonic=lambda: next(monotonic_values)),
+    )
+
+    async def fake_stream_battle(
+        battle_id: uuid.UUID,
+        *,
+        request_id: str | None = None,
+    ):
+        _ = (battle_id, request_id)
+        nonlocal closed
+        try:
+            yield b"event: battle.started\ndata: {}\n\n"
+            await asyncio.Event().wait()
+        finally:
+            closed = True
+
+    monkeypatch.setattr(orchestrator, "stream_battle", fake_stream_battle)
+
+    result = asyncio.run(
+        orchestrator.execute_battle_and_wait(
+            battle_id,
+            timeout_seconds=1,
+        )
+    )
+
+    assert result == "timeout"
+    assert closed is True
+
+
 def test_execute_run_emits_deltas_and_persists_stats(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

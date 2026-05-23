@@ -27,7 +27,7 @@ import threading
 from typing import Any, TypeAlias, cast
 import uuid
 
-from sqlalchemy import and_, func, select, text  # pyright: ignore[reportMissingImports]
+from sqlalchemy import and_, func, or_, select, text  # pyright: ignore[reportMissingImports]
 from sqlalchemy.orm import Session, aliased  # pyright: ignore[reportMissingImports]
 
 from app.core.config import get_settings
@@ -35,6 +35,7 @@ from app.db.session import get_sessionmaker
 from app.models.battle import Run
 from app.models.model_registry import Model
 from app.models.rating import ModelRating
+from app.models.user import User
 from app.models.vote import Vote
 from app.services.ratings import elo_update
 from app.utils.stats import percentile as _percentile
@@ -43,6 +44,7 @@ logger = logging.getLogger(__name__)
 
 _EloEvent = tuple[uuid.UUID, uuid.UUID, str]
 _ModelPair: TypeAlias = tuple[uuid.UUID, uuid.UUID]
+VALID_JUDGE_TYPES = frozenset({"all", "human", "bot"})
 
 
 @dataclass(slots=True)
@@ -53,6 +55,8 @@ class VoteSample:
     model_a_id: uuid.UUID
     model_b_id: uuid.UUID
     judge_key: str
+    voter_actor_type: str = "human"
+    service_account_id: uuid.UUID | None = None
 
 
 @dataclass(slots=True)
@@ -306,6 +310,29 @@ def limit_votes_per_judge_per_day(
     return kept
 
 
+def normalize_judge_type(judge_type: str) -> str:
+    if judge_type not in VALID_JUDGE_TYPES:
+        raise ValueError("judge_type must be one of: all, human, bot")
+    return judge_type
+
+
+def vote_source_for_sample(vote_sample: object) -> str:
+    actor_type = getattr(vote_sample, "voter_actor_type", "human")
+    service_account_id = getattr(vote_sample, "service_account_id", None)
+    if service_account_id is not None or actor_type == "bot":
+        return "bot"
+    return "human"
+
+
+def count_vote_sources(vote_samples: list[object]) -> dict[str, int]:
+    counts = {"human": 0, "bot": 0, "total": 0}
+    for vote_sample in vote_samples:
+        source = vote_source_for_sample(vote_sample)
+        counts[source] += 1
+        counts["total"] += 1
+    return counts
+
+
 def filter_outlier_judge_votes(
     vote_samples: list[VoteSample],
     *,
@@ -482,14 +509,32 @@ def _normalize_outlier_alpha(alpha: float) -> float:
     return min(max(float(alpha), 1e-12), 1.0)
 
 
-def load_vote_samples(db: Session, *, daily_vote_cap: int = 0) -> list[VoteSample]:
+def load_vote_samples(
+    db: Session,
+    *,
+    daily_vote_cap: int = 0,
+    judge_type: str = "all",
+    service_account_id: uuid.UUID | None = None,
+) -> list[VoteSample]:
     """Load pairwise vote samples in battle execution order."""
 
+    judge_type = normalize_judge_type(judge_type)
+
     if daily_vote_cap <= 0:
-        rows = db.execute(_vote_sample_stmt()).all()
+        rows = db.execute(
+            _vote_sample_stmt(
+                judge_type=judge_type,
+                service_account_id=service_account_id,
+            )
+        ).all()
         return _rows_to_vote_samples(rows)
 
-    bounds = db.execute(_vote_sample_bounds_stmt()).one()
+    bounds = db.execute(
+        _vote_sample_bounds_stmt(
+            judge_type=judge_type,
+            service_account_id=service_account_id,
+        )
+    ).one()
     first_created_at, last_created_at = bounds
     if first_created_at is None or last_created_at is None:
         return []
@@ -502,7 +547,12 @@ def load_vote_samples(db: Session, *, daily_vote_cap: int = 0) -> list[VoteSampl
     while current_day_start < final_day_end:
         current_day_end = current_day_start + timedelta(days=1)
         day_rows = db.execute(
-            _vote_sample_stmt(day_start=current_day_start, day_end=current_day_end)
+            _vote_sample_stmt(
+                day_start=current_day_start,
+                day_end=current_day_end,
+                judge_type=judge_type,
+                service_account_id=service_account_id,
+            )
         ).all()
         day_samples = _rows_to_vote_samples(day_rows)
         samples.extend(
@@ -520,7 +570,10 @@ def _vote_sample_stmt(
     *,
     day_start: datetime | None = None,
     day_end: datetime | None = None,
+    judge_type: str = "all",
+    service_account_id: uuid.UUID | None = None,
 ):
+    judge_type = normalize_judge_type(judge_type)
     run_a = aliased(Run)
     run_b = aliased(Run)
 
@@ -530,9 +583,12 @@ def _vote_sample_stmt(
             Vote.created_at,
             Vote.winner,
             Vote.voter_user_id,
+            User.actor_type,
+            Vote.service_account_id,
             run_a.model_id,
             run_b.model_id,
         )
+        .join(User, User.id == Vote.voter_user_id)
         .join(
             run_a,
             and_(run_a.battle_id == Vote.battle_id, run_a.side == "A"),
@@ -541,7 +597,12 @@ def _vote_sample_stmt(
             run_b,
             and_(run_b.battle_id == Vote.battle_id, run_b.side == "B"),
         )
-        .where(Vote.revealed.is_(True))
+        .where(
+            *_vote_sample_filter_conditions(
+                judge_type=judge_type,
+                service_account_id=service_account_id,
+            )
+        )
     )
 
     if day_start is not None and day_end is not None:
@@ -553,12 +614,18 @@ def _vote_sample_stmt(
     return stmt.order_by(Vote.created_at.asc(), Vote.id.asc())
 
 
-def _vote_sample_bounds_stmt():
+def _vote_sample_bounds_stmt(
+    *,
+    judge_type: str = "all",
+    service_account_id: uuid.UUID | None = None,
+):
+    judge_type = normalize_judge_type(judge_type)
     run_a = aliased(Run)
     run_b = aliased(Run)
 
     return (
         select(func.min(Vote.created_at), func.max(Vote.created_at))
+        .join(User, User.id == Vote.voter_user_id)
         .join(
             run_a,
             and_(run_a.battle_id == Vote.battle_id, run_a.side == "A"),
@@ -567,13 +634,39 @@ def _vote_sample_bounds_stmt():
             run_b,
             and_(run_b.battle_id == Vote.battle_id, run_b.side == "B"),
         )
-        .where(Vote.revealed.is_(True))
+        .where(
+            *_vote_sample_filter_conditions(
+                judge_type=judge_type,
+                service_account_id=service_account_id,
+            )
+        )
     )
+
+
+def _vote_sample_filter_conditions(
+    *,
+    judge_type: str,
+    service_account_id: uuid.UUID | None,
+) -> list[Any]:
+    conditions: list[Any] = [Vote.revealed.is_(True)]
+    if judge_type == "human":
+        conditions.append(
+            and_(Vote.service_account_id.is_(None), User.actor_type == "human")
+        )
+    elif judge_type == "bot":
+        conditions.append(
+            or_(Vote.service_account_id.is_not(None), User.actor_type == "bot")
+        )
+    if service_account_id is not None:
+        conditions.append(Vote.service_account_id == service_account_id)
+    return conditions
 
 
 _VoteSampleRow: TypeAlias = tuple[
     uuid.UUID,
     datetime,
+    str,
+    uuid.UUID | None,
     str,
     uuid.UUID | None,
     uuid.UUID,
@@ -592,14 +685,17 @@ def _rows_to_vote_samples(rows: list[tuple[Any, ...]]) -> list[VoteSample]:
                 row[0],
             )
             continue
+        voter_actor_type = row[4] if row[4] in {"human", "bot"} else "human"
         samples.append(
             VoteSample(
                 vote_id=row[0],
                 created_at=_ensure_utc(row[1]),
                 winner=row[2],
                 judge_key=f"user:{voter_user_id}",
-                model_a_id=row[4],
-                model_b_id=row[5],
+                model_a_id=row[6],
+                model_b_id=row[7],
+                voter_actor_type=voter_actor_type,
+                service_account_id=row[5],
             )
         )
 

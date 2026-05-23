@@ -12,6 +12,7 @@ Notes:
 from app.models.battle import Battle, Run
 from app.models.model_registry import Model
 from app.models.rating import ModelRating
+from app.models.service_account import ServiceAccount, ServiceAccountToken
 from app.models.task import Task, TaskSet
 from app.models.user import User, UserProfile
 from app.models.vote import Vote
@@ -21,6 +22,8 @@ __all__ = [
     "Model",
     "ModelRating",
     "Run",
+    "ServiceAccount",
+    "ServiceAccountToken",
     "Task",
     "TaskSet",
     "User",

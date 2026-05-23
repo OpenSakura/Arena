@@ -165,6 +165,43 @@ class BattleOrchestrator:
         """Public accessor for the LLM client (used during shutdown cleanup)."""
         return self._llm_client
 
+    async def execute_battle_and_wait(
+        self,
+        battle_id: uuid.UUID,
+        *,
+        timeout_seconds: int,
+        request_id: str | None = None,
+    ) -> str:
+        deadline = time.monotonic() + max(float(timeout_seconds), 0.0)
+        stream = self.stream_battle(battle_id, request_id=request_id)
+        try:
+            while True:
+                remaining_seconds = deadline - time.monotonic()
+                if remaining_seconds <= 0:
+                    return "timeout"
+                try:
+                    payload = await asyncio.wait_for(
+                        anext(stream), timeout=remaining_seconds
+                    )
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    return "timeout"
+
+                if b"event: battle.completed" in payload:
+                    return "completed"
+                if b"event: battle.failed" in payload:
+                    return "failed"
+        finally:
+            await stream.aclose()
+
+        battle, _runs = await asyncio.to_thread(
+            lambda: self._load_battle_and_runs(battle_id)
+        )
+        if battle is None:
+            return "failed"
+        return battle.status
+
     @staticmethod
     def _automatic_retry_count(metadata_json: dict[str, object] | None) -> int:
         if not isinstance(metadata_json, dict):

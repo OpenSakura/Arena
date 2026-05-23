@@ -90,6 +90,8 @@ class Settings(BaseSettings):
     # to this key.  Leave empty when no rotation is in progress.
     arena_master_key_old: str = ""
 
+    service_token_hash_secret: str = ""
+
     # FastChat-inspired model pairing controls (model_name keyed).
     battle_sampling_weights: dict[str, float] = Field(default_factory=dict)
     battle_targets: dict[str, list[str]] = Field(default_factory=dict)
@@ -180,6 +182,11 @@ class Settings(BaseSettings):
         if not self.arena_master_key:
             errors.append(
                 "ARENA_MASTER_KEY is empty — API key encryption at rest is disabled"
+            )
+        if not self.service_token_hash_secret.strip():
+            errors.append(
+                "SERVICE_TOKEN_HASH_SECRET is empty — "
+                "service token HMAC hashing is disabled"
             )
         if (
             self.database_url

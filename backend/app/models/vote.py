@@ -41,6 +41,8 @@ class Vote(Base):
         ),
         Index("ix_votes_battle_id", "battle_id"),
         Index("ix_votes_voter_user_id", "voter_user_id"),
+        Index("ix_votes_service_account_id", "service_account_id"),
+        Index("ix_votes_service_account_token_id", "service_account_token_id"),
         Index("ix_votes_created_at", "created_at"),
         # Composite index for leaderboard refresh: WHERE revealed IS TRUE ORDER BY created_at
         # (queries in leaderboard_refresh.py filter on revealed then sort by created_at).
@@ -64,6 +66,17 @@ class Vote(Base):
     voter_user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
+    service_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("service_accounts.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    service_account_token_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("service_account_tokens.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    bot_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     # When True, the voter has seen the model reveal and the vote is locked.
     revealed: Mapped[bool] = mapped_column(
