@@ -1254,13 +1254,11 @@ def _seed_bot_battle_context(db: Session, *, suffix: str) -> SimpleNamespace:
     task = Task(source_text=f"原文 {suffix}", source_lang="ja", target_lang="zh")
     model_a = Model(
         display_name=f"Model A {suffix}",
-        provider_type="test",
         model_name=f"model-a-{suffix}",
         base_url="https://llm.example/v1",
     )
     model_b = Model(
         display_name=f"Model B {suffix}",
-        provider_type="test",
         model_name=f"model-b-{suffix}",
         base_url="https://llm.example/v1",
     )

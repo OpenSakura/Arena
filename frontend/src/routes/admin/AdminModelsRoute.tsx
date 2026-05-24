@@ -19,7 +19,6 @@ import { isRecord } from "@/lib/typeGuards";
 type ModelAdmin = {
   id: string;
   display_name: string;
-  provider_type: string;
   model_name: string;
   base_url: string;
   enabled: boolean;
@@ -48,7 +47,6 @@ type ModelTestResponse = {
 type EditState = {
   id: string;
   display_name: string;
-  provider_type: string;
   model_name: string;
   base_url: string;
   enabled: boolean;
@@ -66,7 +64,6 @@ type EditState = {
 
 type CreateFormState = {
   displayName: string;
-  providerType: string;
   modelName: string;
   baseUrl: string;
   enabled: boolean;
@@ -114,7 +111,6 @@ type Action =
 
 const INITIAL_CREATE_FORM: CreateFormState = {
   displayName: "",
-  providerType: "openai_compat",
   modelName: "",
   baseUrl: "",
   enabled: true,
@@ -162,7 +158,6 @@ function reducer(state: State, action: Action): State {
         models: [action.created, ...state.models],
         create: {
           ...INITIAL_CREATE_FORM,
-          providerType: state.create.providerType,
           enabled: state.create.enabled,
           visibility: state.create.visibility,
         },
@@ -217,7 +212,6 @@ function isModelAdmin(value: unknown): value is ModelAdmin {
     isRecord(value) &&
     typeof value.id === "string" &&
     typeof value.display_name === "string" &&
-    typeof value.provider_type === "string" &&
     typeof value.model_name === "string" &&
     typeof value.base_url === "string" &&
     typeof value.enabled === "boolean" &&
@@ -278,7 +272,6 @@ function toEditState(model: ModelAdmin): EditState {
   return {
     id: model.id,
     display_name: model.display_name,
-    provider_type: model.provider_type,
     model_name: model.model_name,
     base_url: model.base_url,
     enabled: model.enabled,
@@ -336,13 +329,11 @@ export default function AdminModelsRoute() {
     dispatch({ type: "CREATE_START" });
     try {
       if (!state.create.displayName.trim()) throw new Error("display_name is required");
-      if (!state.create.providerType.trim()) throw new Error("provider_type is required");
       if (!state.create.modelName.trim()) throw new Error("model_name is required");
       if (!state.create.baseUrl.trim()) throw new Error("base_url is required");
 
       const payload: Record<string, unknown> = {
         display_name: state.create.displayName.trim(),
-        provider_type: state.create.providerType.trim(),
         model_name: state.create.modelName.trim(),
         base_url: state.create.baseUrl.trim(),
         enabled: state.create.enabled,
@@ -382,13 +373,11 @@ export default function AdminModelsRoute() {
     dispatch({ type: "SAVE_EDIT_START" });
     try {
       if (!state.edit.display_name.trim()) throw new Error("display_name is required");
-      if (!state.edit.provider_type.trim()) throw new Error("provider_type is required");
       if (!state.edit.model_name.trim()) throw new Error("model_name is required");
       if (!state.edit.base_url.trim()) throw new Error("base_url is required");
 
       const patch: Record<string, unknown> = {
         display_name: state.edit.display_name.trim(),
-        provider_type: state.edit.provider_type.trim(),
         model_name: state.edit.model_name.trim(),
         base_url: state.edit.base_url.trim(),
         enabled: state.edit.enabled,
@@ -475,7 +464,7 @@ export default function AdminModelsRoute() {
             Create model
           </div>
           <div className="mt-2.5 grid gap-2.5">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="create-display-name">
                   Display name
@@ -486,18 +475,6 @@ export default function AdminModelsRoute() {
                   onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "displayName", value: e.target.value })}
                   className="input-premium"
                   placeholder="e.g., gpt-4o-mini (gateway)"
-                />
-              </div>
-              <div className="grid gap-1.5">
-                <label className="label-premium" htmlFor="create-provider-type">
-                  Provider type
-                </label>
-                <input
-                  id="create-provider-type"
-                  value={create.providerType}
-                  onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "providerType", value: e.target.value })}
-                  className="input-premium"
-                  placeholder="openai_compat"
                 />
               </div>
             </div>
@@ -718,7 +695,6 @@ export default function AdminModelsRoute() {
                     </td>
                     <td className="td-premium">
                       <div>{m.model_name}</div>
-                      <div className="text-xs text-muted-foreground">{m.provider_type}</div>
                     </td>
                     <td className="td-premium">{m.visibility}</td>
                     <td className="td-premium">{m.enabled ? "yes" : "no"}</td>
@@ -755,7 +731,7 @@ export default function AdminModelsRoute() {
           <div className="mt-1.5 text-xs text-muted-foreground">{edit.id}</div>
 
           <div className="mt-2.5 grid gap-2.5">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="edit-display-name">
                   display_name
@@ -764,17 +740,6 @@ export default function AdminModelsRoute() {
                   id="edit-display-name"
                   value={edit.display_name}
                   onChange={(e) => dispatch({ type: "SET_EDIT_FIELD", field: "display_name", value: e.target.value })}
-                  className="input-premium"
-                />
-              </div>
-              <div className="grid gap-1.5">
-                <label className="label-premium" htmlFor="edit-provider-type">
-                  provider_type
-                </label>
-                <input
-                  id="edit-provider-type"
-                  value={edit.provider_type}
-                  onChange={(e) => dispatch({ type: "SET_EDIT_FIELD", field: "provider_type", value: e.target.value })}
                   className="input-premium"
                 />
               </div>

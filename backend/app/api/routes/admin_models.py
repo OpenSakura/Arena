@@ -5,7 +5,7 @@ Admin endpoints for model registry CRUD.
 Notes:
 - Restrict to admins via OIDC roles/claims (Authentik groups).
 - Admin-supplied ``base_url`` values may target private/internal services.
-- Store provider tokens encrypted at rest in Postgres.
+- Store gateway tokens encrypted at rest in Postgres.
 """
 
 from __future__ import annotations
@@ -62,7 +62,6 @@ def create_model(payload: ModelCreate, db: Session = Depends(get_db)) -> ModelAd
 
     model = Model(
         display_name=payload.display_name,
-        provider_type=payload.provider_type,
         model_name=payload.model_name,
         base_url=payload.base_url,
         enabled=payload.enabled,
@@ -111,7 +110,6 @@ def update_model(
 
     _ALLOWED_MODEL_FIELDS = {
         "display_name",
-        "provider_type",
         "model_name",
         "base_url",
         "enabled",
@@ -127,7 +125,6 @@ def update_model(
     # Fields that must never be set to NULL (NOT NULL in the DB).
     _NON_NULLABLE_FIELDS = {
         "display_name",
-        "provider_type",
         "model_name",
         "base_url",
         "enabled",
@@ -302,7 +299,6 @@ def _to_admin_model(model: Model) -> ModelAdmin:
     return ModelAdmin(
         id=str(model.id),
         display_name=model.display_name,
-        provider_type=model.provider_type,
         model_name=model.model_name,
         base_url=model.base_url,
         enabled=model.enabled,

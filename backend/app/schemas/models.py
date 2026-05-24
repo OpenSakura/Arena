@@ -3,7 +3,7 @@
 Schemas for model registry.
 
 Notes:
-- Never expose provider secrets in API responses.
+- Never expose gateway secrets in API responses.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import json
 from typing import Literal
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.services.prompting import normalize_optional_prompt_text
 
@@ -36,7 +36,6 @@ def _validate_json_dict_size(
 class ModelAdmin(BaseModel):
     id: str
     display_name: str
-    provider_type: str
     model_name: str
     base_url: str
     enabled: bool
@@ -54,8 +53,9 @@ class ModelAdmin(BaseModel):
 
 
 class ModelCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     display_name: str = Field(..., max_length=128)
-    provider_type: str = Field(..., max_length=64)
     model_name: str = Field(..., max_length=128)
     base_url: str = Field(
         ...,
@@ -98,8 +98,9 @@ class ModelCreate(BaseModel):
 
 
 class ModelUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     display_name: str | None = Field(default=None, max_length=128)
-    provider_type: str | None = Field(default=None, max_length=64)
     model_name: str | None = Field(default=None, max_length=128)
     base_url: str | None = Field(default=None, max_length=2048)
 

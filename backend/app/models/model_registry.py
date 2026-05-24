@@ -3,8 +3,8 @@
 Model registry tables.
 
 Notes:
-- This stores *config* needed to call models via your existing gateway/provider.
-- Provider secrets are stored encrypted at rest (see `app.core.crypto`).
+- This stores *config* needed to call models via your existing gateway.
+- Gateway credentials are stored encrypted at rest (see `app.core.crypto`).
 - For security, only trusted admins should be able to create/modify models.
 """
 
@@ -36,10 +36,7 @@ class Model(Base):
     __tablename__ = "models"
     __table_args__ = (
         Index("ix_models_enabled_visibility", "enabled", "visibility"),
-        Index("ix_models_model_name", "model_name"),
-        UniqueConstraint(
-            "provider_type", "model_name", name="uq_models_provider_model"
-        ),
+        UniqueConstraint("model_name", name="uq_models_model_name"),
         CheckConstraint(
             "visibility IN ('public', 'private')", name="ck_models_visibility"
         ),
@@ -63,7 +60,6 @@ class Model(Base):
 
     # Display metadata
     display_name: Mapped[str] = mapped_column(String(128), nullable=False)
-    provider_type: Mapped[str] = mapped_column(String(64), nullable=False)
     model_name: Mapped[str] = mapped_column(String(128), nullable=False)
 
     # Endpoint configuration (for openai-compatible gateways, etc.)
@@ -88,7 +84,7 @@ class Model(Base):
 
     params: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
-    # Encrypted provider token (optional). Store ciphertext here.
+    # Encrypted gateway token (optional). Store ciphertext here.
     encrypted_api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(

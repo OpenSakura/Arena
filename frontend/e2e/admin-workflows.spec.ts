@@ -5,7 +5,6 @@ import { mockSpaAuthenticatedSession } from "./spa-auth";
 type AdminModel = {
   id: string;
   display_name: string;
-  provider_type: string;
   model_name: string;
   base_url: string;
   enabled: boolean;
@@ -49,7 +48,6 @@ function modelRecord(overrides: Partial<AdminModel> = {}): AdminModel {
   return {
     id: "model-1",
     display_name: "Model One",
-    provider_type: "openai_compat",
     model_name: "gpt-4o-mini",
     base_url: "http://127.0.0.1:18080",
     enabled: true,

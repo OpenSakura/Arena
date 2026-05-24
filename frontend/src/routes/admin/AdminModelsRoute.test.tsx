@@ -54,7 +54,6 @@ function modelRecord(overrides: Record<string, unknown> = {}) {
   return {
     id: "model-1",
     display_name: "Model One",
-    provider_type: "openai_compat",
     model_name: "gpt-4o-mini",
     base_url: "https://gateway.example/v1",
     enabled: true,
@@ -121,7 +120,6 @@ describe("AdminModelsRoute", () => {
         "/admin/models",
         {
           display_name: "Model Two",
-          provider_type: "openai_compat",
           model_name: "gpt-two",
           base_url: "https://gateway-two.example/v1",
           enabled: true,
@@ -183,7 +181,6 @@ describe("AdminModelsRoute", () => {
         "/admin/models/model-1",
         expect.objectContaining({
           display_name: "Model One Renamed",
-          provider_type: "openai_compat",
           model_name: "gpt-4o-mini",
           base_url: "https://gateway.example/v1",
           enabled: true,

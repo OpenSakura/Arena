@@ -85,7 +85,6 @@ def _model_stub(**overrides: object) -> SimpleNamespace:
     values: dict[str, object] = {
         "id": uuid.uuid4(),
         "display_name": "Model Alpha",
-        "provider_type": "openai",
         "model_name": "gpt-alpha",
         "base_url": "https://gateway.example/v1",
         "enabled": True,
@@ -118,7 +117,6 @@ def test_parse_uuid_rejects_invalid_values() -> None:
 def test_model_schema_visibility_allows_only_public_or_private() -> None:
     payload_public = ModelCreate(
         display_name="Model Alpha",
-        provider_type="openai_compat",
         model_name="gpt-alpha",
         base_url="https://gateway.example",
         visibility="public",
@@ -134,7 +132,6 @@ def test_model_schema_visibility_rejects_invalid_values() -> None:
         ModelCreate.model_validate(
             {
                 "display_name": "Model Alpha",
-                "provider_type": "openai_compat",
                 "model_name": "gpt-alpha",
                 "base_url": "https://gateway.example",
                 "visibility": "PUBLIC",
@@ -143,6 +140,21 @@ def test_model_schema_visibility_rejects_invalid_values() -> None:
 
     with pytest.raises(ValidationError):
         ModelUpdate.model_validate({"visibility": "internal"})
+
+
+def test_model_schema_rejects_removed_provider_type_field() -> None:
+    with pytest.raises(ValidationError):
+        ModelCreate.model_validate(
+            {
+                "display_name": "Model Alpha",
+                "provider_type": "openai_compat",
+                "model_name": "gpt-alpha",
+                "base_url": "https://gateway.example",
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        ModelUpdate.model_validate({"provider_type": "openai_compat"})
 
 
 def test_encrypt_api_key_wraps_runtime_errors(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -173,12 +185,29 @@ def test_to_admin_model_maps_secret_presence() -> None:
     assert response.base_url == "https://gateway.example/v1"
     assert response.system_prompt == "System prompt"
     assert response.user_prompt == "User prompt"
+    assert set(response.model_dump()) == {
+        "id",
+        "display_name",
+        "model_name",
+        "base_url",
+        "enabled",
+        "visibility",
+        "tags",
+        "temperature",
+        "frequency_penalty",
+        "presence_penalty",
+        "system_prompt",
+        "user_prompt",
+        "params",
+        "has_api_key",
+        "created_at",
+        "updated_at",
+    }
 
 
 def test_model_prompt_fields_normalize_blank_input_to_none() -> None:
     create_payload = ModelCreate(
         display_name="Model Alpha",
-        provider_type="openai_compat",
         model_name="gpt-alpha",
         base_url="https://gateway.example",
         system_prompt="   ",
@@ -319,7 +348,6 @@ def test_create_model_encrypts_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
     payload = ModelCreate(
         display_name="Model Alpha",
-        provider_type="openai",
         model_name="gpt-alpha",
         base_url="https://gateway.example/v1",
         api_key="secret-token",
@@ -348,7 +376,6 @@ def test_create_model_normalizes_blank_prompt_fields_to_none(
 
     payload = ModelCreate(
         display_name="Model Alpha",
-        provider_type="openai",
         model_name="gpt-alpha",
         base_url="https://gateway.example/v1",
         system_prompt="   ",

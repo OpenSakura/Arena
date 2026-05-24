@@ -5,8 +5,8 @@ FastAPI application entrypoint.
 Notes:
 - This service is the arena "control plane": model registry, tasks, battles,
   votes, and leaderboards.
-- Inference is performed via outbound HTTP calls to an existing LLM gateway or
-  provider APIs (no internal worker queue in the MVP).
+- Inference is performed via outbound HTTP calls to an existing LLM gateway
+  (no internal worker queue in the MVP).
 """
 
 from __future__ import annotations

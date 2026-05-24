@@ -4,7 +4,7 @@ FastAPI control-plane API for the translation arena.
 
 Notes:
 - This backend does not host model inference. It calls your existing LLM gateway
-  or provider endpoints over HTTP.
+  over HTTP.
 - Browser authentication uses backend/BFF confidential OIDC with Authentik or
   another OpenID Provider. The backend builds the authorization request, retains
   PKCE `S256` server-side, exchanges the code at `/api/v1/auth/callback` with

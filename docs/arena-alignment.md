@@ -262,7 +262,7 @@ Additional notes given "internal base_url allowed":
 
 Secrets notes:
 
-- Store provider/gateway tokens encrypted at rest in Postgres.
+- Store gateway tokens encrypted at rest in Postgres.
 - Prefer key rotation for `ARENA_MASTER_KEY` (plan for a migration path).
 - Do not log Authorization headers or full upstream responses that might contain secrets.
 

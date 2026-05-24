@@ -70,13 +70,11 @@ def _seed_mixed_vote_source_samples(db: Session) -> dict[str, object]:
     task = Task(source_text="原文")
     model_a = Model(
         display_name="Model A",
-        provider_type="openai",
         model_name=f"model-a-{uuid.uuid4()}",
         base_url="http://example.invalid",
     )
     model_b = Model(
         display_name="Model B",
-        provider_type="openai",
         model_name=f"model-b-{uuid.uuid4()}",
         base_url="http://example.invalid",
     )

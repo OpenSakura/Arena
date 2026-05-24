@@ -1,10 +1,9 @@
 """app.services.llm_client
 
-Client for calling LLM providers (via your existing gateway or direct APIs).
+Client for calling the existing LLM gateway.
 
 Notes:
-- The backend is API-only; it should call external inference endpoints.
-- Keep provider differences behind a small adapter interface.
+- The backend is API-only; it calls the gateway's OpenAI-compatible endpoint.
 - Support streaming (token deltas) so we can forward them via SSE.
 """
 

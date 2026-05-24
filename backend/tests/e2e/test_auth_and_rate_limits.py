@@ -90,7 +90,6 @@ def test_battle_create_requires_authentication(
     )
     model_a = Model(
         display_name=f"Model A {suffix}",
-        provider_type="openai",
         model_name=f"model-a-{suffix}",
         base_url="http://example.invalid",
         enabled=True,
@@ -98,7 +97,6 @@ def test_battle_create_requires_authentication(
     )
     model_b = Model(
         display_name=f"Model B {suffix}",
-        provider_type="openai",
         model_name=f"model-b-{suffix}",
         base_url="http://example.invalid",
         enabled=True,
@@ -129,7 +127,6 @@ def test_authenticated_battle_rate_limit_is_enforced_with_redis(
     )
     model_a = Model(
         display_name=f"Model A {suffix}",
-        provider_type="openai",
         model_name=f"model-a-{suffix}",
         base_url="http://example.invalid",
         enabled=True,
@@ -137,7 +134,6 @@ def test_authenticated_battle_rate_limit_is_enforced_with_redis(
     )
     model_b = Model(
         display_name=f"Model B {suffix}",
-        provider_type="openai",
         model_name=f"model-b-{suffix}",
         base_url="http://example.invalid",
         enabled=True,
@@ -181,7 +177,6 @@ def test_vote_submit_requires_authentication(
     )
     model_a = Model(
         display_name=f"Vote Model A {suffix}",
-        provider_type="openai",
         model_name=f"vote-model-a-{suffix}",
         base_url="http://example.invalid",
         enabled=True,
@@ -189,7 +184,6 @@ def test_vote_submit_requires_authentication(
     )
     model_b = Model(
         display_name=f"Vote Model B {suffix}",
-        provider_type="openai",
         model_name=f"vote-model-b-{suffix}",
         base_url="http://example.invalid",
         enabled=True,
@@ -246,7 +240,6 @@ def test_private_battle_read_requires_authentication(
     )
     model_a = Model(
         display_name=f"Private Battle Model A {suffix}",
-        provider_type="openai",
         model_name=f"private-battle-model-a-{suffix}",
         base_url="http://example.invalid",
         enabled=True,
@@ -254,7 +247,6 @@ def test_private_battle_read_requires_authentication(
     )
     model_b = Model(
         display_name=f"Private Battle Model B {suffix}",
-        provider_type="openai",
         model_name=f"private-battle-model-b-{suffix}",
         base_url="http://example.invalid",
         enabled=True,
@@ -308,7 +300,6 @@ def test_removed_vote_reveal_route_returns_404(
     )
     model_a = Model(
         display_name=f"Vote Reveal Removed Model A {suffix}",
-        provider_type="openai",
         model_name=f"vote-reveal-removed-model-a-{suffix}",
         base_url="http://example.invalid",
         enabled=True,
@@ -316,7 +307,6 @@ def test_removed_vote_reveal_route_returns_404(
     )
     model_b = Model(
         display_name=f"Vote Reveal Removed Model B {suffix}",
-        provider_type="openai",
         model_name=f"vote-reveal-removed-model-b-{suffix}",
         base_url="http://example.invalid",
         enabled=True,
@@ -374,7 +364,6 @@ def test_authenticated_vote_rate_limit_is_enforced_with_redis(
     )
     model_a = Model(
         display_name=f"Vote Model A {suffix}",
-        provider_type="openai",
         model_name=f"vote-model-a-{suffix}",
         base_url="http://example.invalid",
         enabled=True,
@@ -382,7 +371,6 @@ def test_authenticated_vote_rate_limit_is_enforced_with_redis(
     )
     model_b = Model(
         display_name=f"Vote Model B {suffix}",
-        provider_type="openai",
         model_name=f"vote-model-b-{suffix}",
         base_url="http://example.invalid",
         enabled=True,

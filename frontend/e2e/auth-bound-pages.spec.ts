@@ -139,7 +139,6 @@ test("admin models page performs a basic authenticated create flow", async ({ pa
         body: JSON.stringify({
           id: "model-playwright-created",
           display_name: payload.display_name,
-          provider_type: payload.provider_type,
           model_name: payload.model_name,
           base_url: payload.base_url,
           enabled: payload.enabled,
@@ -177,7 +176,6 @@ test("admin models page performs a basic authenticated create flow", async ({ pa
   expect(createCalls[0]?.csrfHeader).toBe("playwright-csrf-token");
   expect(createCalls[0]?.payload).toMatchObject({
     display_name: "Playwright Created Model",
-    provider_type: "openai_compat",
     model_name: "playwright-model",
     base_url: "http://127.0.0.1:18080",
     enabled: true,

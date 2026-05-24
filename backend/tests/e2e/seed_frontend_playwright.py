@@ -41,7 +41,6 @@ def seed_frontend_playwright_fixture() -> None:
 
         model_a = Model(
             display_name="Playwright Live Model A",
-            provider_type="openai_compat",
             model_name="playwright-live-model-a",
             base_url=mock_llm_base_url,
             enabled=True,
@@ -50,7 +49,6 @@ def seed_frontend_playwright_fixture() -> None:
         )
         model_b = Model(
             display_name="Playwright Live Model B",
-            provider_type="openai_compat",
             model_name="playwright-live-model-b",
             base_url=mock_llm_base_url,
             enabled=True,

@@ -80,7 +80,6 @@ def _seed_task_and_models(db_session, *, suffix: str) -> tuple[Task, Model, Mode
     )
     model_a = Model(
         display_name=f"E2E Stream Model A {suffix}",
-        provider_type="openai",
         model_name=f"e2e-stream-a-{suffix}",
         base_url="http://example.invalid",
         enabled=True,
@@ -88,7 +87,6 @@ def _seed_task_and_models(db_session, *, suffix: str) -> tuple[Task, Model, Mode
     )
     model_b = Model(
         display_name=f"E2E Stream Model B {suffix}",
-        provider_type="openai",
         model_name=f"e2e-stream-b-{suffix}",
         base_url="http://example.invalid",
         enabled=True,
@@ -110,7 +108,6 @@ def _seed_completed_battle(
     )
     model_a = Model(
         display_name=f"Vote Pipeline Model A {suffix}",
-        provider_type="openai",
         model_name=f"vote-pipeline-a-{suffix}",
         base_url="http://example.invalid",
         enabled=True,
@@ -118,7 +115,6 @@ def _seed_completed_battle(
     )
     model_b = Model(
         display_name=f"Vote Pipeline Model B {suffix}",
-        provider_type="openai",
         model_name=f"vote-pipeline-b-{suffix}",
         base_url="http://example.invalid",
         enabled=True,
