@@ -27,6 +27,7 @@ data:
 
   # Database connection should come from a Secret in production.
   DATABASE_URL: "postgresql+psycopg://postgres:postgres@postgres:5432/arena"
+  DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS: "30000"
 
   # CORS
   CORS_ALLOW_ORIGINS: "https://arena.example.com"
@@ -49,6 +50,9 @@ data:
   AUTH_SESSION_COOKIE_NAME: "arena_session"
   AUTH_LOGIN_STATE_COOKIE_NAME: "arena_oauth_state"
   AUTH_SESSION_MAX_AGE_SECONDS: "28800"
+  AUTH_SESSION_LAST_SEEN_MIN_INTERVAL_SECONDS: "60"
+  AUTH_SESSION_LAST_SEEN_LOCK_TIMEOUT_MS: "100"
+  AUTH_SESSION_LAST_SEEN_STATEMENT_TIMEOUT_MS: "500"
   AUTH_CSRF_HEADER_NAME: "X-CSRF-Token"
 
   # Cloudflare Turnstile, retained as a deprecated placeholder.

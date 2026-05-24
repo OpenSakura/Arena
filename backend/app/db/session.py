@@ -13,7 +13,7 @@ from collections.abc import Generator
 import threading
 
 from sqlalchemy import create_engine
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
@@ -34,7 +34,11 @@ def get_engine() -> Engine:
         engine = _engine
         if engine is None:
             settings = get_settings()
-            engine = create_engine(settings.database_url, pool_pre_ping=True)
+            engine = create_engine(
+                settings.database_url,
+                pool_pre_ping=True,
+                **_engine_connect_kwargs(settings.database_url, settings),
+            )
             _engine = engine
         return engine
 
@@ -51,7 +55,11 @@ def get_sessionmaker() -> sessionmaker[Session]:
             engine = _engine
             if engine is None:
                 settings = get_settings()
-                engine = create_engine(settings.database_url, pool_pre_ping=True)
+                engine = create_engine(
+                    settings.database_url,
+                    pool_pre_ping=True,
+                    **_engine_connect_kwargs(settings.database_url, settings),
+                )
                 _engine = engine
             session_local = sessionmaker(
                 bind=engine,
@@ -61,6 +69,27 @@ def get_sessionmaker() -> sessionmaker[Session]:
             )
             _SessionLocal = session_local
         return session_local
+
+
+def _engine_connect_kwargs(database_url: str, settings: object) -> dict[str, object]:
+    timeout_ms = int(
+        getattr(settings, "database_idle_in_transaction_session_timeout_ms", 0)
+    )
+    if timeout_ms <= 0 or not _is_postgresql_url(database_url):
+        return {}
+    return {
+        "connect_args": {
+            "options": _postgresql_idle_transaction_timeout_options(timeout_ms)
+        }
+    }
+
+
+def _postgresql_idle_transaction_timeout_options(timeout_ms: int) -> str:
+    return f"-c idle_in_transaction_session_timeout={timeout_ms}ms"
+
+
+def _is_postgresql_url(database_url: str) -> bool:
+    return make_url(database_url).get_backend_name() == "postgresql"
 
 
 def get_db() -> Generator[Session, None, None]:

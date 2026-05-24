@@ -446,6 +446,28 @@ def test_human_battle_stream_route_rejects_bot_principals() -> None:
     assert exc_info.value.detail == "Bot principals cannot use human battle endpoints"
 
 
+def test_human_battle_stream_route_closes_db_dependencies_before_streaming() -> None:
+    route = next(
+        route
+        for route in battles.router.routes
+        if getattr(route, "name", None) == "stream_battle"
+    )
+    dependencies = route.dependant.dependencies
+
+    db_dependency = next(dep for dep in dependencies if dep.name == "db")
+    principal_dependency = next(dep for dep in dependencies if dep.name == "principal")
+    principal_db_dependency = next(
+        dep for dep in principal_dependency.dependencies if dep.name == "db"
+    )
+
+    assert db_dependency.call is battles.get_db
+    assert db_dependency.scope == "function"
+    assert principal_dependency.call is battles.get_principal_optional
+    assert principal_dependency.scope == "function"
+    assert principal_db_dependency.call is battles.get_db
+    assert principal_db_dependency.scope == "function"
+
+
 def test_enforce_daily_vote_cap_allows_when_disabled() -> None:
     """Cap <= 0 means disabled — should not raise."""
     battles._enforce_daily_vote_cap(

@@ -197,9 +197,9 @@ def get_battle(
 async def stream_battle(
     battle_id: str,
     request: Request,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     orchestrator: BattleOrchestrator = Depends(get_battle_orchestrator),
-    principal: Principal = Depends(get_principal_optional),
+    principal: Principal = Depends(get_principal_optional, scope="function"),
     settings: Settings = Depends(get_settings),
 ) -> StreamingResponse:
     battle_uuid = parse_uuid_or_422(battle_id, "battle_id")

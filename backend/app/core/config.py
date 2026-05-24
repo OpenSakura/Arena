@@ -56,8 +56,13 @@ class Settings(BaseSettings):
     auth_login_state_cookie_name: str = "arena_oauth_state"
     auth_session_max_age_seconds: int = 28800
     auth_session_hash_secret: str = ""
+    auth_session_last_seen_min_interval_seconds: int = 60
+    auth_session_last_seen_lock_timeout_ms: int = 100
+    auth_session_last_seen_statement_timeout_ms: int = 500
     auth_csrf_header_name: str = "X-CSRF-Token"
     auth_cookie_secure: bool | None = None
+
+    database_idle_in_transaction_session_timeout_ms: int = 30000
 
     turnstile_secret_key: str = ""
     turnstile_verify_url: str = (

@@ -63,8 +63,12 @@ def test_settings_exposes_confidential_client_defaults(
         "AUTH_LOGIN_STATE_COOKIE_NAME",
         "AUTH_SESSION_MAX_AGE_SECONDS",
         "AUTH_SESSION_HASH_SECRET",
+        "AUTH_SESSION_LAST_SEEN_MIN_INTERVAL_SECONDS",
+        "AUTH_SESSION_LAST_SEEN_LOCK_TIMEOUT_MS",
+        "AUTH_SESSION_LAST_SEEN_STATEMENT_TIMEOUT_MS",
         "AUTH_CSRF_HEADER_NAME",
         "AUTH_COOKIE_SECURE",
+        "DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS",
         "OIDC_ISSUER",
         "OIDC_ADMIN_GROUP_CLAIM",
         "OIDC_ADMIN_GROUP_NAME",
@@ -84,8 +88,12 @@ def test_settings_exposes_confidential_client_defaults(
     assert settings.auth_login_state_cookie_name == "arena_oauth_state"
     assert settings.auth_session_max_age_seconds == 28800
     assert settings.auth_session_hash_secret == ""
+    assert settings.auth_session_last_seen_min_interval_seconds == 60
+    assert settings.auth_session_last_seen_lock_timeout_ms == 100
+    assert settings.auth_session_last_seen_statement_timeout_ms == 500
     assert settings.auth_csrf_header_name == "X-CSRF-Token"
     assert settings.auth_cookie_secure is None
+    assert settings.database_idle_in_transaction_session_timeout_ms == 30000
     assert settings.oidc_issuer == ""
     assert settings.oidc_admin_group_claim == "groups"
     assert settings.oidc_admin_group_name == "arena_admin"

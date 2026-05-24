@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core import crypto
@@ -44,6 +45,9 @@ def settings() -> SimpleNamespace:
     return SimpleNamespace(
         auth_session_hash_secret=_HASH_SECRET,
         auth_session_max_age_seconds=3600,
+        auth_session_last_seen_min_interval_seconds=60,
+        auth_session_last_seen_lock_timeout_ms=100,
+        auth_session_last_seen_statement_timeout_ms=500,
         oidc_login_state_max_age_seconds=600,
     )
 
@@ -83,6 +87,10 @@ def _serialized_row(row: object) -> str:
         {column.name: str(getattr(row, column.name)) for column in row.__table__.columns},
         sort_keys=True,
     )
+
+
+def _without_tz(value: datetime) -> datetime:
+    return value.replace(tzinfo=None)
 
 
 def test_generate_urlsafe_token_uses_at_least_32_random_bytes(
@@ -140,7 +148,7 @@ def test_constant_time_verify_uses_compare_digest(
     assert calls == [(stored_hash, stored_hash)]
 
 
-def test_create_and_load_session_stores_hashes_and_updates_last_seen(
+def test_create_and_load_session_stores_hashes(
     db_session: Session,
     settings: SimpleNamespace,
 ) -> None:
@@ -175,13 +183,203 @@ def test_create_and_load_session_stores_hashes_and_updates_last_seen(
     assert loaded.csrf_token_hash != loaded.session_token_hash
     assert created.session_token not in _serialized_row(loaded)
 
+    assert loaded.last_seen_at == _without_tz(now)
+
+
+def test_fresh_last_seen_refresh_does_not_dirty_or_flush_caller_session(
+    db_session: Session,
+    settings: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = _user(db_session)
+    now = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
+    created = auth_session.create_auth_session(
+        db_session,
+        user=user,
+        settings=settings,
+        now=now,
+    )
+    db_session.commit()
+    loaded = db_session.get(AuthSession, created.row.id)
+    assert loaded is not None
+    flush_calls = 0
+
+    def fail_flush(*_args: object, **_kwargs: object) -> None:
+        nonlocal flush_calls
+        flush_calls += 1
+        raise AssertionError("caller session flush should not run")
+
+    monkeypatch.setattr(db_session, "flush", fail_flush)
+
     auth_session.refresh_auth_session_last_seen(
         db_session,
         auth_session=loaded,
-        now=now + timedelta(minutes=2),
+        settings=settings,
+        now=now + timedelta(seconds=30),
     )
 
-    assert loaded.last_seen_at == now + timedelta(minutes=2)
+    assert loaded.last_seen_at == _without_tz(now)
+    assert not db_session.is_modified(loaded)
+    assert loaded not in db_session.dirty
+    assert flush_calls == 0
+
+
+def test_stale_last_seen_refresh_uses_separate_touch_transaction(
+    db_session: Session,
+    settings: SimpleNamespace,
+) -> None:
+    user = _user(db_session)
+    now = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
+    created = auth_session.create_auth_session(
+        db_session,
+        user=user,
+        settings=settings,
+        now=now,
+    )
+    db_session.commit()
+    loaded = db_session.get(AuthSession, created.row.id)
+    assert loaded is not None
+    pending_user = User(oidc_issuer="https://issuer.example", oidc_sub="pending-user")
+    db_session.add(pending_user)
+
+    touched_at = now + timedelta(minutes=2)
+    auth_session.refresh_auth_session_last_seen(
+        db_session,
+        auth_session=loaded,
+        settings=settings,
+        now=touched_at,
+    )
+
+    assert loaded.last_seen_at == _without_tz(now)
+    assert not db_session.is_modified(loaded)
+    db_session.expire(loaded)
+    assert loaded.last_seen_at == _without_tz(touched_at)
+    with Session(db_session.get_bind()) as verify_db:
+        assert (
+            verify_db.execute(
+                select(User).where(User.oidc_sub == "pending-user")
+            ).scalar_one_or_none()
+            is None
+        )
+    db_session.rollback()
+
+
+@pytest.mark.parametrize("sqlstate", ["55P03", "57014"])
+def test_last_seen_refresh_skips_timeout_sqlstates_without_weakening_session(
+    db_session: Session,
+    settings: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    sqlstate: str,
+) -> None:
+    user = _user(db_session)
+    now = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
+    created = auth_session.create_auth_session(
+        db_session,
+        user=user,
+        settings=settings,
+        now=now,
+    )
+    db_session.commit()
+    loaded = db_session.get(AuthSession, created.row.id)
+    assert loaded is not None
+
+    class TouchTimeout(Exception):
+        pass
+
+    timeout_error = TouchTimeout()
+    timeout_error.sqlstate = sqlstate
+
+    def raise_touch_timeout(*_args: object, **_kwargs: object) -> None:
+        raise DBAPIError("stmt", {}, timeout_error)
+
+    monkeypatch.setattr(
+        auth_session,
+        "_apply_auth_session_touch_timeouts",
+        raise_touch_timeout,
+    )
+
+    with caplog.at_level("INFO", logger="app.services.auth_session"):
+        returned = auth_session.refresh_auth_session_last_seen(
+            db_session,
+            auth_session=loaded,
+            settings=settings,
+            now=now + timedelta(minutes=2),
+    )
+
+    assert returned is loaded
+    assert any(sqlstate in record.message for record in caplog.records)
+    db_session.expire(loaded)
+    assert loaded.last_seen_at == _without_tz(now)
+
+
+def test_auth_session_touch_applies_postgresql_local_timeouts(
+    settings: SimpleNamespace,
+) -> None:
+    class FakeDialect:
+        name = "postgresql"
+
+    class FakeConnection:
+        dialect = FakeDialect()
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, str]]] = []
+
+        def execute(self, statement: object, params: dict[str, str]) -> None:
+            self.calls.append((str(statement), params))
+
+    connection = FakeConnection()
+
+    auth_session._apply_auth_session_touch_timeouts(connection, settings=settings)
+
+    assert connection.calls == [
+        (
+            "SELECT set_config('lock_timeout', :timeout, true)",
+            {"timeout": "100ms"},
+        ),
+        (
+            "SELECT set_config('statement_timeout', :timeout, true)",
+            {"timeout": "500ms"},
+        ),
+    ]
+
+
+def test_last_seen_refresh_reraises_unrelated_db_errors(
+    db_session: Session,
+    settings: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = _user(db_session)
+    now = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
+    created = auth_session.create_auth_session(
+        db_session,
+        user=user,
+        settings=settings,
+        now=now,
+    )
+    db_session.commit()
+    loaded = db_session.get(AuthSession, created.row.id)
+    assert loaded is not None
+
+    class SerializationFailure(Exception):
+        sqlstate = "40001"
+
+    def raise_unrelated_db_error(*_args: object, **_kwargs: object) -> None:
+        raise DBAPIError("stmt", {}, SerializationFailure())
+
+    monkeypatch.setattr(
+        auth_session,
+        "_apply_auth_session_touch_timeouts",
+        raise_unrelated_db_error,
+    )
+
+    with pytest.raises(DBAPIError):
+        auth_session.refresh_auth_session_last_seen(
+            db_session,
+            auth_session=loaded,
+            settings=settings,
+            now=now + timedelta(minutes=2),
+        )
 
 
 def test_load_session_rejects_expired_and_revoked_rows(

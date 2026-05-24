@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+import logging
 import secrets
 from typing import Any, Protocol
 from urllib.parse import urlsplit, urlunsplit
 import uuid
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
+from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -20,11 +25,20 @@ from app.models.user import User
 
 AUTH_TOKEN_RANDOM_BYTES = 32
 AUTH_TOKEN_HASH_LENGTH = 64
+AUTH_SESSION_LAST_SEEN_MIN_INTERVAL_SECONDS = 60
+AUTH_SESSION_LAST_SEEN_LOCK_TIMEOUT_MS = 100
+AUTH_SESSION_LAST_SEEN_STATEMENT_TIMEOUT_MS = 500
+_AUTH_SESSION_TOUCH_TIMEOUT_SQLSTATES = frozenset({"55P03", "57014"})
+
+logger = logging.getLogger(__name__)
 
 
 class _AuthSessionSettings(Protocol):
     auth_session_hash_secret: str
     auth_session_max_age_seconds: int
+    auth_session_last_seen_min_interval_seconds: int
+    auth_session_last_seen_lock_timeout_ms: int
+    auth_session_last_seen_statement_timeout_ms: int
     oidc_login_state_max_age_seconds: int
 
 
@@ -325,12 +339,143 @@ def refresh_auth_session_last_seen(
     db: Session,
     *,
     auth_session: AuthSession,
+    settings: _AuthSessionSettings | None = None,
     now: datetime | None = None,
 ) -> AuthSession:
-    auth_session.last_seen_at = _utc_now(now)
-    db.add(auth_session)
-    db.flush()
+    selected_settings = _selected_settings(settings)
+    touched_at = _utc_now(now)
+    if _auth_session_last_seen_is_fresh(
+        auth_session.last_seen_at,
+        now=touched_at,
+        settings=selected_settings,
+    ):
+        return auth_session
+
+    _touch_auth_session_last_seen(
+        db,
+        auth_session_id=auth_session.id,
+        touched_at=touched_at,
+        settings=selected_settings,
+    )
     return auth_session
+
+
+def _auth_session_last_seen_is_fresh(
+    last_seen_at: datetime,
+    *,
+    now: datetime,
+    settings: _AuthSessionSettings,
+) -> bool:
+    interval_seconds = _last_seen_min_interval_seconds(settings)
+    if interval_seconds <= 0:
+        return False
+    stale_cutoff = now - timedelta(seconds=interval_seconds)
+    return not _is_past(last_seen_at, stale_cutoff)
+
+
+def _touch_auth_session_last_seen(
+    db: Session,
+    *,
+    auth_session_id: uuid.UUID,
+    touched_at: datetime,
+    settings: _AuthSessionSettings,
+) -> None:
+    stale_cutoff = touched_at - timedelta(
+        seconds=max(_last_seen_min_interval_seconds(settings), 0)
+    )
+    with _auth_session_touch_connection(db) as connection:
+        transaction = connection.begin()
+        try:
+            _apply_auth_session_touch_timeouts(connection, settings=settings)
+            connection.execute(
+                update(AuthSession)
+                .where(
+                    AuthSession.id == auth_session_id,
+                    AuthSession.revoked_at.is_(None),
+                    AuthSession.expires_at > touched_at,
+                    AuthSession.last_seen_at <= stale_cutoff,
+                )
+                .values(last_seen_at=touched_at)
+                .execution_options(synchronize_session=False)
+            )
+            transaction.commit()
+        except DBAPIError as exc:
+            if transaction.is_active:
+                transaction.rollback()
+            if _is_auth_session_touch_timeout(exc):
+                logger.info(
+                    "Skipped auth session %s last_seen touch after database timeout "
+                    "sqlstate=%s",
+                    auth_session_id,
+                    _dbapi_sqlstate(exc),
+                )
+                return
+            raise
+
+
+@contextmanager
+def _auth_session_touch_connection(db: Session) -> Iterator[Connection]:
+    bind = db.get_bind()
+    engine = bind if isinstance(bind, Engine) else bind.engine
+    with engine.connect() as connection:
+        yield connection
+
+
+def _apply_auth_session_touch_timeouts(
+    connection: Connection,
+    *,
+    settings: _AuthSessionSettings,
+) -> None:
+    if connection.dialect.name != "postgresql":
+        return
+
+    lock_timeout_ms = _non_negative_int_setting(
+        settings,
+        "auth_session_last_seen_lock_timeout_ms",
+        AUTH_SESSION_LAST_SEEN_LOCK_TIMEOUT_MS,
+    )
+    statement_timeout_ms = _non_negative_int_setting(
+        settings,
+        "auth_session_last_seen_statement_timeout_ms",
+        AUTH_SESSION_LAST_SEEN_STATEMENT_TIMEOUT_MS,
+    )
+
+    if lock_timeout_ms > 0:
+        connection.execute(
+            text("SELECT set_config('lock_timeout', :timeout, true)"),
+            {"timeout": f"{lock_timeout_ms}ms"},
+        )
+    if statement_timeout_ms > 0:
+        connection.execute(
+            text("SELECT set_config('statement_timeout', :timeout, true)"),
+            {"timeout": f"{statement_timeout_ms}ms"},
+        )
+
+
+def _is_auth_session_touch_timeout(exc: DBAPIError) -> bool:
+    return _dbapi_sqlstate(exc) in _AUTH_SESSION_TOUCH_TIMEOUT_SQLSTATES
+
+
+def _dbapi_sqlstate(exc: DBAPIError) -> str | None:
+    orig = getattr(exc, "orig", None)
+    sqlstate = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    return sqlstate if isinstance(sqlstate, str) else None
+
+
+def _last_seen_min_interval_seconds(settings: _AuthSessionSettings) -> int:
+    return _non_negative_int_setting(
+        settings,
+        "auth_session_last_seen_min_interval_seconds",
+        AUTH_SESSION_LAST_SEEN_MIN_INTERVAL_SECONDS,
+    )
+
+
+def _non_negative_int_setting(
+    settings: _AuthSessionSettings,
+    name: str,
+    default: int,
+) -> int:
+    return max(0, int(getattr(settings, name, default)))
 
 
 def rotate_auth_session_csrf_token(

@@ -9,6 +9,7 @@ import uuid
 from fastapi.responses import StreamingResponse
 
 from app.api.routes import admin_exports
+from app.core.security import get_principal_optional
 
 
 class _ScalarResult:
@@ -323,3 +324,32 @@ def test_stream_export_safe_after_session_close() -> None:
     records = _jsonl_records(response)
     assert len(records) == 1
     assert records[0]["id"] == str(task.id)
+
+
+def test_export_routes_close_db_dependencies_before_streaming() -> None:
+    export_routes = [
+        route
+        for route in admin_exports.router.routes
+        if getattr(route, "name", "").startswith("export_")
+    ]
+    assert export_routes
+
+    for route in export_routes:
+        dependencies = route.dependant.dependencies
+        admin_dependency = next(
+            dep for dep in dependencies if dep.call is admin_exports.require_admin
+        )
+        db_dependency = next(dep for dep in dependencies if dep.name == "db")
+        principal_dependency = next(
+            dep for dep in admin_dependency.dependencies if dep.name == "principal"
+        )
+        principal_db_dependency = next(
+            dep for dep in principal_dependency.dependencies if dep.name == "db"
+        )
+
+        assert admin_dependency.scope == "function"
+        assert db_dependency.call is admin_exports.get_db
+        assert db_dependency.scope == "function"
+        assert principal_dependency.call is get_principal_optional
+        assert principal_db_dependency.call is admin_exports.get_db
+        assert principal_db_dependency.scope == "function"

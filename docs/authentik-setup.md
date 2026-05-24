@@ -60,7 +60,11 @@ wiring:
 - `AUTH_SESSION_HASH_SECRET=<backend secret storage only>`
 - `AUTH_SESSION_COOKIE_NAME=arena_session`
 - `AUTH_SESSION_MAX_AGE_SECONDS=28800`
+- `AUTH_SESSION_LAST_SEEN_MIN_INTERVAL_SECONDS=60`
+- `AUTH_SESSION_LAST_SEEN_LOCK_TIMEOUT_MS=100`
+- `AUTH_SESSION_LAST_SEEN_STATEMENT_TIMEOUT_MS=500`
 - `AUTH_CSRF_HEADER_NAME=X-CSRF-Token`
+- `DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=30000`
 - `OIDC_ADMIN_GROUP_CLAIM=groups`
 - `OIDC_ADMIN_GROUP_NAME=arena_admin`
 
@@ -70,6 +74,11 @@ in frontend, Vite, browser, public config, screenshots, or Playwright artifacts.
 `AUTH_SESSION_HASH_SECRET` is also backend/server-only. The backend uses it as
 the HMAC key for opaque OAuth login-state, app session, and CSRF token hashes.
 Changing it invalidates existing app sessions and CSRF tokens.
+
+The `AUTH_SESSION_LAST_SEEN_*` settings bound the best-effort session activity
+touch. Keep the lock/statement timeouts short so a stale session-row lock cannot
+stall login/session checks. `DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS`
+sets PostgreSQL's idle transaction guard for backend connections.
 
 `OIDC_SCOPE` defaults to `openid email profile`. Do not add `offline_access`
 unless a later design adds refresh-token storage. The current backend session

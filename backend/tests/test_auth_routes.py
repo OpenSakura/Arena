@@ -671,11 +671,16 @@ def test_token_exchange_failure_clears_cookie_and_does_not_create_session(
 def test_auth_session_endpoint_returns_profile_and_rotates_csrf(
     harness: _AuthHarness,
 ) -> None:
+    harness.settings.auth_session_last_seen_min_interval_seconds = 0
     created = _create_user_session(
         harness,
         claims={"groups": ["arena_admin"], "email": "profile@example.test"},
         profile=True,
     )
+    with harness.session_factory() as db:
+        row = db.get(AuthSession, created.session_id)
+        assert row is not None
+        before_last_seen = row.last_seen_at
 
     with TestClient(harness.app) as client:
         client.cookies.set(harness.settings.auth_session_cookie_name, created.session_token)
@@ -695,6 +700,7 @@ def test_auth_session_endpoint_returns_profile_and_rotates_csrf(
         row = db.get(AuthSession, created.session_id)
         assert row is not None
         _assert_hmac(second_body["csrf_token"], row.csrf_token_hash)
+        assert row.last_seen_at > before_last_seen
         assert first_body["csrf_token"] not in _serialized_row(row)
         assert second_body["csrf_token"] not in _serialized_row(row)
 
@@ -802,6 +808,9 @@ def _settings() -> SimpleNamespace:
         auth_login_state_cookie_name="arena_oauth_state",
         auth_session_cookie_name="arena_session",
         auth_session_hash_secret=_HASH_SECRET,
+        auth_session_last_seen_min_interval_seconds=60,
+        auth_session_last_seen_lock_timeout_ms=100,
+        auth_session_last_seen_statement_timeout_ms=500,
         auth_session_max_age_seconds=3600,
         public_base_url="https://arena.example",
         oidc_admin_group_claim="groups",

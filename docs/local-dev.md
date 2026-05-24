@@ -65,7 +65,11 @@ OIDC_REDIRECT_PATH=/api/v1/auth/callback
 AUTH_SESSION_HASH_SECRET=<local session hash secret>
 AUTH_SESSION_COOKIE_NAME=arena_session
 AUTH_SESSION_MAX_AGE_SECONDS=28800
+AUTH_SESSION_LAST_SEEN_MIN_INTERVAL_SECONDS=60
+AUTH_SESSION_LAST_SEEN_LOCK_TIMEOUT_MS=100
+AUTH_SESSION_LAST_SEEN_STATEMENT_TIMEOUT_MS=500
 AUTH_CSRF_HEADER_NAME=X-CSRF-Token
+DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=30000
 ```
 
 PKCE `S256` stays enabled. The backend stores the verifier server-side and sends
@@ -77,6 +81,11 @@ Notes:
   server secret storage. Do not place provider secrets in frontend or Vite env.
 - `AUTH_SESSION_HASH_SECRET` HMAC-hashes opaque login-state, session, and CSRF
   tokens stored by the backend.
+- Auth session `last_seen_at` touches are throttled and bounded by the
+  `AUTH_SESSION_LAST_SEEN_*` timeouts so stale session-row locks cannot block
+  normal request handling indefinitely.
+- `DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS` protects PostgreSQL from
+  app connections that are abandoned while holding an open transaction.
 - If you plan to store per-model API keys, set `ARENA_MASTER_KEY` in `backend/.env`.
   If it's unset, model CRUD still works, but saving an `api_key` will fail.
 - **Single-worker only**: the backend must run with `WEB_CONCURRENCY=1` (the default).

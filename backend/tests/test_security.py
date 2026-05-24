@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+import inspect
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import uuid
@@ -26,11 +26,18 @@ def _integrity_error(message: str) -> IntegrityError:
     return IntegrityError("stmt", {}, Exception(message))
 
 
+def test_get_principal_optional_is_not_coroutine_function() -> None:
+    assert not inspect.iscoroutinefunction(security.get_principal_optional)
+
+
 def _auth_session_settings() -> SimpleNamespace:
     return SimpleNamespace(
         auth_session_cookie_name="arena_session",
         auth_session_hash_secret=_AUTH_SESSION_HASH_SECRET,
         auth_session_max_age_seconds=3600,
+        auth_session_last_seen_min_interval_seconds=60,
+        auth_session_last_seen_lock_timeout_ms=100,
+        auth_session_last_seen_statement_timeout_ms=500,
         oidc_login_state_max_age_seconds=600,
     )
 
@@ -312,7 +319,7 @@ def _request(
     )
 
 
-async def _with_auth_session_functions(
+def _with_auth_session_functions(
     *,
     call,
     load_session=None,
@@ -329,7 +336,7 @@ async def _with_auth_session_functions(
             security.load_user_for_auth_session = load_user  # type: ignore[assignment]
         if refresh is not None:
             security.refresh_auth_session_last_seen = refresh  # type: ignore[assignment]
-        return await call()
+        return call()
     finally:
         security.load_auth_session = original_load_session
         security.load_user_for_auth_session = original_load_user
@@ -337,13 +344,11 @@ async def _with_auth_session_functions(
 
 
 def test_get_principal_optional_returns_anon_without_creds() -> None:
-    principal = asyncio.run(
-        security.get_principal_optional(
-            request=_request(),
-            creds=None,
-            db=object(),
-            settings=_auth_session_settings(),
-        )
+    principal = security.get_principal_optional(
+        request=_request(),
+        creds=None,
+        db=object(),
+        settings=_auth_session_settings(),
     )
 
     assert principal.is_authenticated is False
@@ -380,20 +385,19 @@ def test_get_principal_optional_authenticates_session_cookie() -> None:
 
     def fake_refresh(*_args: object, **kwargs: object) -> object:
         refresh_calls.append(kwargs["auth_session"])
+        assert kwargs["settings"] is settings
         return auth_session
 
-    principal = asyncio.run(
-        _with_auth_session_functions(
-            load_session=fake_load_auth_session,
-            load_user=fake_load_user,
-            refresh=fake_refresh,
-            call=lambda: security.get_principal_optional(
-                request=request,
-                creds=None,
-                db=object(),
-                settings=settings,  # type: ignore[arg-type]
-            ),
-        )
+    principal = _with_auth_session_functions(
+        load_session=fake_load_auth_session,
+        load_user=fake_load_user,
+        refresh=fake_refresh,
+        call=lambda: security.get_principal_optional(
+            request=request,
+            creds=None,
+            db=object(),
+            settings=settings,  # type: ignore[arg-type]
+        ),
     )
 
     assert principal.is_authenticated is True
@@ -424,18 +428,16 @@ def test_get_principal_optional_session_cookie_always_builds_human_principal() -
         actor_type="bot",
     )
 
-    principal = asyncio.run(
-        _with_auth_session_functions(
-            load_session=lambda *_args, **_kwargs: auth_session,
-            load_user=lambda *_args, **_kwargs: bot_like_user,
-            refresh=lambda *_args, **_kwargs: auth_session,
-            call=lambda: security.get_principal_optional(
-                request=_request(cookies={"arena_session": "raw-session-token"}),
-                creds=None,
-                db=object(),
-                settings=settings,  # type: ignore[arg-type]
-            ),
-        )
+    principal = _with_auth_session_functions(
+        load_session=lambda *_args, **_kwargs: auth_session,
+        load_user=lambda *_args, **_kwargs: bot_like_user,
+        refresh=lambda *_args, **_kwargs: auth_session,
+        call=lambda: security.get_principal_optional(
+            request=_request(cookies={"arena_session": "raw-session-token"}),
+            creds=None,
+            db=object(),
+            settings=settings,  # type: ignore[arg-type]
+        ),
     )
 
     assert principal.is_authenticated is True
@@ -443,7 +445,14 @@ def test_get_principal_optional_session_cookie_always_builds_human_principal() -
     assert principal.auth_method == "session"
 
 
-def test_session_cookie_principal_claims_authorize_admin_check() -> None:
+def test_session_cookie_principal_claims_authorize_admin_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        oidc_admin_group_claim="groups",
+        oidc_admin_group_name="arena_admin",
+    )
+    monkeypatch.setattr(security, "get_settings", lambda: settings)
     principal = security.Principal(
         is_authenticated=True,
         actor_type="human",
@@ -464,16 +473,14 @@ def test_get_principal_optional_returns_anon_for_missing_session_cookie() -> Non
         assert kwargs["session_token"] == "missing-session-token"
         return None
 
-    principal = asyncio.run(
-        _with_auth_session_functions(
-            load_session=fake_load_auth_session,
-            call=lambda: security.get_principal_optional(
-                request=request,
-                creds=None,
-                db=object(),
-                settings=settings,  # type: ignore[arg-type]
-            ),
-        )
+    principal = _with_auth_session_functions(
+        load_session=fake_load_auth_session,
+        call=lambda: security.get_principal_optional(
+            request=request,
+            creds=None,
+            db=object(),
+            settings=settings,  # type: ignore[arg-type]
+        ),
     )
 
     assert principal.is_authenticated is False
@@ -490,17 +497,15 @@ def test_get_principal_optional_returns_anon_when_session_user_missing() -> None
     )
     request = _request(cookies={"arena_session": "raw-session-token"})
 
-    principal = asyncio.run(
-        _with_auth_session_functions(
-            load_session=lambda *_args, **_kwargs: auth_session,
-            load_user=lambda *_args, **_kwargs: None,
-            call=lambda: security.get_principal_optional(
-                request=request,
-                creds=None,
-                db=object(),
-                settings=settings,  # type: ignore[arg-type]
-            ),
-        )
+    principal = _with_auth_session_functions(
+        load_session=lambda *_args, **_kwargs: auth_session,
+        load_user=lambda *_args, **_kwargs: None,
+        call=lambda: security.get_principal_optional(
+            request=request,
+            creds=None,
+            db=object(),
+            settings=settings,  # type: ignore[arg-type]
+        ),
     )
 
     assert principal.is_authenticated is False
@@ -513,16 +518,14 @@ def test_get_principal_optional_invalid_bearer_precedence_skips_session_cookie()
 
     creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="invalid-token")
 
-    principal = asyncio.run(
-        _with_auth_session_functions(
-            load_session=fail_load_session,
-            call=lambda: security.get_principal_optional(
-                request=_request(cookies={"arena_session": "valid-session-token"}),
-                creds=creds,
-                db=object(),
-                settings=_auth_session_settings(),
-            ),
-        )
+    principal = _with_auth_session_functions(
+        load_session=fail_load_session,
+        call=lambda: security.get_principal_optional(
+            request=_request(cookies={"arena_session": "valid-session-token"}),
+            creds=creds,
+            db=object(),
+            settings=_auth_session_settings(),
+        ),
     )
 
     assert principal.is_authenticated is False
@@ -535,16 +538,14 @@ def test_get_principal_optional_unknown_bearer_never_authenticates_human() -> No
 
     creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="valid-token")
 
-    principal = asyncio.run(
-        _with_auth_session_functions(
-            load_session=fail_load_session,
-            call=lambda: security.get_principal_optional(
-                request=_request(cookies={"arena_session": "other-session-token"}),
-                creds=creds,
-                db=object(),
-                settings=_auth_session_settings(),
-            ),
-        )
+    principal = _with_auth_session_functions(
+        load_session=fail_load_session,
+        call=lambda: security.get_principal_optional(
+            request=_request(cookies={"arena_session": "other-session-token"}),
+            creds=creds,
+            db=object(),
+            settings=_auth_session_settings(),
+        ),
     )
 
     assert principal.is_authenticated is False
@@ -557,19 +558,17 @@ def test_get_principal_optional_malformed_bearer_precedence_skips_session_cookie
     def fail_load_session(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("session cookie fallback was used")
 
-    principal = asyncio.run(
-        _with_auth_session_functions(
-            load_session=fail_load_session,
-            call=lambda: security.get_principal_optional(
-                request=_request(
-                    cookies={"arena_session": "valid-session-token"},
-                    headers={"authorization": "Bearer"},
-                ),
-                creds=None,
-                db=object(),
-                settings=_auth_session_settings(),
+    principal = _with_auth_session_functions(
+        load_session=fail_load_session,
+        call=lambda: security.get_principal_optional(
+            request=_request(
+                cookies={"arena_session": "valid-session-token"},
+                headers={"authorization": "Bearer"},
             ),
-        )
+            creds=None,
+            db=object(),
+            settings=_auth_session_settings(),
+        ),
     )
 
     assert principal.is_authenticated is False
@@ -590,13 +589,11 @@ def test_get_principal_optional_returns_bot_principal_for_service_token(
     db = _ServiceTokenDB([(token, service_account, bot_user)])
     creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=plaintext)
 
-    principal = asyncio.run(
-        security.get_principal_optional(
-            request=_request(),
-            creds=creds,
-            db=db,  # type: ignore[arg-type]
-            settings=_auth_session_settings(),
-        )
+    principal = security.get_principal_optional(
+        request=_request(),
+        creds=creds,
+        db=db,  # type: ignore[arg-type]
+        settings=_auth_session_settings(),
     )
 
     assert principal.is_authenticated is True
@@ -684,13 +681,11 @@ def test_get_principal_optional_rejects_invalid_service_tokens_before_oidc(
     creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=credentials)
 
     with pytest.raises(HTTPException, match="Invalid service token") as exc_info:
-        asyncio.run(
-            security.get_principal_optional(
-                request=_request(),
-                creds=creds,
-                db=db,  # type: ignore[arg-type]
-                settings=_auth_session_settings(),
-            )
+        security.get_principal_optional(
+            request=_request(),
+            creds=creds,
+            db=db,  # type: ignore[arg-type]
+            settings=_auth_session_settings(),
         )
 
     assert exc_info.value.status_code == 401
@@ -729,13 +724,11 @@ def test_get_principal_optional_rejects_inactive_service_token_state(
     creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=plaintext)
 
     with pytest.raises(HTTPException, match=expected_detail) as exc_info:
-        asyncio.run(
-            security.get_principal_optional(
-                request=_request(),
-                creds=creds,
-                db=db,  # type: ignore[arg-type]
-                settings=_auth_session_settings(),
-            )
+        security.get_principal_optional(
+            request=_request(),
+            creds=creds,
+            db=db,  # type: ignore[arg-type]
+            settings=_auth_session_settings(),
         )
 
     assert exc_info.value.status_code == expected_status

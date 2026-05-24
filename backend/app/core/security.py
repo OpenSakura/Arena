@@ -118,10 +118,10 @@ def normalize_groups(value: Any) -> set[str]:
     return set()
 
 
-async def get_principal_optional(
+def get_principal_optional(
     request: Request | None = Depends(_request_dependency),
     creds: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     settings: Any = Depends(_settings_dependency),
 ) -> Principal:
     """Return an authenticated principal when possible.
@@ -185,7 +185,7 @@ def _principal_from_session_cookie(
         logger.error("Auth session %s has invalid claims payload", auth_session.id)
         return Principal(is_authenticated=False)
 
-    refresh_auth_session_last_seen(db, auth_session=auth_session)
+    refresh_auth_session_last_seen(db, auth_session=auth_session, settings=settings)
     _attach_auth_session_context(request=request, auth_session=auth_session)
     return _principal_from_auth_session(
         auth_session=auth_session,

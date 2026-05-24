@@ -375,7 +375,7 @@ def test_me_route_session_cookie_returns_user_profile_and_admin_state(
     with context.session_factory() as db:
         row = db.get(AuthSession, context.auth_session_id)
         assert row is not None
-        assert row.last_seen_at != context.initial_last_seen_at.replace(tzinfo=None)
+        assert row.last_seen_at == context.initial_last_seen_at.replace(tzinfo=None)
 
 
 def test_me_route_session_cookie_missing_admin_group_returns_non_admin(
@@ -593,6 +593,9 @@ def _session_settings():
         "auth_session_cookie_name": "arena_session",
         "auth_session_hash_secret": _HASH_SECRET,
         "auth_session_max_age_seconds": 3600,
+        "auth_session_last_seen_min_interval_seconds": 60,
+        "auth_session_last_seen_lock_timeout_ms": 100,
+        "auth_session_last_seen_statement_timeout_ms": 500,
         "oidc_login_state_max_age_seconds": 600,
         "oidc_admin_group_claim": "groups",
         "oidc_admin_group_name": "arena_admin",

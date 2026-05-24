@@ -196,7 +196,7 @@ def get_session(
             detail="Authenticated user record not found",
         )
 
-    refresh_auth_session_last_seen(db, auth_session=auth_session)
+    refresh_auth_session_last_seen(db, auth_session=auth_session, settings=settings)
     csrf_token = rotate_auth_session_csrf_token(
         db,
         auth_session=auth_session,

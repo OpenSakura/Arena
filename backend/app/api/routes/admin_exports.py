@@ -30,12 +30,12 @@ SCHEMA_VERSION = "arena_export_v1"
 router = APIRouter(
     prefix="/admin/export",
     tags=["admin", "export"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_admin, scope="function")],
 )
 
 
 @router.get("/tasks.jsonl")
-def export_tasks(db: Session = Depends(get_db)) -> StreamingResponse:
+def export_tasks(db: Session = Depends(get_db, scope="function")) -> StreamingResponse:
     # Materialize rows while the DB session is still alive.  The dependency
     # teardown (get_db) closes the session after the route handler returns,
     # but *before* FastAPI iterates the streaming body.  Eagerly loading via
@@ -62,7 +62,7 @@ def export_tasks(db: Session = Depends(get_db)) -> StreamingResponse:
 
 
 @router.get("/runs.jsonl")
-def export_runs(db: Session = Depends(get_db)) -> StreamingResponse:
+def export_runs(db: Session = Depends(get_db, scope="function")) -> StreamingResponse:
     runs = db.execute(select(Run).order_by(Run.created_at.asc())).scalars().all()
 
     def records() -> Iterable[dict[str, object]]:
@@ -87,7 +87,7 @@ def export_runs(db: Session = Depends(get_db)) -> StreamingResponse:
 
 
 @router.get("/battles.jsonl")
-def export_battles(db: Session = Depends(get_db)) -> StreamingResponse:
+def export_battles(db: Session = Depends(get_db, scope="function")) -> StreamingResponse:
     battles = (
         db.execute(select(Battle).order_by(Battle.created_at.asc())).scalars().all()
     )
@@ -111,7 +111,7 @@ def export_battles(db: Session = Depends(get_db)) -> StreamingResponse:
 @router.get("/votes.jsonl")
 def export_votes(
     service_account_id: Annotated[uuid.UUID | None, Query()] = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ) -> StreamingResponse:
     stmt = (
         select(Vote, User.actor_type, ServiceAccount.name)
@@ -161,7 +161,7 @@ def export_votes(
 
 
 @router.get("/ratings.jsonl")
-def export_ratings(db: Session = Depends(get_db)) -> StreamingResponse:
+def export_ratings(db: Session = Depends(get_db, scope="function")) -> StreamingResponse:
     """Export persisted Elo snapshots from ``model_ratings``.
 
     Bradley-Terry ratings are computed on demand by ``/leaderboard?method=bt``
