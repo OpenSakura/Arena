@@ -149,8 +149,8 @@ async def callback(
         OIDCConfigurationError,
         OIDCVerificationError,
         OIDCTokenExchangeError,
-    ):
-        logger.info("OIDC callback authentication failed")
+    ) as exc:
+        logger.info("OIDC callback authentication failed: %s", exc)
         return _callback_failure_response(settings=settings)
 
     session = create_auth_session(
