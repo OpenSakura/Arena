@@ -15,7 +15,6 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 from app.core import security, service_tokens
 from app.models.user import User
-from app.services.oidc import OIDCConfigurationError, OIDCVerificationError
 from app.utils.rate_limit import build_auth_rate_limit_key
 
 
@@ -227,25 +226,6 @@ def test_upsert_user_duplicate_insert_race_keeps_outer_transaction_usable(
         assert db.scalar(select(func.count()).where(SqlUser.oidc_sub == sub)) == 1
 
 
-class _Verifier:
-    def __init__(
-        self,
-        *,
-        claims: dict[str, object] | None = None,
-        error: Exception | None = None,
-    ) -> None:
-        self._claims = claims
-        self._error = error
-        self.tokens: list[str] = []
-
-    async def verify(self, token: str) -> dict[str, object]:
-        self.tokens.append(token)
-        if self._error is not None:
-            raise self._error
-        assert self._claims is not None
-        return dict(self._claims)
-
-
 class _AllResult:
     def __init__(self, rows: list[object]) -> None:
         self._rows = rows
@@ -362,7 +342,6 @@ def test_get_principal_optional_returns_anon_without_creds() -> None:
             request=_request(),
             creds=None,
             db=object(),
-            oidc_verifier=_Verifier(claims={}),  # type: ignore[arg-type]
             settings=_auth_session_settings(),
         )
     )
@@ -412,7 +391,6 @@ def test_get_principal_optional_authenticates_session_cookie() -> None:
                 request=request,
                 creds=None,
                 db=object(),
-                oidc_verifier=_Verifier(error=AssertionError("bearer verifier used")),  # type: ignore[arg-type]
                 settings=settings,  # type: ignore[arg-type]
             ),
         )
@@ -455,7 +433,6 @@ def test_get_principal_optional_session_cookie_always_builds_human_principal() -
                 request=_request(cookies={"arena_session": "raw-session-token"}),
                 creds=None,
                 db=object(),
-                oidc_verifier=_Verifier(error=AssertionError("bearer verifier used")),  # type: ignore[arg-type]
                 settings=settings,  # type: ignore[arg-type]
             ),
         )
@@ -494,7 +471,6 @@ def test_get_principal_optional_returns_anon_for_missing_session_cookie() -> Non
                 request=request,
                 creds=None,
                 db=object(),
-                oidc_verifier=_Verifier(error=AssertionError("bearer verifier used")),  # type: ignore[arg-type]
                 settings=settings,  # type: ignore[arg-type]
             ),
         )
@@ -522,7 +498,6 @@ def test_get_principal_optional_returns_anon_when_session_user_missing() -> None
                 request=request,
                 creds=None,
                 db=object(),
-                oidc_verifier=_Verifier(error=AssertionError("bearer verifier used")),  # type: ignore[arg-type]
                 settings=settings,  # type: ignore[arg-type]
             ),
         )
@@ -536,7 +511,6 @@ def test_get_principal_optional_invalid_bearer_precedence_skips_session_cookie()
     def fail_load_session(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("session cookie fallback was used")
 
-    verifier = _Verifier(error=OIDCVerificationError("invalid token"))
     creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="invalid-token")
 
     principal = asyncio.run(
@@ -546,7 +520,6 @@ def test_get_principal_optional_invalid_bearer_precedence_skips_session_cookie()
                 request=_request(cookies={"arena_session": "valid-session-token"}),
                 creds=creds,
                 db=object(),
-                oidc_verifier=verifier,  # type: ignore[arg-type]
                 settings=_auth_session_settings(),
             ),
         )
@@ -554,30 +527,12 @@ def test_get_principal_optional_invalid_bearer_precedence_skips_session_cookie()
 
     assert principal.is_authenticated is False
     assert principal.auth_method == "none"
-    assert verifier.tokens == ["invalid-token"]
 
 
-def test_get_principal_optional_valid_bearer_precedence_skips_session_cookie(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    bearer_user = User(
-        id=uuid.uuid4(),
-        oidc_issuer="https://issuer.example",
-        oidc_sub="bearer-sub",
-        actor_type="human",
-    )
-
+def test_get_principal_optional_unknown_bearer_never_authenticates_human() -> None:
     def fail_load_session(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("session cookie fallback was used")
 
-    monkeypatch.setattr(security, "_upsert_user", lambda *_args, **_kwargs: bearer_user)
-    verifier = _Verifier(
-        claims={
-            "iss": "https://issuer.example",
-            "sub": "bearer-sub",
-            "groups": ["bearer-admin"],
-        }
-    )
     creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="valid-token")
 
     principal = asyncio.run(
@@ -587,21 +542,15 @@ def test_get_principal_optional_valid_bearer_precedence_skips_session_cookie(
                 request=_request(cookies={"arena_session": "other-session-token"}),
                 creds=creds,
                 db=object(),
-                oidc_verifier=verifier,  # type: ignore[arg-type]
                 settings=_auth_session_settings(),
             ),
         )
     )
 
-    assert principal.is_authenticated is True
-    assert principal.auth_method == "bearer"
-    assert principal.user_id == str(bearer_user.id)
-    assert principal.oidc_sub == "bearer-sub"
-    assert principal.claims == {
-        "iss": "https://issuer.example",
-        "sub": "bearer-sub",
-        "groups": ["bearer-admin"],
-    }
+    assert principal.is_authenticated is False
+    assert principal.auth_method == "none"
+    assert principal.user_id is None
+    assert principal.claims == {}
 
 
 def test_get_principal_optional_malformed_bearer_precedence_skips_session_cookie() -> None:
@@ -618,7 +567,6 @@ def test_get_principal_optional_malformed_bearer_precedence_skips_session_cookie
                 ),
                 creds=None,
                 db=object(),
-                oidc_verifier=_Verifier(error=AssertionError("bearer verifier used")),  # type: ignore[arg-type]
                 settings=_auth_session_settings(),
             ),
         )
@@ -626,138 +574,6 @@ def test_get_principal_optional_malformed_bearer_precedence_skips_session_cookie
 
     assert principal.is_authenticated is False
     assert principal.auth_method == "none"
-
-
-@pytest.mark.parametrize(
-    "error",
-    [
-        OIDCConfigurationError("misconfigured"),
-        OIDCVerificationError("invalid token"),
-    ],
-)
-def test_get_principal_optional_returns_anon_on_verifier_errors(
-    error: Exception,
-) -> None:
-    verifier = _Verifier(error=error)
-    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="token")
-
-    principal = asyncio.run(
-        security.get_principal_optional(
-            request=_request(),
-            creds=creds,
-            db=object(),
-            oidc_verifier=verifier,  # type: ignore[arg-type]
-            settings=_auth_session_settings(),
-        )
-    )
-
-    assert principal.is_authenticated is False
-    assert verifier.tokens == ["token"]
-
-
-def test_get_principal_optional_rejects_missing_issuer_claim() -> None:
-    verifier = _Verifier(claims={"sub": "sub-123"})
-    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="token")
-
-    principal = asyncio.run(
-        security.get_principal_optional(
-            request=_request(),
-            creds=creds,
-            db=object(),
-            oidc_verifier=verifier,  # type: ignore[arg-type]
-            settings=_auth_session_settings(),
-        )
-    )
-
-    assert principal.is_authenticated is False
-    assert principal.claims == {"sub": "sub-123"}
-
-
-def test_get_principal_optional_rejects_missing_subject_claim() -> None:
-    verifier = _Verifier(claims={"iss": "https://issuer.example"})
-    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="token")
-
-    principal = asyncio.run(
-        security.get_principal_optional(
-            request=_request(),
-            creds=creds,
-            db=object(),
-            oidc_verifier=verifier,  # type: ignore[arg-type]
-            settings=_auth_session_settings(),
-        )
-    )
-
-    assert principal.is_authenticated is False
-    assert principal.claims == {"iss": "https://issuer.example"}
-
-
-def test_get_principal_optional_raises_500_when_user_upsert_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _raise(*_args: object, **_kwargs: object) -> User:
-        raise RuntimeError("database unavailable")
-
-    monkeypatch.setattr(security, "_upsert_user", _raise)
-
-    verifier = _Verifier(
-        claims={
-            "iss": "https://issuer.example",
-            "sub": "sub-123",
-        }
-    )
-    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="token")
-
-    with pytest.raises(HTTPException, match="Failed to persist user") as exc_info:
-        asyncio.run(
-            security.get_principal_optional(
-                request=_request(),
-                creds=creds,
-                db=object(),
-                oidc_verifier=verifier,  # type: ignore[arg-type]
-                settings=_auth_session_settings(),
-            )
-        )
-
-    assert exc_info.value.status_code == 500
-
-
-def test_get_principal_optional_returns_authenticated_principal(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    user = User(
-        id=uuid.uuid4(),
-        oidc_issuer="https://issuer.example",
-        oidc_sub="sub-123",
-    )
-    monkeypatch.setattr(security, "_upsert_user", lambda *_args, **_kwargs: user)
-
-    verifier = _Verifier(
-        claims={
-            "iss": "https://issuer.example",
-            "sub": "sub-123",
-            "groups": ["arena_admin"],
-        }
-    )
-    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="token")
-
-    principal = asyncio.run(
-        security.get_principal_optional(
-            request=_request(),
-            creds=creds,
-            db=object(),
-            oidc_verifier=verifier,  # type: ignore[arg-type]
-            settings=_auth_session_settings(),
-        )
-    )
-
-    assert principal.is_authenticated is True
-    assert principal.actor_type == "human"
-    assert principal.auth_method == "bearer"
-    assert principal.user_id == str(user.id)
-    assert principal.oidc_issuer == "https://issuer.example"
-    assert principal.oidc_sub == "sub-123"
-    assert principal.scopes == ()
-    assert principal.claims["groups"] == ["arena_admin"]
 
 
 def test_get_principal_optional_returns_bot_principal_for_service_token(
@@ -772,7 +588,6 @@ def test_get_principal_optional_returns_bot_principal_for_service_token(
         scopes=["vote:create", "battle:read"]
     )
     db = _ServiceTokenDB([(token, service_account, bot_user)])
-    verifier = _Verifier(error=AssertionError("bot token reached OIDC verifier"))
     creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=plaintext)
 
     principal = asyncio.run(
@@ -780,12 +595,10 @@ def test_get_principal_optional_returns_bot_principal_for_service_token(
             request=_request(),
             creds=creds,
             db=db,  # type: ignore[arg-type]
-            oidc_verifier=verifier,  # type: ignore[arg-type]
             settings=_auth_session_settings(),
         )
     )
 
-    assert verifier.tokens == []
     assert principal.is_authenticated is True
     assert principal.actor_type == "bot"
     assert principal.auth_method == "service_token"
@@ -831,10 +644,6 @@ def test_service_account_token_route_accepts_bot_bearer_without_cookie_or_csrf(
         }
 
     app.dependency_overrides[security.get_db] = override_db
-    app.dependency_overrides[security.get_oidc_verifier] = lambda: _Verifier(
-        error=AssertionError("service token route reached OIDC verifier")
-    )
-
     with TestClient(app) as client:
         response = client.post(
             "/service-token-route",
@@ -871,7 +680,6 @@ def test_get_principal_optional_rejects_invalid_service_tokens_before_oidc(
         "get_settings",
         lambda: _service_token_settings(secret),
     )
-    verifier = _Verifier(error=AssertionError("bot token reached OIDC verifier"))
     db = _ServiceTokenDB(rows)
     creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=credentials)
 
@@ -881,13 +689,11 @@ def test_get_principal_optional_rejects_invalid_service_tokens_before_oidc(
                 request=_request(),
                 creds=creds,
                 db=db,  # type: ignore[arg-type]
-                oidc_verifier=verifier,  # type: ignore[arg-type]
                 settings=_auth_session_settings(),
             )
         )
 
     assert exc_info.value.status_code == 401
-    assert verifier.tokens == []
 
 
 @pytest.mark.parametrize(
@@ -920,7 +726,6 @@ def test_get_principal_optional_rejects_inactive_service_token_state(
     )
     plaintext, token, service_account, bot_user = _service_token_rows(**overrides)
     db = _ServiceTokenDB([(token, service_account, bot_user)])
-    verifier = _Verifier(error=AssertionError("bot token reached OIDC verifier"))
     creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=plaintext)
 
     with pytest.raises(HTTPException, match=expected_detail) as exc_info:
@@ -929,13 +734,11 @@ def test_get_principal_optional_rejects_inactive_service_token_state(
                 request=_request(),
                 creds=creds,
                 db=db,  # type: ignore[arg-type]
-                oidc_verifier=verifier,  # type: ignore[arg-type]
                 settings=_auth_session_settings(),
             )
         )
 
     assert exc_info.value.status_code == expected_status
-    assert verifier.tokens == []
     assert token.last_used_at is None
     assert db.flush_calls == 0
 

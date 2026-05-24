@@ -52,7 +52,6 @@ wiring:
 
 - `PUBLIC_BASE_URL=https://arena.example.com`
 - `OIDC_ISSUER=https://auth.example.com/application/o/arena/`
-- `OIDC_AUDIENCE=arena`
 - `OIDC_CLIENT_ID=arena-backend`
 - `OIDC_CLIENT_SECRET=<backend secret storage only>`
 - `OIDC_CLIENT_AUTH_METHOD=client_secret_basic`
@@ -93,7 +92,7 @@ Runtime auth paths come from `GET /api/v1/public-config`, then the SPA calls
 Admin access is determined by the backend:
 
 1. The backend reads the configured group claim from validated OIDC claims stored
-   in the app session or from validated bearer tokens.
+   in the app session.
 2. If the claim contains the configured group, default `arena_admin`, the user is
    considered an admin.
 3. `/api/v1/auth/session` and `/me` expose `is_admin` to the frontend.

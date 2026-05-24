@@ -14,8 +14,12 @@ from jwt.algorithms import RSAAlgorithm
 import pytest
 
 from app.services import oidc_client
-from app.services.oidc import OIDCConfigurationError, OIDCVerificationError
-from app.services.oidc_client import OIDCConfidentialClient, OIDCTokenExchangeError
+from app.services.oidc_client import (
+    OIDCConfidentialClient,
+    OIDCConfigurationError,
+    OIDCTokenExchangeError,
+    OIDCVerificationError,
+)
 
 
 TEST_SECRET = "super-secret-client-password"
@@ -172,7 +176,7 @@ def test_id_token_validation_accepts_valid_claims_and_normalizes_issuer(
 
     monkeypatch.setattr(oidc_client.jwt, "get_unverified_header", lambda _token: {"alg": "RS256", "kid": "key-1"})
     monkeypatch.setattr(client, "_get_signing_jwk", lambda _kid: _async_value({"kty": "RSA"}))
-    monkeypatch.setattr(oidc_client.OIDCVerifier, "_jwk_to_public_key", lambda _jwk, _alg: "public-key")
+    monkeypatch.setattr(oidc_client, "_jwk_to_public_key", lambda _jwk, _alg: "public-key")
     monkeypatch.setattr(oidc_client.jwt, "decode", _decode)
 
     claims = asyncio.run(client._validate_id_token(ID_TOKEN, expected_nonce="nonce-1"))
@@ -407,17 +411,63 @@ def test_real_rsa_id_token_validation_end_to_end() -> None:
     assert claims["sub"] == "user-123"
 
 
+def test_select_jwk_prefers_matching_kid() -> None:
+    jwks = {
+        "keys": [
+            {"kid": "old", "kty": "RSA"},
+            {"kid": "target", "kty": "RSA"},
+        ]
+    }
+
+    selected = oidc_client._select_jwk(jwks, "target")
+    assert selected == {"kid": "target", "kty": "RSA"}
+
+
+def test_select_jwk_picks_single_key_when_no_kid() -> None:
+    selected = oidc_client._select_jwk({"keys": [{"kid": "only"}]}, None)
+    assert selected == {"kid": "only"}
+
+
+def test_select_jwk_picks_first_signing_key_without_kid() -> None:
+    jwks = {
+        "keys": [
+            {"kid": "enc", "use": "enc"},
+            {"kid": "sig", "use": "sig"},
+        ]
+    }
+
+    selected = oidc_client._select_jwk(jwks, None)
+    assert selected == {"kid": "sig", "use": "sig"}
+
+
+def test_select_jwk_returns_none_for_invalid_payload() -> None:
+    assert oidc_client._select_jwk({"keys": "not-a-list"}, "kid") is None
+
+
+def test_jwk_to_public_key_rejects_algorithm_mismatch() -> None:
+    with pytest.raises(
+        OIDCVerificationError,
+        match="JWT algorithm does not match JWK algorithm",
+    ):
+        oidc_client._jwk_to_public_key({"kty": "RSA", "alg": "RS256"}, "ES256")
+
+
+def test_jwk_to_public_key_rejects_unsupported_algorithms() -> None:
+    with pytest.raises(OIDCVerificationError, match="Unsupported JWT algorithm"):
+        oidc_client._jwk_to_public_key({"kty": "RSA"}, "NOPE256")
+
+
 def _patch_decode_claims(monkeypatch: pytest.MonkeyPatch, claims: dict[str, Any]) -> None:
     monkeypatch.setattr(oidc_client.jwt, "get_unverified_header", lambda _token: {"alg": "RS256", "kid": "key-1"})
     monkeypatch.setattr(oidc_client.OIDCConfidentialClient, "_get_signing_jwk", lambda self, _kid: _async_value({"kty": "RSA"}))
-    monkeypatch.setattr(oidc_client.OIDCVerifier, "_jwk_to_public_key", lambda _jwk, _alg: "public-key")
+    monkeypatch.setattr(oidc_client, "_jwk_to_public_key", lambda _jwk, _alg: "public-key")
     monkeypatch.setattr(oidc_client.jwt, "decode", lambda *_args, **_kwargs: claims)
 
 
 def _patch_decode_error(monkeypatch: pytest.MonkeyPatch, error: Exception) -> None:
     monkeypatch.setattr(oidc_client.jwt, "get_unverified_header", lambda _token: {"alg": "RS256", "kid": "key-1"})
     monkeypatch.setattr(oidc_client.OIDCConfidentialClient, "_get_signing_jwk", lambda self, _kid: _async_value({"kty": "RSA"}))
-    monkeypatch.setattr(oidc_client.OIDCVerifier, "_jwk_to_public_key", lambda _jwk, _alg: "public-key")
+    monkeypatch.setattr(oidc_client, "_jwk_to_public_key", lambda _jwk, _alg: "public-key")
 
     def _decode(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         raise error

@@ -46,7 +46,7 @@ Local quickstart (dev):
 1. Start local infra (Postgres + Redis): `docker compose -f ../infra/compose.yaml up -d`
 2. Copy env: `cp .env.example .env` and edit as needed.
 3. Configure OIDC when testing login: set `PUBLIC_BASE_URL`, `OIDC_ISSUER`,
-   `OIDC_AUDIENCE`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`,
+   `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`,
    `OIDC_CLIENT_AUTH_METHOD=client_secret_basic`, `OIDC_SCOPE`,
    `OIDC_REDIRECT_PATH=/api/v1/auth/callback`, `AUTH_SESSION_HASH_SECRET`,
    `AUTH_SESSION_COOKIE_NAME`, `AUTH_SESSION_MAX_AGE_SECONDS`, and

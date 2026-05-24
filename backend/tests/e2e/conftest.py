@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import time
 from textwrap import dedent
+import uuid
 
 import httpx
 import pytest
@@ -43,6 +44,13 @@ STACK_LOCK_FILE = Path(tempfile.gettempdir()) / "opensakura-arena-e2e-stack.lock
 class E2EStack:
     compose_file: Path
     compose_project: str
+
+
+@dataclass(frozen=True)
+class E2EAuthenticatedClient:
+    client: object
+    headers: dict[str, str]
+    user_id: str
 
 
 def _run(
@@ -351,14 +359,12 @@ def _reset_backend_singletons() -> None:
     from app.api.routes.battles import _get_auth_battle_create_rate_limiter
     from app.api.routes.votes import _get_auth_vote_submit_rate_limiter
     from app.core.config import get_settings
-    from app.services.oidc import get_oidc_verifier
     from app.services.oidc_client import get_oidc_confidential_client
     from app.utils.redis import get_rate_limit_redis_client
 
     import app.db.session as session_module
 
     get_settings.cache_clear()
-    get_oidc_verifier.cache_clear()
     get_oidc_confidential_client.cache_clear()
     reset_fernet()
     get_rate_limit_redis_client.cache_clear()
@@ -467,7 +473,6 @@ def configured_backend_env(
     monkeypatch.setenv("DATABASE_URL", POSTGRES_URL)
     monkeypatch.setenv("RATE_LIMIT_REDIS_URL", RATE_LIMIT_REDIS_URL)
     monkeypatch.setenv("OIDC_ISSUER", AUTHENTIK_ISSUER)
-    monkeypatch.setenv("OIDC_AUDIENCE", AUTHENTIK_CLIENT_ID)
     monkeypatch.setenv("OIDC_CLIENT_ID", AUTHENTIK_CLIENT_ID)
     monkeypatch.setenv("OIDC_CLIENT_SECRET", AUTHENTIK_CLIENT_SECRET)
     monkeypatch.setenv("OIDC_REDIRECT_PATH", "/api/v1/auth/callback")
@@ -501,6 +506,58 @@ def backend_client(configured_backend_env: None):
 
     with TestClient(create_app()) as client:
         yield client
+
+
+def _attach_session_to_client(
+    *,
+    client: object,
+    db_session: object,
+    admin: bool = False,
+) -> E2EAuthenticatedClient:
+    from app.core.config import get_settings
+    from app.models.user import User
+    from app.services import auth_session
+
+    settings = get_settings()
+    user = User(
+        oidc_issuer=AUTHENTIK_ISSUER.rstrip("/"),
+        oidc_sub=f"e2e-user-{uuid.uuid4()}",
+    )
+    db_session.add(user)
+    db_session.flush()
+    created = auth_session.create_auth_session(
+        db_session,
+        user=user,
+        claims={"groups": ["arena_admin"]} if admin else {"groups": []},
+        settings=settings,
+    )
+    user_id = str(user.id)
+    db_session.commit()
+
+    client.cookies.set(settings.auth_session_cookie_name, created.session_token)
+    session_response = client.get("/api/v1/auth/session")
+    assert session_response.status_code == 200, session_response.text
+    csrf_token = session_response.json()["csrf_token"]
+    assert isinstance(csrf_token, str)
+    return E2EAuthenticatedClient(
+        client=client,
+        headers={settings.auth_csrf_header_name: csrf_token},
+        user_id=user_id,
+    )
+
+
+@pytest.fixture
+def authenticated_backend_client(backend_client, db_session) -> E2EAuthenticatedClient:
+    return _attach_session_to_client(client=backend_client, db_session=db_session)
+
+
+@pytest.fixture
+def admin_authenticated_backend_client(backend_client, db_session) -> E2EAuthenticatedClient:
+    return _attach_session_to_client(
+        client=backend_client,
+        db_session=db_session,
+        admin=True,
+    )
 
 
 @pytest.fixture

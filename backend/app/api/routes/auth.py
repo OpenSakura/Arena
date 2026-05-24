@@ -28,9 +28,10 @@ from app.services.auth_session import (
     sanitize_return_to,
     verify_auth_session_csrf_token,
 )
-from app.services.oidc import OIDCConfigurationError, OIDCVerificationError
 from app.services.oidc_client import (
     OIDCConfidentialClient,
+    OIDCConfigurationError,
+    OIDCVerificationError,
     OIDCTokenExchangeError,
     get_oidc_confidential_client,
 )

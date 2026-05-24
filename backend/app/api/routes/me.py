@@ -4,9 +4,7 @@ User and profile endpoints.
 
 Notes:
 - Anonymous users are allowed in the product; `GET /me` should work without a
-  token and report an unauthenticated session.
-- When an OIDC access token is provided, the backend should upsert a `users`
-  row keyed by (issuer, sub) and return the associated profile.
+  session and report an unauthenticated session.
 """
 
 from __future__ import annotations

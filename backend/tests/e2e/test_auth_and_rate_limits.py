@@ -22,7 +22,6 @@ def test_backend_e2e_confidential_oidc_settings(configured_backend_env: None) ->
     assert settings.oidc_redirect_path == "/api/v1/auth/callback"
     assert settings.auth_session_hash_secret == "arena-e2e-auth-session-hash-secret"
     assert settings.oidc_issuer == "http://localhost:19000/application/o/arena-e2e/"
-    assert settings.oidc_audience == "arena-e2e-client"
 
 
 def test_authentik_provider_is_confidential_for_e2e(
@@ -58,14 +57,10 @@ def test_authentik_token_endpoint_requires_confidential_secret(
     assert response.status_code in {400, 401}
 
 
-def test_authenticated_me_uses_authentik_jwt(
-    backend_client,
-    authentik_token: str,
+def test_authenticated_me_uses_backend_session(
+    authenticated_backend_client,
 ) -> None:
-    response = backend_client.get(
-        "/api/v1/me",
-        headers={"Authorization": f"Bearer {authentik_token}"},
-    )
+    response = authenticated_backend_client.client.get("/api/v1/me")
 
     assert response.status_code == 200
     payload = response.json()
@@ -119,9 +114,8 @@ def test_battle_create_requires_authentication(
 
 
 def test_authenticated_battle_rate_limit_is_enforced_with_redis(
-    backend_client,
+    authenticated_backend_client,
     db_session,
-    authentik_token: str,
 ) -> None:
     from app.models.model_registry import Model
     from app.models.task import Task
@@ -153,12 +147,18 @@ def test_authenticated_battle_rate_limit_is_enforced_with_redis(
     db_session.add_all([task, model_a, model_b])
     db_session.commit()
 
-    auth_headers = {"Authorization": f"Bearer {authentik_token}"}
-
-    first = backend_client.post("/api/v1/battles", headers=auth_headers, json={})
+    first = authenticated_backend_client.client.post(
+        "/api/v1/battles",
+        headers=authenticated_backend_client.headers,
+        json={},
+    )
     assert first.status_code == 201
 
-    second = backend_client.post("/api/v1/battles", headers=auth_headers, json={})
+    second = authenticated_backend_client.client.post(
+        "/api/v1/battles",
+        headers=authenticated_backend_client.headers,
+        json={},
+    )
     assert second.status_code == 429
     assert second.json()["detail"] == "Too many battle creation requests"
     assert second.headers.get("Retry-After") == "60"
@@ -353,9 +353,8 @@ def test_removed_vote_reveal_route_returns_404(
 
 
 def test_authenticated_vote_rate_limit_is_enforced_with_redis(
-    backend_client,
+    authenticated_backend_client,
     db_session,
-    authentik_token: str,
 ) -> None:
     from app.models.battle import Battle, Run
     from app.models.model_registry import Model
@@ -393,12 +392,7 @@ def test_authenticated_vote_rate_limit_is_enforced_with_redis(
     db_session.add_all([task_a, task_b, model_a, model_b])
     db_session.flush()
 
-    me_response = backend_client.get(
-        "/api/v1/me",
-        headers={"Authorization": f"Bearer {authentik_token}"},
-    )
-    assert me_response.status_code == 200
-    requester_user_id = me_response.json()["user"]["id"]
+    requester_user_id = authenticated_backend_client.user_id
 
     battle_a = Battle(
         task_id=task_a.id,
@@ -445,18 +439,16 @@ def test_authenticated_vote_rate_limit_is_enforced_with_redis(
     )
     db_session.commit()
 
-    auth_headers = {"Authorization": f"Bearer {authentik_token}"}
-
-    first = backend_client.post(
+    first = authenticated_backend_client.client.post(
         f"/api/v1/battles/{battle_a.id}/vote",
-        headers=auth_headers,
+        headers=authenticated_backend_client.headers,
         json={"winner": "A"},
     )
     assert first.status_code == 201
 
-    second = backend_client.post(
+    second = authenticated_backend_client.client.post(
         f"/api/v1/battles/{battle_b.id}/vote",
-        headers=auth_headers,
+        headers=authenticated_backend_client.headers,
         json={"winner": "B"},
     )
     assert second.status_code == 429

@@ -34,7 +34,6 @@ def _production_settings(**overrides: object) -> dict[str, object]:
         app_env="production",
         public_base_url="https://arena.example",
         oidc_issuer="https://auth.example",
-        oidc_audience="arena",
         oidc_client_id="arena-client",
         oidc_client_secret="oidc-client-secret",
         auth_session_hash_secret="auth-session-hash-secret",
@@ -67,7 +66,6 @@ def test_settings_exposes_confidential_client_defaults(
         "AUTH_CSRF_HEADER_NAME",
         "AUTH_COOKIE_SECURE",
         "OIDC_ISSUER",
-        "OIDC_AUDIENCE",
         "OIDC_ADMIN_GROUP_CLAIM",
         "OIDC_ADMIN_GROUP_NAME",
     ):
@@ -89,8 +87,6 @@ def test_settings_exposes_confidential_client_defaults(
     assert settings.auth_csrf_header_name == "X-CSRF-Token"
     assert settings.auth_cookie_secure is None
     assert settings.oidc_issuer == ""
-    assert hasattr(settings, "oidc_audience")
-    assert Settings(oidc_audience="arena").oidc_audience == "arena"
     assert settings.oidc_admin_group_claim == "groups"
     assert settings.oidc_admin_group_name == "arena_admin"
 
@@ -100,7 +96,6 @@ def test_production_accepts_confidential_client_settings_without_public_client_r
 
     assert settings.public_base_url == "https://arena.example"
     assert settings.oidc_issuer == "https://auth.example"
-    assert settings.oidc_audience == "arena"
     assert settings.oidc_client_id == "arena-client"
     assert settings.oidc_client_secret == "oidc-client-secret"
     assert settings.auth_session_hash_secret == "auth-session-hash-secret"
@@ -176,12 +171,9 @@ def test_production_rejects_missing_confidential_client_setting(
 
 @pytest.mark.parametrize(
     ("field", "setting_name"),
-    [
-        ("oidc_issuer", "OIDC_ISSUER"),
-        ("oidc_audience", "OIDC_AUDIENCE"),
-    ],
+    [("oidc_issuer", "OIDC_ISSUER")],
 )
-def test_production_rejects_missing_bearer_oidc_setting(
+def test_production_rejects_missing_oidc_issuer(
     field: str, setting_name: str
 ) -> None:
     with pytest.raises(ValueError, match=setting_name):

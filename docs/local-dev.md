@@ -57,7 +57,6 @@ Set these backend values in `backend/.env`:
 ```bash
 PUBLIC_BASE_URL=http://localhost:5173
 OIDC_ISSUER=http://localhost:19000/application/o/arena/
-OIDC_AUDIENCE=arena
 OIDC_CLIENT_ID=arena-backend
 OIDC_CLIENT_SECRET=<local backend secret>
 OIDC_CLIENT_AUTH_METHOD=client_secret_basic
@@ -98,7 +97,7 @@ Notes:
 Auth notes:
 
 - Admin endpoints (`/api/v1/admin/*`) require a backend session and admin group
-  membership, or an allowed bearer/service-account path where documented.
+  membership.
 - Public read endpoints are limited to the leaderboard.
 - All mutations and viewing, creating battles, viewing battles, submitting votes,
   and retrying battles, require authentication. Successful vote submission

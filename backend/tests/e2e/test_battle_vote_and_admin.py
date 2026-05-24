@@ -6,7 +6,6 @@ from collections.abc import Iterable
 import uuid
 
 from fastapi.testclient import TestClient
-import jwt
 import pytest
 from sqlalchemy import func, select
 
@@ -18,7 +17,7 @@ from app.models.model_registry import Model
 from app.models.rating import ModelRating
 from app.models.task import Task
 from app.models.vote import Vote
-from app.services.oidc import get_oidc_verifier
+from app.services.oidc_client import get_oidc_confidential_client
 from app.utils.redis import get_rate_limit_redis_client
 
 
@@ -101,19 +100,6 @@ def _seed_task_and_models(db_session, *, suffix: str) -> tuple[Task, Model, Mode
     return task, model_a, model_b
 
 
-def _authenticated_user_id(backend_client, token: str) -> str:
-    response = backend_client.get(
-        "/api/v1/me",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    assert response.status_code == 200
-    user = response.json()["user"]
-    assert isinstance(user, dict)
-    user_id = user.get("id")
-    assert isinstance(user_id, str)
-    return user_id
-
-
 def _seed_completed_battle(
     db_session, *, suffix: str, requester_user_id: str | None = None
 ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
@@ -194,61 +180,12 @@ def _reset_backend_singletons() -> None:
     import app.db.session as session_module
 
     get_settings.cache_clear()
-    get_oidc_verifier.cache_clear()
+    get_oidc_confidential_client.cache_clear()
     get_rate_limit_redis_client.cache_clear()
     _get_auth_battle_create_rate_limiter.cache_clear()
     _get_auth_vote_submit_rate_limiter.cache_clear()
     session_module._engine = None
     session_module._SessionLocal = None
-
-
-def _select_admin_claim_binding(token: str) -> tuple[str, str]:
-    claims = jwt.decode(
-        token,
-        options={"verify_signature": False, "verify_aud": False},
-        algorithms=["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"],
-    )
-    if not isinstance(claims, dict):
-        raise RuntimeError("OIDC token claims must be a JSON object")
-
-    scope = claims.get("scope")
-    if isinstance(scope, str):
-        scope_values = [item for item in scope.replace(",", " ").split() if item]
-        if scope_values:
-            return "scope", scope_values[0]
-
-    aud = claims.get("aud")
-    if isinstance(aud, str) and aud:
-        return "aud", aud
-    if isinstance(aud, list):
-        for item in aud:
-            if isinstance(item, str) and item:
-                return "aud", item
-
-    sub = claims.get("sub")
-    if isinstance(sub, str) and sub:
-        return "sub", sub
-
-    raise RuntimeError("Could not infer an admin claim binding from the OIDC token")
-
-
-@pytest.fixture
-def backend_client_with_token_claim_as_admin(
-    configured_backend_env: None,
-    monkeypatch: pytest.MonkeyPatch,
-    authentik_token: str,
-):
-    del configured_backend_env
-
-    claim_path, group_name = _select_admin_claim_binding(authentik_token)
-    monkeypatch.setenv("OIDC_ADMIN_GROUP_CLAIM", claim_path)
-    monkeypatch.setenv("OIDC_ADMIN_GROUP_NAME", group_name)
-    _reset_backend_singletons()
-
-    from app.main import create_app
-
-    with TestClient(create_app()) as client:
-        yield client
 
 
 @pytest.fixture
@@ -269,10 +206,9 @@ def backend_client_with_deprecated_turnstile_config(
 
 
 def test_battle_stream_executes_and_persists_terminal_state(
-    backend_client,
+    authenticated_backend_client,
     db_session,
     monkeypatch: pytest.MonkeyPatch,
-    authentik_token: str,
 ) -> None:
     from app.services.llm_client import LLMClient, LLMStreamChunk
 
@@ -293,18 +229,16 @@ def test_battle_stream_executes_and_persists_terminal_state(
     suffix = uuid.uuid4().hex[:8]
     task, _, _ = _seed_task_and_models(db_session, suffix=suffix)
 
-    auth_headers = {"Authorization": f"Bearer {authentik_token}"}
-
-    create = backend_client.post(
+    create = authenticated_backend_client.client.post(
         "/api/v1/battles",
-        headers=auth_headers,
+        headers=authenticated_backend_client.headers,
         json={"task_id": str(task.id)},
     )
     assert create.status_code == 201
     battle_id = create.json()["id"]
 
-    with backend_client.stream(
-        "GET", f"/api/v1/battles/{battle_id}/stream", headers=auth_headers
+    with authenticated_backend_client.client.stream(
+        "GET", f"/api/v1/battles/{battle_id}/stream"
     ) as response:
         assert response.status_code == 200
         events = _parse_sse_events(response.iter_lines())
@@ -339,21 +273,19 @@ def test_battle_stream_executes_and_persists_terminal_state(
 
 
 def test_vote_pipeline_handles_idempotency_and_conflicts(
-    backend_client,
+    authenticated_backend_client,
     db_session,
-    authentik_token: str,
 ) -> None:
     suffix = uuid.uuid4().hex[:8]
-    requester_user_id = _authenticated_user_id(backend_client, authentik_token)
+    requester_user_id = authenticated_backend_client.user_id
     battle_id, model_a_id, model_b_id = _seed_completed_battle(
         db_session, suffix=suffix, requester_user_id=requester_user_id
     )
-    auth_headers = {"Authorization": f"Bearer {authentik_token}"}
 
     # Submit initial vote — immediately reveals and locks the vote.
-    first = backend_client.post(
+    first = authenticated_backend_client.client.post(
         f"/api/v1/battles/{battle_id}/vote",
-        headers=auth_headers,
+        headers=authenticated_backend_client.headers,
         json={"winner": "A"},
     )
     assert first.status_code == 201
@@ -365,9 +297,9 @@ def test_vote_pipeline_handles_idempotency_and_conflicts(
     first_vote_id = first_payload["vote_id"]
 
     # Re-submitting with the same winner is idempotent.
-    second = backend_client.post(
+    second = authenticated_backend_client.client.post(
         f"/api/v1/battles/{battle_id}/vote",
-        headers=auth_headers,
+        headers=authenticated_backend_client.headers,
         json={"winner": "A"},
     )
     assert second.status_code == 200
@@ -378,9 +310,9 @@ def test_vote_pipeline_handles_idempotency_and_conflicts(
     assert second_payload["reveal"]["B"]["model_id"] == str(model_b_id)
 
     # Changing winner after submit is rejected because the submit already reveals.
-    conflicting = backend_client.post(
+    conflicting = authenticated_backend_client.client.post(
         f"/api/v1/battles/{battle_id}/vote",
-        headers=auth_headers,
+        headers=authenticated_backend_client.headers,
         json={"winner": "B"},
     )
     assert conflicting.status_code == 409
@@ -397,26 +329,18 @@ def test_vote_pipeline_handles_idempotency_and_conflicts(
 
 
 def test_admin_routes_require_admin_group_claim(
-    backend_client,
-    authentik_token: str,
+    authenticated_backend_client,
 ) -> None:
-    response = backend_client.get(
-        "/api/v1/admin/models",
-        headers={"Authorization": f"Bearer {authentik_token}"},
-    )
+    response = authenticated_backend_client.client.get("/api/v1/admin/models")
 
     assert response.status_code == 403
     assert response.json()["detail"] == "Admin group membership required"
 
 
-def test_admin_routes_allow_access_when_configured_claim_matches_token(
-    backend_client_with_token_claim_as_admin,
-    authentik_token: str,
+def test_admin_routes_allow_access_when_session_claim_matches_admin_group(
+    admin_authenticated_backend_client,
 ) -> None:
-    response = backend_client_with_token_claim_as_admin.get(
-        "/api/v1/admin/models",
-        headers={"Authorization": f"Bearer {authentik_token}"},
-    )
+    response = admin_authenticated_backend_client.client.get("/api/v1/admin/models")
 
     assert response.status_code == 200
     payload = response.json()
@@ -424,10 +348,9 @@ def test_admin_routes_allow_access_when_configured_claim_matches_token(
 
 
 def test_battle_stream_vote_and_leaderboard_reflect_rating_updates(
-    backend_client,
+    authenticated_backend_client,
     db_session,
     monkeypatch: pytest.MonkeyPatch,
-    authentik_token: str,
 ) -> None:
     from app.services.llm_client import LLMClient, LLMStreamChunk
     from app.services.leaderboard_refresh import get_leaderboard_refresher
@@ -449,18 +372,16 @@ def test_battle_stream_vote_and_leaderboard_reflect_rating_updates(
     suffix = uuid.uuid4().hex[:8]
     task, _, _ = _seed_task_and_models(db_session, suffix=suffix)
 
-    auth_headers = {"Authorization": f"Bearer {authentik_token}"}
-
-    create = backend_client.post(
+    create = authenticated_backend_client.client.post(
         "/api/v1/battles",
-        headers=auth_headers,
+        headers=authenticated_backend_client.headers,
         json={"task_id": str(task.id)},
     )
     assert create.status_code == 201
     battle_id = create.json()["id"]
 
-    with backend_client.stream(
-        "GET", f"/api/v1/battles/{battle_id}/stream", headers=auth_headers
+    with authenticated_backend_client.client.stream(
+        "GET", f"/api/v1/battles/{battle_id}/stream"
     ) as stream_response:
         assert stream_response.status_code == 200
         events = _parse_sse_events(stream_response.iter_lines())
@@ -486,9 +407,9 @@ def test_battle_stream_vote_and_leaderboard_reflect_rating_updates(
     before_a_rating, _ = _rating_snapshot(db_session, run_a.model_id)
     before_b_rating, _ = _rating_snapshot(db_session, run_b.model_id)
 
-    vote = backend_client.post(
+    vote = authenticated_backend_client.client.post(
         f"/api/v1/battles/{battle_id}/vote",
-        headers=auth_headers,
+        headers=authenticated_backend_client.headers,
         json={"winner": "A"},
     )
     assert vote.status_code == 201
@@ -506,7 +427,7 @@ def test_battle_stream_vote_and_leaderboard_reflect_rating_updates(
     # explicitly before asserting the persisted leaderboard view.
     get_leaderboard_refresher().refresh_once()
 
-    leaderboard = backend_client.get("/api/v1/leaderboard?method=elo")
+    leaderboard = authenticated_backend_client.client.get("/api/v1/leaderboard?method=elo")
     assert leaderboard.status_code == 200
     leaderboard_payload = leaderboard.json()
 
@@ -526,9 +447,9 @@ def test_battle_stream_vote_and_leaderboard_reflect_rating_updates(
 
 def test_battle_create_requires_authentication_with_deprecated_turnstile_config(
     backend_client_with_deprecated_turnstile_config,
+    authenticated_backend_client,
     db_session,
     monkeypatch: pytest.MonkeyPatch,
-    authentik_token: str,
 ) -> None:
     from app.api.routes import battles as battles_route
 
@@ -592,19 +513,18 @@ def test_battle_create_requires_authentication_with_deprecated_turnstile_config(
 
     monkeypatch.setattr(battles_route, "_get_turnstile_http_client", fail_if_called)
 
-    authed_battle = backend_client_with_deprecated_turnstile_config.post(
+    authed_battle = authenticated_backend_client.client.post(
         "/api/v1/battles",
-        headers={"Authorization": f"Bearer {authentik_token}"},
+        headers=authenticated_backend_client.headers,
         json={},
     )
     assert authed_battle.status_code == 201
 
 
 def test_integrated_bot_service_account_workflow_regression(
-    backend_client_with_token_claim_as_admin,
+    admin_authenticated_backend_client,
     db_session,
     monkeypatch: pytest.MonkeyPatch,
-    authentik_token: str,
 ) -> None:
     from app.api.routes import bot_battles
     from app.services.leaderboard_refresh import get_leaderboard_refresher
@@ -634,8 +554,8 @@ def test_integrated_bot_service_account_workflow_regression(
         lambda db, *, settings: (model_a.id, model_b.id),
     )
 
-    client = backend_client_with_token_claim_as_admin
-    admin_headers = {"Authorization": f"Bearer {authentik_token}"}
+    client = admin_authenticated_backend_client.client
+    admin_headers = admin_authenticated_backend_client.headers
 
     create_account_response = client.post(
         "/api/v1/admin/service-accounts",
@@ -809,4 +729,3 @@ def test_integrated_bot_service_account_workflow_regression(
         f"{sorted(export_record.keys())}\n",
         encoding="utf-8",
     )
-

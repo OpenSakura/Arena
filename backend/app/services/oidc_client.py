@@ -5,6 +5,7 @@ import base64
 from dataclasses import dataclass
 from functools import lru_cache
 import hashlib
+import json
 import secrets
 import time
 from typing import Any
@@ -13,9 +14,9 @@ from urllib.parse import urlencode
 import httpx
 import jwt
 from jwt import InvalidTokenError
+from jwt.algorithms import get_default_algorithms
 
 from app.core.config import get_settings
-from app.services.oidc import OIDCConfigurationError, OIDCVerificationError, OIDCVerifier
 
 
 _ALLOWED_ASYMMETRIC_ALGORITHMS = {
@@ -34,6 +35,50 @@ _ALLOWED_ASYMMETRIC_ALGORITHMS = {
 
 class OIDCTokenExchangeError(RuntimeError):
     pass
+
+
+class OIDCConfigurationError(RuntimeError):
+    pass
+
+
+class OIDCVerificationError(RuntimeError):
+    pass
+
+
+def _select_jwk(jwks_doc: dict[str, Any], kid: str | None) -> dict[str, Any] | None:
+    keys = jwks_doc.get("keys")
+    if not isinstance(keys, list):
+        return None
+
+    if kid is not None:
+        for entry in keys:
+            if isinstance(entry, dict) and entry.get("kid") == kid:
+                return entry
+        return None
+
+    if len(keys) == 1 and isinstance(keys[0], dict):
+        return keys[0]
+
+    for entry in keys:
+        if isinstance(entry, dict) and entry.get("use", "sig") == "sig":
+            return entry
+
+    return None
+
+
+def _jwk_to_public_key(jwk: dict[str, Any], alg: str) -> Any:
+    jwk_alg = jwk.get("alg")
+    if isinstance(jwk_alg, str) and jwk_alg and jwk_alg != alg:
+        raise OIDCVerificationError("JWT algorithm does not match JWK algorithm")
+
+    algorithm = get_default_algorithms().get(alg)
+    if algorithm is None:
+        raise OIDCVerificationError("Unsupported JWT algorithm")
+
+    try:
+        return algorithm.from_jwk(json.dumps(jwk))
+    except Exception as exc:  # noqa: BLE001
+        raise OIDCVerificationError("Failed to decode JWK signing key") from exc
 
 
 @dataclass(frozen=True)
@@ -233,7 +278,7 @@ class OIDCConfidentialClient:
             raise OIDCVerificationError(f"Unsupported JWT algorithm: {alg}")
 
         signing_jwk = await self._get_signing_jwk(header.get("kid"))
-        signing_key = OIDCVerifier._jwk_to_public_key(signing_jwk, alg)
+        signing_key = _jwk_to_public_key(signing_jwk, alg)
         try:
             claims = jwt.decode(
                 token,
@@ -282,7 +327,7 @@ class OIDCConfidentialClient:
 
     async def _get_signing_jwk(self, kid: str | None) -> dict[str, Any]:
         jwks_doc = await self._get_jwks()
-        jwk = OIDCVerifier._select_jwk(jwks_doc, kid)
+        jwk = _select_jwk(jwks_doc, kid)
         if jwk is None:
             raise OIDCVerificationError("No matching signing key found in JWKS")
         return jwk

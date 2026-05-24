@@ -35,7 +35,6 @@ def _production_settings(**overrides: object) -> dict[str, object]:
     defaults: dict[str, object] = {
         "app_env": "production",
         "oidc_issuer": "https://auth.example",
-        "oidc_audience": "arena",
         "oidc_client_id": "arena-client",
         "oidc_client_secret": "oidc-client-secret",
         "auth_session_hash_secret": "auth-session-hash-secret",

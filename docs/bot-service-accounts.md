@@ -8,7 +8,7 @@ that decides the vote is outside this backend's scope.
 ## Token Creation
 
 Create and manage service accounts from the Admin UI at
-`/admin/service-accounts`, or use the admin API with an OIDC admin bearer token.
+`/admin/service-accounts`.
 Admin-created service-account tokens are shown in plaintext exactly once. The UI
 warning is:
 
@@ -28,19 +28,25 @@ The v1 bot scopes are exactly:
 - `battle:execute`
 - `vote:create`
 
-Example admin API flow:
+The admin API can also be called from a browser-backed admin session. Unsafe
+requests must include the current `X-CSRF-Token` returned by
+`GET /api/v1/auth/session` and the HttpOnly session cookie set by login.
+
+Example admin API flow with an existing backend session:
 
 ```bash
 curl -X POST "https://arena.example.com/api/v1/admin/service-accounts" \
-  -H "Authorization: Bearer <oidc-admin-access-token>" \
+  -H "X-CSRF-Token: <csrf-token-from-auth-session>" \
   -H "Content-Type: application/json" \
+  -b "arena_session=<session-cookie>" \
   -d '{"name":"Auto Judge Bot","description":"External judge client","enabled":true}'
 ```
 
 ```bash
 curl -X POST "https://arena.example.com/api/v1/admin/service-accounts/<service_account_id>/tokens" \
-  -H "Authorization: Bearer <oidc-admin-access-token>" \
+  -H "X-CSRF-Token: <csrf-token-from-auth-session>" \
   -H "Content-Type: application/json" \
+  -b "arena_session=<session-cookie>" \
   -d '{"scopes":["battle:create","battle:read","battle:execute","vote:create"],"expires_at":null}'
 ```
 

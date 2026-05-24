@@ -4,7 +4,7 @@ Server-Sent Events (SSE) helpers.
 
 Notes:
 - SSE is a good fit for long streaming text in browsers.
-- Use `fetch()` + stream reader on the frontend so we can attach Authorization.
+- Use `fetch()` + stream reader on the frontend so session cookies are included.
 """
 
 from __future__ import annotations

@@ -27,7 +27,7 @@ from app.db.bootstrap import bootstrap_schema
 from app.core.logging import clear_request_id, configure_logging, set_request_id
 from app.services.leaderboard_refresh import get_leaderboard_refresher
 from app.services.battle_orchestrator import get_battle_orchestrator
-from app.services.oidc import get_oidc_verifier
+from app.services.oidc_client import get_oidc_confidential_client
 from app.utils.client_ip import get_client_ip
 from app.utils.process_guard import (
     acquire_battle_process_lock,
@@ -103,7 +103,7 @@ def create_app() -> FastAPI:
 
             # Close long-lived HTTP clients to release pooled connections.
             with suppress(Exception):
-                oidc = get_oidc_verifier()
+                oidc = get_oidc_confidential_client()
                 await oidc.aclose()
             with suppress(Exception):
                 orchestrator = get_battle_orchestrator()

@@ -1,13 +1,13 @@
 """app.core.security
 
-Security primitives (OIDC bearer tokens, principals, role checks).
+Security primitives (sessions, service tokens, principals, role checks).
 
 Notes:
 - This project integrates with Authentik via standard OAuth2/OIDC.
 - Public read endpoints may accept missing/invalid tokens and treat the
   requester as unauthenticated.
 - Authenticated-only endpoints should depend on ``get_principal_required``.
-- Admin endpoints must enforce authorization based on OIDC claims (e.g. groups).
+- Admin endpoints must enforce authorization based on session OIDC claims (e.g. groups).
 """
 
 from __future__ import annotations
@@ -41,13 +41,6 @@ from app.services.auth_session import (
     load_user_for_auth_session,
     refresh_auth_session_last_seen,
 )
-from app.services.oidc import (
-    OIDCConfigurationError,
-    OIDCVerificationError,
-    OIDCVerifier,
-    get_oidc_verifier,
-)
-
 
 bearer_scheme = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
@@ -86,14 +79,6 @@ def _upsert_user(db: Session, *, issuer: str, sub: str) -> User:
         return user
 
     try:
-        # Use flush (not commit) to keep the user upsert inside the
-        # per-request transaction boundary. Committing here would break
-        # transaction atomicity: if the endpoint handler's DB work fails,
-        # the user upsert could not be rolled back.
-        #
-        # Use begin_nested() (savepoint) so that the IntegrityError only
-        # rolls back this insert attempt, preserving any prior work in
-        # the same request transaction.
         with db.begin_nested():
             user = User(oidc_issuer=issuer, oidc_sub=sub)
             db.add(user)
@@ -137,15 +122,14 @@ async def get_principal_optional(
     request: Request | None = Depends(_request_dependency),
     creds: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: Session = Depends(get_db),
-    oidc_verifier: OIDCVerifier = Depends(get_oidc_verifier),
     settings: Any = Depends(_settings_dependency),
 ) -> Principal:
     """Return an authenticated principal when possible.
 
     Notes:
-    - Bearer credentials take precedence over session cookies.
+    - Bearer service-token credentials take precedence over session cookies.
     - Missing or invalid bearer/session credentials return unauthenticated principal.
-    - Valid tokens are mapped to an internal user row keyed by (issuer, sub).
+    - Human authentication is session-cookie based.
     """
 
     _clear_auth_session_context(request=request)
@@ -164,36 +148,7 @@ async def get_principal_optional(
     if creds.credentials.startswith(SERVICE_TOKEN_PREFIX):
         return _principal_from_service_token(db=db, token=creds.credentials)
 
-    try:
-        claims = await oidc_verifier.verify(creds.credentials)
-    except (OIDCConfigurationError, OIDCVerificationError) as exc:
-        logger.info("OIDC token rejected: %s", exc)
-        return Principal(is_authenticated=False)
-
-    issuer = claims.get("iss")
-    sub = claims.get("sub")
-    if not isinstance(issuer, str) or not issuer:
-        logger.info("OIDC token missing issuer claim")
-        return Principal(is_authenticated=False, claims=claims)
-    if not isinstance(sub, str) or not sub:
-        logger.info("OIDC token missing subject claim")
-        return Principal(is_authenticated=False, claims=claims)
-
-    try:
-        user = _upsert_user(db, issuer=issuer, sub=sub)
-    except Exception:  # noqa: BLE001
-        logger.exception("Failed to upsert OIDC user")
-        raise HTTPException(status_code=500, detail="Failed to persist user")
-
-    return Principal(
-        is_authenticated=True,
-        actor_type=_principal_actor_type(user),
-        auth_method="bearer",
-        user_id=str(user.id),
-        oidc_issuer=user.oidc_issuer,
-        oidc_sub=user.oidc_sub,
-        claims=claims,
-    )
+    return Principal(is_authenticated=False)
 
 
 def _principal_from_session_cookie(

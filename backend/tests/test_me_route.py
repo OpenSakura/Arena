@@ -551,7 +551,7 @@ def _create_user_session(
     profile: bool = False,
     oidc_sub: str | None = None,
 ):
-    initial_last_seen_at = datetime(2026, 5, 24, 10, 0, tzinfo=timezone.utc)
+    initial_last_seen_at = datetime.now(timezone.utc)
     with context.session_factory() as db:
         user = User(
             oidc_issuer="https://issuer.example",

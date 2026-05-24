@@ -25,7 +25,6 @@ import app.main as main
 from app.models.auth_session import AuthSession
 from app.models.user import User
 from app.services import auth_session
-from app.services.oidc import get_oidc_verifier
 
 
 _HASH_SECRET = "test-auth-session-hash-secret"
@@ -43,11 +42,6 @@ class _Closable:
 
 class _Orchestrator:
     llm_client = _Closable()
-
-
-class _Verifier:
-    async def verify(self, _token: str) -> dict[str, object]:
-        return {}
 
 
 @dataclass(frozen=True)
@@ -240,21 +234,6 @@ def test_session_context_marker_requires_csrf_even_before_principal_auth_method_
     assert correct.status_code == 200
 
 
-def test_bearer_bypasses_csrf_header_requirement(csrf_client: _CsrfClient) -> None:
-    csrf_client.principal_holder["principal"] = security.Principal(
-        is_authenticated=True,
-        actor_type="human",
-        auth_method="bearer",
-        user_id=str(csrf_client.created_session.user_id),
-        claims={"groups": ["arena_admin"]},
-    )
-
-    response = csrf_client.client.post("/protected")
-
-    assert response.status_code == 200
-    assert response.json() == {"ok": True}
-
-
 def test_service_token_bypasses_csrf_header_requirement(
     csrf_client: _CsrfClient,
 ) -> None:
@@ -443,11 +422,10 @@ def _create_main_app(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(main, "acquire_battle_process_lock", lambda: None)
     monkeypatch.setattr(main, "release_battle_process_lock", lambda: None)
     monkeypatch.setattr(main, "close_all_redis_clients", lambda: None)
-    monkeypatch.setattr(main, "get_oidc_verifier", lambda: _Closable())
+    monkeypatch.setattr(main, "get_oidc_confidential_client", lambda: _Closable())
     monkeypatch.setattr(main, "get_battle_orchestrator", lambda: _Orchestrator())
 
     app = main.create_app()
-    app.dependency_overrides[get_oidc_verifier] = lambda: _Verifier()
     return app
 
 

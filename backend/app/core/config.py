@@ -41,7 +41,6 @@ class Settings(BaseSettings):
     cors_allow_origins: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
 
     oidc_issuer: str = ""
-    oidc_audience: str | None = None
     oidc_admin_group_claim: str = "groups"
     oidc_admin_group_name: str = "arena_admin"
     oidc_jwks_cache_ttl_seconds: int = 300
@@ -172,12 +171,6 @@ class Settings(BaseSettings):
                 "OIDC_ISSUER is empty in production — "
                 "OIDC authentication is disabled; all requests will be "
                 "treated as unauthenticated"
-            )
-        if not (self.oidc_audience or "").strip():
-            errors.append(
-                "OIDC_AUDIENCE is empty in production — "
-                "audience validation is disabled, tokens for any audience "
-                "will be accepted"
             )
         if not self.oidc_client_id.strip():
             errors.append(

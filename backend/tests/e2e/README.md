@@ -29,5 +29,5 @@ set +a
 uv run pytest tests/e2e --run-e2e
 ```
 
-The fixtures bootstrap an Authentik OAuth2 provider and request real RS256
-tokens so `/api/v1/me` is tested with production-like OIDC verification.
+The fixtures bootstrap an Authentik OAuth2 provider for backend-managed OIDC
+session tests and provider configuration checks.

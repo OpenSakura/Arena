@@ -22,7 +22,6 @@ from app.db.session import get_db
 import app.main as main
 from app.models.service_account import ServiceAccount, ServiceAccountToken
 from app.models.user import User
-from app.services.oidc import get_oidc_verifier
 
 
 _HASH_SECRET = "test-service-token-hash-secret"
@@ -40,11 +39,6 @@ class _Closable:
 
 class _Orchestrator:
     llm_client = _Closable()
-
-
-class _Verifier:
-    async def verify(self, _token: str) -> dict[str, object]:
-        return {}
 
 
 class _ClientContext(NamedTuple):
@@ -88,7 +82,7 @@ def client_context(
     monkeypatch.setattr(main, "acquire_battle_process_lock", lambda: None)
     monkeypatch.setattr(main, "release_battle_process_lock", lambda: None)
     monkeypatch.setattr(main, "close_all_redis_clients", lambda: None)
-    monkeypatch.setattr(main, "get_oidc_verifier", lambda: _Closable())
+    monkeypatch.setattr(main, "get_oidc_confidential_client", lambda: _Closable())
     monkeypatch.setattr(main, "get_battle_orchestrator", lambda: _Orchestrator())
 
     engine = create_engine(
@@ -128,7 +122,6 @@ def client_context(
     app = main.create_app()
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[security.get_principal_optional] = override_principal
-    app.dependency_overrides[get_oidc_verifier] = lambda: _Verifier()
 
     with TestClient(app) as test_client:
         yield _ClientContext(
