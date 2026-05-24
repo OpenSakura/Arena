@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     app_env: str = "dev"
     app_name: str = "OpenSakura Arena API"
     api_v1_prefix: str = "/api/v1"
+    public_base_url: str = ""
 
     # Logging / observability.
     log_level: str = ""
@@ -45,14 +46,19 @@ class Settings(BaseSettings):
     oidc_admin_group_name: str = "arena_admin"
     oidc_jwks_cache_ttl_seconds: int = 300
     oidc_http_timeout_seconds: float = 5.0
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_client_auth_method: str = "client_secret_basic"
+    oidc_scope: str = "openid email profile"
+    oidc_redirect_path: str = "/api/v1/auth/callback"
+    oidc_login_state_max_age_seconds: int = 600
 
-    # Public SPA OIDC fields — exposed verbatim via /api/v1/public-config so
-    # the browser can bootstrap oidc-client-ts without build-time env vars.
-    frontend_oidc_client_id: str = ""
-    frontend_oidc_scope: str = "openid email profile offline_access"
-    frontend_oidc_redirect_path: str = "/auth/callback"
-    frontend_oidc_silent_redirect_path: str = "/auth/silent-callback"
-    frontend_oidc_post_logout_redirect_path: str = "/auth/logout-callback"
+    auth_session_cookie_name: str = "arena_session"
+    auth_login_state_cookie_name: str = "arena_oauth_state"
+    auth_session_max_age_seconds: int = 28800
+    auth_session_hash_secret: str = ""
+    auth_csrf_header_name: str = "X-CSRF-Token"
+    auth_cookie_secure: bool | None = None
 
     turnstile_secret_key: str = ""
     turnstile_verify_url: str = (
@@ -161,23 +167,37 @@ class Settings(BaseSettings):
 
         errors: list[str] = []
 
-        if not self.oidc_issuer:
+        if not self.oidc_issuer.strip():
             errors.append(
                 "OIDC_ISSUER is empty in production — "
                 "OIDC authentication is disabled; all requests will be "
                 "treated as unauthenticated"
             )
-        if self.oidc_issuer and not self.oidc_audience:
+        if not (self.oidc_audience or "").strip():
             errors.append(
-                "OIDC_AUDIENCE is empty while OIDC_ISSUER is set — "
+                "OIDC_AUDIENCE is empty in production — "
                 "audience validation is disabled, tokens for any audience "
-                "on this issuer will be accepted"
+                "will be accepted"
             )
-        if self.oidc_issuer and not self.frontend_oidc_client_id:
+        if not self.oidc_client_id.strip():
             errors.append(
-                "FRONTEND_OIDC_CLIENT_ID is empty while OIDC_ISSUER is set — "
-                "the SPA cannot bootstrap OIDC authentication without a "
-                "public client ID"
+                "OIDC_CLIENT_ID is empty in production — "
+                "the backend cannot perform confidential-client OIDC login"
+            )
+        if not self.oidc_client_secret.strip():
+            errors.append(
+                "OIDC_CLIENT_SECRET is empty in production — "
+                "the backend cannot authenticate as a confidential OIDC client"
+            )
+        if not self.auth_session_hash_secret.strip():
+            errors.append(
+                "AUTH_SESSION_HASH_SECRET is empty in production — "
+                "auth session lookup hashing is disabled"
+            )
+        if not self.public_base_url.strip():
+            errors.append(
+                "PUBLIC_BASE_URL is empty in production — "
+                "backend OIDC redirect URI construction is disabled"
             )
         if not self.arena_master_key:
             errors.append(

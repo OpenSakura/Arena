@@ -2,23 +2,18 @@ import { apiGet, apiPost } from "../lib/api";
 
 export { asRecord } from "@/lib/typeGuards";
 
-export function buildBattleAuthHeaders(
-  accessToken?: string,
-): Record<string, string> | undefined {
-  return accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined;
+export function buildBattleAuthHeaders(): undefined {
+  return undefined;
 }
 
 export async function loadOrCreateBattle(
   battleId: string,
-  accessToken?: string,
 ): Promise<unknown> {
-  const headers = buildBattleAuthHeaders(accessToken);
-
   if (battleId === "new") {
-    return apiPost("/battles", {}, { headers });
+    return apiPost("/battles", {});
   }
 
-  return apiGet(`/battles/${encodeURIComponent(battleId)}`, { headers });
+  return apiGet(`/battles/${encodeURIComponent(battleId)}`);
 }
 
 export function mergeBattleDelta(

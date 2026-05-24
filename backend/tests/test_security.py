@@ -5,8 +5,9 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import uuid
 
-from fastapi import HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
+from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import String, UniqueConstraint, create_engine, func, select
 from sqlalchemy.exc import IntegrityError
@@ -19,10 +20,20 @@ from app.utils.rate_limit import build_auth_rate_limit_key
 
 
 _SERVICE_TOKEN_HASH_SECRET = "test-service-token-hash-secret"
+_AUTH_SESSION_HASH_SECRET = "test-auth-session-hash-secret"
 
 
 def _integrity_error(message: str) -> IntegrityError:
     return IntegrityError("stmt", {}, Exception(message))
+
+
+def _auth_session_settings() -> SimpleNamespace:
+    return SimpleNamespace(
+        auth_session_cookie_name="arena_session",
+        auth_session_hash_secret=_AUTH_SESSION_HASH_SECRET,
+        auth_session_max_age_seconds=3600,
+        oidc_login_state_max_age_seconds=600,
+    )
 
 
 class _ScalarResult:
@@ -309,18 +320,312 @@ def _service_token_rows(
     return selected_plaintext, token, service_account, bot_user
 
 
+def _request(
+    *,
+    cookies: dict[str, str] | None = None,
+    headers: dict[str, str] | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        cookies=cookies or {},
+        headers=headers or {},
+        state=SimpleNamespace(),
+    )
+
+
+async def _with_auth_session_functions(
+    *,
+    call,
+    load_session=None,
+    load_user=None,
+    refresh=None,
+):
+    original_load_session = security.load_auth_session
+    original_load_user = security.load_user_for_auth_session
+    original_refresh = security.refresh_auth_session_last_seen
+    try:
+        if load_session is not None:
+            security.load_auth_session = load_session  # type: ignore[assignment]
+        if load_user is not None:
+            security.load_user_for_auth_session = load_user  # type: ignore[assignment]
+        if refresh is not None:
+            security.refresh_auth_session_last_seen = refresh  # type: ignore[assignment]
+        return await call()
+    finally:
+        security.load_auth_session = original_load_session
+        security.load_user_for_auth_session = original_load_user
+        security.refresh_auth_session_last_seen = original_refresh
+
+
 def test_get_principal_optional_returns_anon_without_creds() -> None:
     principal = asyncio.run(
         security.get_principal_optional(
+            request=_request(),
             creds=None,
             db=object(),
             oidc_verifier=_Verifier(claims={}),  # type: ignore[arg-type]
+            settings=_auth_session_settings(),
         )
     )
 
     assert principal.is_authenticated is False
+    assert principal.auth_method == "none"
     assert principal.user_id is None
     assert principal.claims == {}
+
+
+def test_get_principal_optional_authenticates_session_cookie() -> None:
+    settings = SimpleNamespace(auth_session_cookie_name="arena_session")
+    auth_session = SimpleNamespace(
+        id=uuid.uuid4(),
+        oidc_issuer="https://issuer.example",
+        oidc_sub="sub-123",
+        claims={"groups": ["arena_admin"]},
+    )
+    user = User(
+        id=uuid.uuid4(),
+        oidc_issuer="https://issuer.example",
+        oidc_sub="sub-123",
+        actor_type="human",
+    )
+    request = _request(cookies={"arena_session": "raw-session-token"})
+    refresh_calls: list[object] = []
+
+    def fake_load_auth_session(*_args: object, **kwargs: object) -> object:
+        assert kwargs["session_token"] == "raw-session-token"
+        assert kwargs["settings"] is settings
+        return auth_session
+
+    def fake_load_user(*_args: object, **kwargs: object) -> User:
+        assert kwargs["auth_session"] is auth_session
+        return user
+
+    def fake_refresh(*_args: object, **kwargs: object) -> object:
+        refresh_calls.append(kwargs["auth_session"])
+        return auth_session
+
+    principal = asyncio.run(
+        _with_auth_session_functions(
+            load_session=fake_load_auth_session,
+            load_user=fake_load_user,
+            refresh=fake_refresh,
+            call=lambda: security.get_principal_optional(
+                request=request,
+                creds=None,
+                db=object(),
+                oidc_verifier=_Verifier(error=AssertionError("bearer verifier used")),  # type: ignore[arg-type]
+                settings=settings,  # type: ignore[arg-type]
+            ),
+        )
+    )
+
+    assert principal.is_authenticated is True
+    assert principal.actor_type == "human"
+    assert principal.auth_method == "session"
+    assert principal.user_id == str(user.id)
+    assert principal.auth_session_id == str(auth_session.id)
+    assert principal.oidc_issuer == "https://issuer.example"
+    assert principal.oidc_sub == "sub-123"
+    assert principal.claims == {"groups": ["arena_admin"]}
+    assert refresh_calls == [auth_session]
+    assert request.state.auth_session is auth_session
+    assert request.state.auth_session_id == str(auth_session.id)
+
+
+def test_get_principal_optional_session_cookie_always_builds_human_principal() -> None:
+    settings = SimpleNamespace(auth_session_cookie_name="arena_session")
+    auth_session = SimpleNamespace(
+        id=uuid.uuid4(),
+        oidc_issuer="https://issuer.example",
+        oidc_sub="sub-123",
+        claims={"groups": ["arena_admin"]},
+    )
+    bot_like_user = User(
+        id=uuid.uuid4(),
+        oidc_issuer="https://issuer.example",
+        oidc_sub="sub-123",
+        actor_type="bot",
+    )
+
+    principal = asyncio.run(
+        _with_auth_session_functions(
+            load_session=lambda *_args, **_kwargs: auth_session,
+            load_user=lambda *_args, **_kwargs: bot_like_user,
+            refresh=lambda *_args, **_kwargs: auth_session,
+            call=lambda: security.get_principal_optional(
+                request=_request(cookies={"arena_session": "raw-session-token"}),
+                creds=None,
+                db=object(),
+                oidc_verifier=_Verifier(error=AssertionError("bearer verifier used")),  # type: ignore[arg-type]
+                settings=settings,  # type: ignore[arg-type]
+            ),
+        )
+    )
+
+    assert principal.is_authenticated is True
+    assert principal.actor_type == "human"
+    assert principal.auth_method == "session"
+
+
+def test_session_cookie_principal_claims_authorize_admin_check() -> None:
+    principal = security.Principal(
+        is_authenticated=True,
+        actor_type="human",
+        auth_method="session",
+        user_id=str(uuid.uuid4()),
+        auth_session_id=str(uuid.uuid4()),
+        claims={"groups": ["arena_admin", "users"]},
+    )
+
+    assert security.require_admin(principal) is principal
+
+
+def test_get_principal_optional_returns_anon_for_missing_session_cookie() -> None:
+    settings = SimpleNamespace(auth_session_cookie_name="arena_session")
+    request = _request(cookies={"arena_session": "missing-session-token"})
+
+    def fake_load_auth_session(*_args: object, **kwargs: object) -> None:
+        assert kwargs["session_token"] == "missing-session-token"
+        return None
+
+    principal = asyncio.run(
+        _with_auth_session_functions(
+            load_session=fake_load_auth_session,
+            call=lambda: security.get_principal_optional(
+                request=request,
+                creds=None,
+                db=object(),
+                oidc_verifier=_Verifier(error=AssertionError("bearer verifier used")),  # type: ignore[arg-type]
+                settings=settings,  # type: ignore[arg-type]
+            ),
+        )
+    )
+
+    assert principal.is_authenticated is False
+    assert principal.auth_method == "none"
+
+
+def test_get_principal_optional_returns_anon_when_session_user_missing() -> None:
+    settings = SimpleNamespace(auth_session_cookie_name="arena_session")
+    auth_session = SimpleNamespace(
+        id=uuid.uuid4(),
+        oidc_issuer="https://issuer.example",
+        oidc_sub="sub-123",
+        claims={},
+    )
+    request = _request(cookies={"arena_session": "raw-session-token"})
+
+    principal = asyncio.run(
+        _with_auth_session_functions(
+            load_session=lambda *_args, **_kwargs: auth_session,
+            load_user=lambda *_args, **_kwargs: None,
+            call=lambda: security.get_principal_optional(
+                request=request,
+                creds=None,
+                db=object(),
+                oidc_verifier=_Verifier(error=AssertionError("bearer verifier used")),  # type: ignore[arg-type]
+                settings=settings,  # type: ignore[arg-type]
+            ),
+        )
+    )
+
+    assert principal.is_authenticated is False
+    assert principal.auth_method == "none"
+
+
+def test_get_principal_optional_invalid_bearer_precedence_skips_session_cookie() -> None:
+    def fail_load_session(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("session cookie fallback was used")
+
+    verifier = _Verifier(error=OIDCVerificationError("invalid token"))
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="invalid-token")
+
+    principal = asyncio.run(
+        _with_auth_session_functions(
+            load_session=fail_load_session,
+            call=lambda: security.get_principal_optional(
+                request=_request(cookies={"arena_session": "valid-session-token"}),
+                creds=creds,
+                db=object(),
+                oidc_verifier=verifier,  # type: ignore[arg-type]
+                settings=_auth_session_settings(),
+            ),
+        )
+    )
+
+    assert principal.is_authenticated is False
+    assert principal.auth_method == "none"
+    assert verifier.tokens == ["invalid-token"]
+
+
+def test_get_principal_optional_valid_bearer_precedence_skips_session_cookie(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bearer_user = User(
+        id=uuid.uuid4(),
+        oidc_issuer="https://issuer.example",
+        oidc_sub="bearer-sub",
+        actor_type="human",
+    )
+
+    def fail_load_session(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("session cookie fallback was used")
+
+    monkeypatch.setattr(security, "_upsert_user", lambda *_args, **_kwargs: bearer_user)
+    verifier = _Verifier(
+        claims={
+            "iss": "https://issuer.example",
+            "sub": "bearer-sub",
+            "groups": ["bearer-admin"],
+        }
+    )
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="valid-token")
+
+    principal = asyncio.run(
+        _with_auth_session_functions(
+            load_session=fail_load_session,
+            call=lambda: security.get_principal_optional(
+                request=_request(cookies={"arena_session": "other-session-token"}),
+                creds=creds,
+                db=object(),
+                oidc_verifier=verifier,  # type: ignore[arg-type]
+                settings=_auth_session_settings(),
+            ),
+        )
+    )
+
+    assert principal.is_authenticated is True
+    assert principal.auth_method == "bearer"
+    assert principal.user_id == str(bearer_user.id)
+    assert principal.oidc_sub == "bearer-sub"
+    assert principal.claims == {
+        "iss": "https://issuer.example",
+        "sub": "bearer-sub",
+        "groups": ["bearer-admin"],
+    }
+
+
+def test_get_principal_optional_malformed_bearer_precedence_skips_session_cookie() -> None:
+    def fail_load_session(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("session cookie fallback was used")
+
+    principal = asyncio.run(
+        _with_auth_session_functions(
+            load_session=fail_load_session,
+            call=lambda: security.get_principal_optional(
+                request=_request(
+                    cookies={"arena_session": "valid-session-token"},
+                    headers={"authorization": "Bearer"},
+                ),
+                creds=None,
+                db=object(),
+                oidc_verifier=_Verifier(error=AssertionError("bearer verifier used")),  # type: ignore[arg-type]
+                settings=_auth_session_settings(),
+            ),
+        )
+    )
+
+    assert principal.is_authenticated is False
+    assert principal.auth_method == "none"
 
 
 @pytest.mark.parametrize(
@@ -338,9 +643,11 @@ def test_get_principal_optional_returns_anon_on_verifier_errors(
 
     principal = asyncio.run(
         security.get_principal_optional(
+            request=_request(),
             creds=creds,
             db=object(),
             oidc_verifier=verifier,  # type: ignore[arg-type]
+            settings=_auth_session_settings(),
         )
     )
 
@@ -354,9 +661,11 @@ def test_get_principal_optional_rejects_missing_issuer_claim() -> None:
 
     principal = asyncio.run(
         security.get_principal_optional(
+            request=_request(),
             creds=creds,
             db=object(),
             oidc_verifier=verifier,  # type: ignore[arg-type]
+            settings=_auth_session_settings(),
         )
     )
 
@@ -370,9 +679,11 @@ def test_get_principal_optional_rejects_missing_subject_claim() -> None:
 
     principal = asyncio.run(
         security.get_principal_optional(
+            request=_request(),
             creds=creds,
             db=object(),
             oidc_verifier=verifier,  # type: ignore[arg-type]
+            settings=_auth_session_settings(),
         )
     )
 
@@ -399,9 +710,11 @@ def test_get_principal_optional_raises_500_when_user_upsert_fails(
     with pytest.raises(HTTPException, match="Failed to persist user") as exc_info:
         asyncio.run(
             security.get_principal_optional(
+                request=_request(),
                 creds=creds,
                 db=object(),
                 oidc_verifier=verifier,  # type: ignore[arg-type]
+                settings=_auth_session_settings(),
             )
         )
 
@@ -429,14 +742,17 @@ def test_get_principal_optional_returns_authenticated_principal(
 
     principal = asyncio.run(
         security.get_principal_optional(
+            request=_request(),
             creds=creds,
             db=object(),
             oidc_verifier=verifier,  # type: ignore[arg-type]
+            settings=_auth_session_settings(),
         )
     )
 
     assert principal.is_authenticated is True
     assert principal.actor_type == "human"
+    assert principal.auth_method == "bearer"
     assert principal.user_id == str(user.id)
     assert principal.oidc_issuer == "https://issuer.example"
     assert principal.oidc_sub == "sub-123"
@@ -461,15 +777,18 @@ def test_get_principal_optional_returns_bot_principal_for_service_token(
 
     principal = asyncio.run(
         security.get_principal_optional(
+            request=_request(),
             creds=creds,
             db=db,  # type: ignore[arg-type]
             oidc_verifier=verifier,  # type: ignore[arg-type]
+            settings=_auth_session_settings(),
         )
     )
 
     assert verifier.tokens == []
     assert principal.is_authenticated is True
     assert principal.actor_type == "bot"
+    assert principal.auth_method == "service_token"
     assert principal.user_id == str(bot_user.id)
     assert principal.oidc_issuer == "system:service-account"
     assert principal.oidc_sub == f"service-account:{service_account.id}"
@@ -480,6 +799,56 @@ def test_get_principal_optional_returns_bot_principal_for_service_token(
     assert principal.claims == {}
     assert token.last_used_at is not None
     assert db.added == [token]
+    assert db.flush_calls == 1
+
+
+def test_service_account_token_route_accepts_bot_bearer_without_cookie_or_csrf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        security,
+        "get_settings",
+        lambda: _service_token_settings(),
+    )
+    plaintext, token, service_account, bot_user = _service_token_rows(
+        scopes=["battle:create", "battle:execute"]
+    )
+    db = _ServiceTokenDB([(token, service_account, bot_user)])
+    app = FastAPI()
+
+    def override_db():
+        yield db
+
+    @app.post("/service-token-route")
+    def service_token_route(
+        principal: security.Principal = Depends(security.require_scopes(["battle:create"])),
+    ) -> dict[str, object]:
+        return {
+            "actor_type": principal.actor_type,
+            "auth_method": principal.auth_method,
+            "service_account_id": principal.service_account_id,
+            "scopes": list(principal.scopes),
+        }
+
+    app.dependency_overrides[security.get_db] = override_db
+    app.dependency_overrides[security.get_oidc_verifier] = lambda: _Verifier(
+        error=AssertionError("service token route reached OIDC verifier")
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/service-token-route",
+            headers={"Authorization": f"Bearer {plaintext}"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "actor_type": "bot",
+        "auth_method": "service_token",
+        "service_account_id": str(service_account.id),
+        "scopes": ["battle:create", "battle:execute"],
+    }
+    assert token.last_used_at is not None
     assert db.flush_calls == 1
 
 
@@ -509,9 +878,11 @@ def test_get_principal_optional_rejects_invalid_service_tokens_before_oidc(
     with pytest.raises(HTTPException, match="Invalid service token") as exc_info:
         asyncio.run(
             security.get_principal_optional(
+                request=_request(),
                 creds=creds,
                 db=db,  # type: ignore[arg-type]
                 oidc_verifier=verifier,  # type: ignore[arg-type]
+                settings=_auth_session_settings(),
             )
         )
 
@@ -555,9 +926,11 @@ def test_get_principal_optional_rejects_inactive_service_token_state(
     with pytest.raises(HTTPException, match=expected_detail) as exc_info:
         asyncio.run(
             security.get_principal_optional(
+                request=_request(),
                 creds=creds,
                 db=db,  # type: ignore[arg-type]
                 oidc_verifier=verifier,  # type: ignore[arg-type]
+                settings=_auth_session_settings(),
             )
         )
 
@@ -619,6 +992,44 @@ def test_require_admin_rejects_bot_principal_with_admin_like_claims(
 
     with pytest.raises(HTTPException, match="Human admin principal required") as exc_info:
         security.require_admin(principal)
+
+    assert exc_info.value.status_code == 403
+
+
+def test_require_admin_rejects_service_token_bot_principal_with_admin_like_claims(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        oidc_admin_group_claim="groups",
+        oidc_admin_group_name="arena_admin",
+    )
+    monkeypatch.setattr(security, "get_settings", lambda: settings)
+    principal = security.Principal(
+        is_authenticated=True,
+        actor_type="bot",
+        auth_method="service_token",
+        user_id=str(uuid.uuid4()),
+        claims={"groups": ["arena_admin"]},
+        scopes=("battle:create",),
+    )
+
+    with pytest.raises(HTTPException, match="Human admin principal required") as exc_info:
+        security.require_admin(principal)
+
+    assert exc_info.value.status_code == 403
+
+
+def test_require_human_principal_rejects_service_token_bot() -> None:
+    principal = security.Principal(
+        is_authenticated=True,
+        actor_type="bot",
+        auth_method="service_token",
+        user_id=str(uuid.uuid4()),
+        claims={"groups": ["arena_admin"]},
+    )
+
+    with pytest.raises(HTTPException, match="Human principal required") as exc_info:
+        security.require_human_principal(principal)
 
     assert exc_info.value.status_code == 403
 

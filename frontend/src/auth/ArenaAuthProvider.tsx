@@ -1,31 +1,46 @@
-import { createContext, useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
-import { AuthProvider as OidcAuthProvider, useAuth, type AuthProviderProps } from "react-oidc-context";
-import type { SigninRedirectArgs, SignoutRedirectArgs, User } from "oidc-client-ts";
+import { createContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+
+import { setApiCsrfToken } from "@/lib/api";
 
 import {
-  buildOidcSettings,
-  deriveSessionError,
+  assertBackendSessionConfig,
   extractReturnTo,
+  toBackendSessionUser,
+  type BackendSessionResponse,
+  type BackendSessionUser,
+  type PublicAuthConfig,
   type PublicConfig,
   type SessionErrorCode,
-} from "./oidc";
+} from "./session";
+
+type RedirectCompatibilityArgs = {
+  state?: unknown;
+};
+
+type AuthState =
+  | { status: "loading" }
+  | { status: "ready"; config: PublicAuthConfig; session: BackendSessionResponse; sessionError: SessionErrorCode | null }
+  | { status: "error"; message: string; sessionError: SessionErrorCode };
 
 export type ArenaAuthContextValue = {
   authStatus: "loading" | "authenticated" | "unauthenticated";
   isLoading: boolean;
   isAuthenticated: boolean;
-  user: User | null;
-  accessToken: string | null;
+  user: BackendSessionUser | null;
+  csrfToken: string | null;
   sessionError: SessionErrorCode | null;
-  headers: Record<string, string> | undefined;
-  headersRef: MutableRefObject<Record<string, string> | undefined>;
-  accessTokenRef: MutableRefObject<string | null>;
-  signinRedirect: (args?: SigninRedirectArgs) => Promise<void>;
-  signoutRedirect: (args?: SignoutRedirectArgs) => Promise<void>;
+  signinRedirect: (args?: RedirectCompatibilityArgs) => Promise<void>;
+  signoutRedirect: () => Promise<void>;
 };
 
 export const ArenaAuthContext = createContext<ArenaAuthContextValue | null>(null);
 ArenaAuthContext.displayName = "ArenaAuthContext";
+
+export const arenaAuthNavigation = {
+  to(url: string) {
+    window.location.href = url;
+  },
+};
 
 async function loadPublicConfig(signal: AbortSignal): Promise<PublicConfig> {
   const response = await fetch("/api/v1/public-config", {
@@ -42,6 +57,20 @@ async function loadPublicConfig(signal: AbortSignal): Promise<PublicConfig> {
 
 export async function loadArenaPublicConfig(signal: AbortSignal): Promise<PublicConfig> {
   return loadPublicConfig(signal);
+}
+
+async function loadBackendSession(sessionPath: string, signal: AbortSignal): Promise<BackendSessionResponse> {
+  const response = await fetch(sessionPath, {
+    signal,
+    credentials: "include",
+    headers: { Accept: "application/json" },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to load auth session (${response.status})`);
+  }
+
+  return (await response.json()) as BackendSessionResponse;
 }
 
 function LoadingShell() {
@@ -66,72 +95,18 @@ function ErrorShell({ message }: { message: string }) {
   );
 }
 
-export function finishSpaRedirect(path: string) {
-  window.history.replaceState({}, document.title, path);
-  window.dispatchEvent(new PopStateEvent("popstate"));
+function buildLoginUrl(loginPath: string, returnTo: string) {
+  return `${loginPath}?returnTo=${encodeURIComponent(returnTo)}`;
 }
 
-export function handleSigninCallback(user?: Pick<User, "state"> | null) {
-  const returnTo = extractReturnTo(user?.state);
-  finishSpaRedirect(returnTo);
-}
-
-export function handleSignoutCallback() {
-  finishSpaRedirect("/");
-}
-
-export function matchArenaSignoutCallback(args: Pick<URLSearchParams, never> & { post_logout_redirect_uri?: string | null }) {
-  if (!args.post_logout_redirect_uri) return false;
-  const callbackUrl = new URL(args.post_logout_redirect_uri);
-  return callbackUrl.origin === window.location.origin && callbackUrl.pathname === window.location.pathname;
-}
-
-function AuthBridge({ children }: { children: ReactNode }) {
-  const auth = useAuth();
-  const accessToken = auth.user?.access_token ?? null;
-  const headers = useMemo(
-    () => (accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined),
-    [accessToken],
-  );
-
-  const accessTokenRef = useRef<string | null>(accessToken);
-  const headersRef = useRef<Record<string, string> | undefined>(headers);
-
-  useEffect(() => {
-    accessTokenRef.current = accessToken;
-  }, [accessToken]);
-
-  useEffect(() => {
-    headersRef.current = headers;
-  }, [headers]);
-
-  const isBusy = auth.isLoading || Boolean(auth.activeNavigator);
-  const value = useMemo<ArenaAuthContextValue>(() => {
-    const authenticated = auth.isAuthenticated;
-    return {
-      authStatus: isBusy ? "loading" : authenticated ? "authenticated" : "unauthenticated",
-      isLoading: isBusy,
-      isAuthenticated: authenticated,
-      user: auth.user ?? null,
-      accessToken,
-      sessionError: deriveSessionError(auth.error, auth.user ?? null, accessToken),
-      headers,
-      headersRef,
-      accessTokenRef,
-      signinRedirect: (args: SigninRedirectArgs = {}) => auth.signinRedirect(args),
-      signoutRedirect: (args: SignoutRedirectArgs = {}) => auth.signoutRedirect(args),
-    };
-  }, [accessToken, auth.activeNavigator, auth.error, auth.isAuthenticated, auth.isLoading, auth.signinRedirect, auth.signoutRedirect, auth.user, headers, headersRef, accessTokenRef]);
-
-  return <ArenaAuthContext.Provider value={value}>{children}</ArenaAuthContext.Provider>;
+function getSessionErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Failed to load authentication session";
 }
 
 export function ArenaAuthProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<
-    | { status: "loading" }
-    | { status: "ready"; config: PublicConfig }
-    | { status: "error"; message: string }
-  >({ status: "loading" });
+  const [state, setState] = useState<AuthState>({ status: "loading" });
+  const configRef = useRef<PublicAuthConfig | null>(null);
+  const csrfTokenRef = useRef<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -139,15 +114,23 @@ export function ArenaAuthProvider({ children }: { children: ReactNode }) {
 
     void (async () => {
       try {
-        const config = await loadArenaPublicConfig(controller.signal);
+        const publicConfig = await loadArenaPublicConfig(controller.signal);
+        const authConfig = assertBackendSessionConfig(publicConfig);
+        const session = await loadBackendSession(authConfig.session_path, controller.signal);
         if (active) {
-          setState({ status: "ready", config });
+          const csrfToken = session.csrf_token ?? null;
+          configRef.current = authConfig;
+          csrfTokenRef.current = csrfToken;
+          setApiCsrfToken(csrfToken);
+          setState({ status: "ready", config: authConfig, session, sessionError: null });
         }
       } catch (error) {
         if (!active || controller.signal.aborted) return;
+        setApiCsrfToken(null);
         setState({
           status: "error",
-          message: error instanceof Error ? error.message : "Failed to load authentication settings",
+          message: getSessionErrorMessage(error),
+          sessionError: "SessionBootstrapFailed",
         });
       }
     })();
@@ -155,8 +138,75 @@ export function ArenaAuthProvider({ children }: { children: ReactNode }) {
     return () => {
       active = false;
       controller.abort();
+      setApiCsrfToken(null);
     };
   }, []);
+
+  const signinRedirect = useCallback(async (args: RedirectCompatibilityArgs = {}) => {
+    const config = configRef.current;
+    const returnTo = extractReturnTo(args.state);
+    arenaAuthNavigation.to(buildLoginUrl(config?.login_path ?? "/api/v1/auth/login", returnTo));
+  }, []);
+
+  const signoutRedirect = useCallback(async () => {
+    const config = configRef.current;
+    const logoutPath = config?.logout_path ?? "/api/v1/auth/logout";
+    const csrfToken = csrfTokenRef.current;
+
+    try {
+      await fetch(logoutPath, {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          Accept: "application/json",
+          ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
+        },
+      });
+    } finally {
+      csrfTokenRef.current = null;
+      setApiCsrfToken(null);
+      setState((current) => {
+        if (current.status !== "ready") {
+          return current;
+        }
+
+        return {
+          status: "ready",
+          config: current.config,
+          session: {
+            authenticated: false,
+            is_admin: false,
+            user: null,
+            profile: null,
+            csrf_token: null,
+          },
+          sessionError: null,
+        };
+      });
+      arenaAuthNavigation.to("/");
+    }
+  }, []);
+
+  const value = useMemo<ArenaAuthContextValue | null>(() => {
+    if (state.status !== "ready") {
+      return null;
+    }
+
+    const user = toBackendSessionUser(state.session);
+    const authenticated = state.session.authenticated && user !== null;
+    const csrfToken = state.session.csrf_token ?? null;
+
+    return {
+      authStatus: authenticated ? "authenticated" : "unauthenticated",
+      isLoading: false,
+      isAuthenticated: authenticated,
+      user,
+      csrfToken,
+      sessionError: state.sessionError,
+      signinRedirect,
+      signoutRedirect,
+    };
+  }, [signinRedirect, signoutRedirect, state]);
 
   if (state.status === "loading") {
     return <LoadingShell />;
@@ -166,16 +216,5 @@ export function ArenaAuthProvider({ children }: { children: ReactNode }) {
     return <ErrorShell message={state.message} />;
   }
 
-  const settings = buildOidcSettings(state.config.oidc, window.location.origin);
-
-  return (
-    <OidcAuthProvider
-      {...settings}
-      onSigninCallback={handleSigninCallback as AuthProviderProps["onSigninCallback"]}
-      onSignoutCallback={handleSignoutCallback}
-      matchSignoutCallback={matchArenaSignoutCallback as AuthProviderProps["matchSignoutCallback"]}
-    >
-      <AuthBridge>{children}</AuthBridge>
-    </OidcAuthProvider>
-  );
+  return <ArenaAuthContext.Provider value={value}>{children}</ArenaAuthContext.Provider>;
 }

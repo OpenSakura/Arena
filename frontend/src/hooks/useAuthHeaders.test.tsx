@@ -17,11 +17,8 @@ function makeAuthState(overrides: Record<string, unknown> = {}) {
     isLoading: false,
     isAuthenticated: false,
     user: null,
-    accessToken: null,
+    csrfToken: null,
     sessionError: null,
-    headers: undefined,
-    headersRef: { current: undefined },
-    accessTokenRef: { current: null },
     signinRedirect: vi.fn(),
     signoutRedirect: vi.fn(),
     ...overrides,
@@ -29,12 +26,16 @@ function makeAuthState(overrides: Record<string, unknown> = {}) {
 }
 
 function Probe() {
-  const { headers, authStatus } = useAuthHeaders();
+  const authHeaders = useAuthHeaders();
+  const { authStatus, csrfToken, sessionError } = authHeaders;
 
   return (
     <div>
       <span>{authStatus}</span>
-      <span>{headers?.Authorization ?? "no-auth"}</span>
+      <span data-testid="csrf-token">{csrfToken ?? "no-csrf"}</span>
+      <span data-testid="session-error">{sessionError ?? "no-error"}</span>
+      <span data-testid="has-authorization-headers">{String("headers" in authHeaders)}</span>
+      <span data-testid="has-access-token">{String("accessToken" in authHeaders)}</span>
     </div>
   );
 }
@@ -44,29 +45,25 @@ describe("useAuthHeaders", () => {
     useArenaAuthMock.mockReset();
   });
 
-  it("updates headers immediately when auth becomes authenticated", () => {
-    useArenaAuthMock
-      .mockReturnValueOnce(makeAuthState({ authStatus: "loading", isLoading: true }))
-      .mockReturnValue(
-        makeAuthState({
-          authStatus: "authenticated",
-          isAuthenticated: true,
-          accessToken: "admin-token",
-          headers: { Authorization: "Bearer admin-token" },
-          headersRef: { current: { Authorization: "Bearer admin-token" } },
-          accessTokenRef: { current: "admin-token" },
-        }),
-      );
+  it("exposes session status and CSRF without bearer values when authenticated", () => {
+    useArenaAuthMock.mockReturnValue(
+      makeAuthState({
+        authStatus: "authenticated",
+        isAuthenticated: true,
+        csrfToken: "csrf-token-1",
+      }),
+    );
 
-    const { rerender } = render(<Probe />);
-    expect(screen.getByText("no-auth")).toBeDefined();
+    render(<Probe />);
 
-    rerender(<Probe />);
-
-    expect(screen.getByText("Bearer admin-token")).toBeDefined();
+    expect(screen.getByText("authenticated")).toBeDefined();
+    expect(screen.getByTestId("csrf-token").textContent).toBe("csrf-token-1");
+    expect(screen.getByTestId("session-error").textContent).toBe("no-error");
+    expect(screen.getByTestId("has-authorization-headers").textContent).toBe("false");
+    expect(screen.getByTestId("has-access-token").textContent).toBe("false");
   });
 
-  it("keeps auth headers unset while unauthenticated", async () => {
+  it("exposes unauthenticated state without CSRF", async () => {
     useArenaAuthMock.mockReturnValue(makeAuthState());
 
     render(<Probe />);
@@ -74,6 +71,6 @@ describe("useAuthHeaders", () => {
     await waitFor(() => {
       expect(screen.getByText("unauthenticated")).toBeDefined();
     });
-    expect(screen.getByText("no-auth")).toBeDefined();
+    expect(screen.getByTestId("csrf-token").textContent).toBe("no-csrf");
   });
 });

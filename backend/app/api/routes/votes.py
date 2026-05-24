@@ -23,6 +23,7 @@ from app.api.routes.battles import (
     _is_admin_principal,
     _require_battle_creator_or_admin,
 )
+from app.core.csrf import require_csrf_for_session
 from app.core.config import Settings, get_settings
 from app.core.security import (
     Principal,
@@ -70,7 +71,11 @@ def _required_bot_principal_uuid(value: str | None) -> uuid.UUID:
         ) from exc
 
 
-@router.post("/{battle_id}/vote", status_code=201)
+@router.post(
+    "/{battle_id}/vote",
+    status_code=201,
+    dependencies=[Depends(require_csrf_for_session)],
+)
 def submit_vote(
     battle_id: str,
     payload: VoteCreate,

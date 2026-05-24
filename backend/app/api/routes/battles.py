@@ -26,6 +26,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.csrf import require_csrf_for_session
 from app.core.config import Settings, get_settings
 from app.core.security import (
     Principal,
@@ -55,7 +56,11 @@ from app.utils.redis import get_rate_limit_redis_client
 router = APIRouter(prefix="/battles", tags=["battles"])
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf_for_session)],
+)
 def create_battle(
     payload: BattleCreate,
     request: Request,
@@ -236,7 +241,7 @@ async def stream_battle(
     )
 
 
-@router.post("/{battle_id}/retry")
+@router.post("/{battle_id}/retry", dependencies=[Depends(require_csrf_for_session)])
 def retry_battle(
     battle_id: str,
     request: Request,

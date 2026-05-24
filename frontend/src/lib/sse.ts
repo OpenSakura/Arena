@@ -4,7 +4,8 @@
  * Minimal SSE client that works with `fetch()`.
  *
  * Notes:
- * - We avoid `EventSource` so we can attach Authorization headers when needed.
+ * - We avoid `EventSource` so fetch can carry same-origin session cookies and
+ *   optional explicit headers for non-browser callers.
  */
 
 export type SSEEvent = {
@@ -100,6 +101,7 @@ async function* streamSSEOnce(url: string, init?: RequestInit): AsyncGenerator<S
 
   const res = await fetch(url, {
     ...init,
+    credentials: "include",
     headers,
   });
 

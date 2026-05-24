@@ -1,5 +1,6 @@
 import { expect, test, type Route } from "@playwright/test";
 
+import { auditBrowserAuthLeakage, expectNoAuthorizationHeaders } from "./browser-leakage";
 import { mockSpaAuthenticatedSession } from "./spa-auth";
 
 type Side = "A" | "B";
@@ -79,10 +80,8 @@ async function handleCorsIfPreflight(route: Route): Promise<boolean> {
 
 async function mockAuthenticatedSession(
   page: import("@playwright/test").Page,
-  accessToken: string,
 ): Promise<void> {
   await mockSpaAuthenticatedSession(page, {
-    accessToken,
     profile: {
       sub: "battle-e2e-user",
       name: "Battle E2E",
@@ -117,13 +116,13 @@ async function mockBattleDetails(
   });
 }
 
-test("streams outputs, reveals models after vote, and restarts cleanly", async ({ page }) => {
+test("streams outputs, reveals models after vote, and restarts cleanly", async ({ page }, testInfo) => {
   let createCount = 0;
-  const votePayloads: Array<{ authHeader: string | undefined; payload: unknown }> = [];
-  const createAuthHeaders: Array<string | undefined> = [];
+  const votePayloads: Array<{ csrfHeader: string | undefined; payload: unknown }> = [];
+  const createCsrfHeaders: Array<string | undefined> = [];
   const battlesById = new Map<string, BattlePublic>();
 
-  await mockAuthenticatedSession(page, "battle-flow-access-token");
+  await mockAuthenticatedSession(page);
 
   await page.route("**/api/v1/battles", async (route) => {
     if (await handleCorsIfPreflight(route)) return;
@@ -132,7 +131,7 @@ test("streams outputs, reveals models after vote, and restarts cleanly", async (
       return;
     }
 
-    createAuthHeaders.push(route.request().headers()["authorization"]);
+    createCsrfHeaders.push(route.request().headers()["x-csrf-token"]);
     createCount += 1;
     const battle =
       createCount === 1
@@ -182,7 +181,7 @@ test("streams outputs, reveals models after vote, and restarts cleanly", async (
   await page.route(/\/api\/v1\/battles\/[^/]+\/vote$/, async (route) => {
     if (await handleCorsIfPreflight(route)) return;
     votePayloads.push({
-      authHeader: route.request().headers()["authorization"],
+      csrfHeader: route.request().headers()["x-csrf-token"],
       payload: route.request().postDataJSON(),
     });
     const match = /\/battles\/([^/]+)\/vote$/.exec(route.request().url());
@@ -220,7 +219,7 @@ test("streams outputs, reveals models after vote, and restarts cleanly", async (
 
   expect(votePayloads).toHaveLength(1);
   const firstVote = votePayloads[0]?.payload as Record<string, unknown>;
-  expect(votePayloads[0]?.authHeader).toBe("Bearer battle-flow-access-token");
+  expect(votePayloads[0]?.csrfHeader).toBe("playwright-csrf-token");
   expect(firstVote).toMatchObject({
     winner: "A",
     comment: null,
@@ -239,17 +238,16 @@ test("streams outputs, reveals models after vote, and restarts cleanly", async (
   await expect(page.getByText("Revealed Model A", { exact: true })).toHaveCount(0);
 
   expect(createCount).toBe(2);
-  expect(createAuthHeaders).toEqual([
-    "Bearer battle-flow-access-token",
-    "Bearer battle-flow-access-token",
-  ]);
+  expect(createCsrfHeaders).toEqual(["playwright-csrf-token", "playwright-csrf-token"]);
+  expectNoAuthorizationHeaders(page);
+  await auditBrowserAuthLeakage(page, "battle-create-stream-vote-restart-flow", testInfo);
 });
 
 test("loads an existing completed battle id without creating a new one", async ({ page }) => {
   let createCount = 0;
-  const votePayloads: Array<{ authHeader: string | undefined; payload: unknown }> = [];
+  const votePayloads: Array<{ csrfHeader: string | undefined; payload: unknown }> = [];
 
-  await mockAuthenticatedSession(page, "battle-existing-access-token");
+  await mockAuthenticatedSession(page);
 
   await page.route("**/api/v1/battles", async (route) => {
     if (await handleCorsIfPreflight(route)) return;
@@ -336,7 +334,7 @@ test("loads an existing completed battle id without creating a new one", async (
   await page.route(/\/api\/v1\/battles\/[^/]+\/vote$/, async (route) => {
     if (await handleCorsIfPreflight(route)) return;
     votePayloads.push({
-      authHeader: route.request().headers()["authorization"],
+      csrfHeader: route.request().headers()["x-csrf-token"],
       payload: route.request().postDataJSON(),
     });
 
@@ -373,7 +371,7 @@ test("loads an existing completed battle id without creating a new one", async (
 
   expect(createCount).toBe(0);
   expect(votePayloads).toHaveLength(1);
-  expect(votePayloads[0]?.authHeader).toBe("Bearer battle-existing-access-token");
+  expect(votePayloads[0]?.csrfHeader).toBe("playwright-csrf-token");
   const payload = votePayloads[0]?.payload as Record<string, unknown>;
   expect(payload).toMatchObject({ winner: "B" });
 });

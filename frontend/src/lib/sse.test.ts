@@ -110,7 +110,7 @@ describe("streamSSE", () => {
     expect(events).toEqual([{ event: "message", data: 7 }]);
   });
 
-  it("forwards headers passed as a Headers instance", async () => {
+  it("uses credentials and forwards explicit headers passed as a Headers instance", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(buildSSEBody(["data: ok\n\n"]), {
         status: 200,
@@ -125,10 +125,26 @@ describe("streamSSE", () => {
     expect(events).toEqual([{ event: "message", data: "ok" }]);
 
     const requestInit = fetchSpy.mock.calls[0]?.[1] as RequestInit;
+    expect(requestInit.credentials).toBe("include");
     expect(requestInit.headers).toMatchObject({
       authorization: "Bearer token",
       Accept: "text/event-stream",
     });
+  });
+
+  it("uses cookie credentials without requiring authorization headers", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(buildSSEBody(["data: ok\n\n"]), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      }),
+    );
+
+    await expect(collectFromStream()).resolves.toEqual([{ event: "message", data: "ok" }]);
+
+    const requestInit = fetchSpy.mock.calls[0]?.[1] as RequestInit;
+    expect(requestInit.credentials).toBe("include");
+    expect(requestInit.headers).toEqual({ Accept: "text/event-stream" });
   });
 
   it("throws on non-ok responses", async () => {
@@ -266,9 +282,11 @@ describe("streamSSE", () => {
     expect(callCount).toBe(2);
 
     const firstInit = fetchSpy.mock.calls[0]?.[1] as RequestInit;
+    expect(firstInit.credentials).toBe("include");
     expect((firstInit.headers as Record<string, string>).Authorization).toBe("Bearer token-1");
 
     const secondInit = fetchSpy.mock.calls[1]?.[1] as RequestInit;
+    expect(secondInit.credentials).toBe("include");
     expect((secondInit.headers as Record<string, string>).Authorization).toBe("Bearer token-2");
   });
 });

@@ -20,10 +20,8 @@ describe("buildBattleAuthHeaders", () => {
     expect(buildBattleAuthHeaders()).toBeUndefined();
   });
 
-  it("builds a bearer header from the current access token", () => {
-    expect(buildBattleAuthHeaders("token-123")).toEqual({
-      Authorization: "Bearer token-123",
-    });
+  it("ignores legacy access token values", () => {
+    expect(buildBattleAuthHeaders()).toBeUndefined();
   });
 });
 
@@ -32,18 +30,8 @@ describe("loadOrCreateBattle", () => {
     mockedApiPost.mockResolvedValueOnce({ id: "battle-1" });
 
     await expect(loadOrCreateBattle("new")).resolves.toEqual({ id: "battle-1" });
-    expect(mockedApiPost).toHaveBeenCalledWith("/battles", {}, { headers: undefined });
+    expect(mockedApiPost).toHaveBeenCalledWith("/battles", {});
     expect(mockedApiGet).not.toHaveBeenCalled();
-  });
-
-  it("attaches bearer auth when creating with an access token", async () => {
-    mockedApiPost.mockResolvedValueOnce({ id: "battle-2" });
-
-    await loadOrCreateBattle("new", "token-123");
-
-    expect(mockedApiPost).toHaveBeenCalledWith("/battles", {}, {
-      headers: { Authorization: "Bearer token-123" },
-    });
   });
 
   it("loads an existing battle using an encoded id", async () => {
@@ -53,21 +41,10 @@ describe("loadOrCreateBattle", () => {
       id: "existing",
     });
 
-    expect(mockedApiGet).toHaveBeenCalledWith("/battles/battle%2Falpha%20beta", {
-      headers: undefined,
-    });
+    expect(mockedApiGet).toHaveBeenCalledWith("/battles/battle%2Falpha%20beta");
     expect(mockedApiPost).not.toHaveBeenCalled();
   });
 
-  it("attaches bearer auth when loading an existing battle with an access token", async () => {
-    mockedApiGet.mockResolvedValueOnce({ id: "existing" });
-
-    await loadOrCreateBattle("battle/alpha beta", "token-123");
-
-    expect(mockedApiGet).toHaveBeenCalledWith("/battles/battle%2Falpha%20beta", {
-      headers: { Authorization: "Bearer token-123" },
-    });
-  });
 });
 
 describe("asRecord", () => {

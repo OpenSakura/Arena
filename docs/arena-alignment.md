@@ -255,7 +255,7 @@ Minimum recommended mitigations:
 Additional notes given "internal base_url allowed":
 
 - Treat the model registry as a network-egress configuration surface.
-- Keep `base_url` admin-only; never return it to public clients.
+- Keep `base_url` admin-only; never return it to browser clients.
 - Consider adding a future `network_scope` flag per model (internal/external) to re-enable
   stronger SSRF protections for external-only models.
 - At minimum, explicitly block cloud metadata endpoints even if internal traffic is allowed.

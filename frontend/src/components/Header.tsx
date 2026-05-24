@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { SakuraIcon } from "@/components/icons/SakuraIcon";
 import { useAdminAccess } from "@/hooks/useAdminAccess";
 import { useArenaAuth } from "@/hooks/useArenaAuth";
+import type { BackendSessionUser } from "@/auth/session";
 
 type NavLink = {
   href: string;
@@ -23,8 +24,9 @@ const NAV_LINKS: NavLink[] = [
   { href: "/admin/models", label: "Admin", prefix: "/admin", adminRequired: true },
 ];
 
-function getUserLabel(name?: string | null, email?: string | null) {
-  return email ?? name ?? "Signed in";
+function getUserLabel(user: BackendSessionUser | null) {
+  if (!user) return "Signed in";
+  return user.profile.email ?? user.profile.display_name ?? user.profile.name ?? user.profile.preferred_username ?? "Signed in";
 }
 
 export function Header() {
@@ -34,9 +36,7 @@ export function Header() {
   const pathname = location.pathname;
   const search = location.search;
   const hash = location.hash;
-  const searchParams = new URLSearchParams(search);
-  const callbackUrl = searchParams.get("callbackUrl");
-  const returnTo = callbackUrl || `${pathname}${search}${hash}` || "/";
+  const returnTo = `${pathname}${search}${hash}` || "/";
   const [mobileOpen, setMobileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const mobileMenuId = useId();
@@ -59,10 +59,7 @@ export function Header() {
     return pathname === link.href || pathname.startsWith(link.href + "/");
   }
 
-  const identity = getUserLabel(
-    auth.user?.profile.name ?? auth.user?.profile.preferred_username,
-    auth.user?.profile.email,
-  );
+  const identity = getUserLabel(auth.user);
 
   function AuthButtonGroup({ mobile = false }: { mobile?: boolean }) {
     if (auth.authStatus === "loading") {
@@ -77,7 +74,7 @@ export function Header() {
             type="button"
             variant="ghost"
             size="sm"
-            onClick={() => void auth.signoutRedirect({ state: { returnTo: "/" } })}
+            onClick={() => void auth.signoutRedirect()}
             className={mobile ? "justify-start" : undefined}
           >
             Logout

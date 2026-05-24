@@ -133,7 +133,7 @@ def test_configure_logging_honors_explicit_log_level_and_json_mode() -> None:
         for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
             uvicorn_logger = logging.getLogger(logger_name)
             assert uvicorn_logger.handlers == []
-            assert uvicorn_logger.propagate is True
+            assert uvicorn_logger.propagate is (logger_name != "uvicorn.access")
 
 
 @pytest.mark.parametrize(

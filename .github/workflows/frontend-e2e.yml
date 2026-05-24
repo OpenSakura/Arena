@@ -72,9 +72,13 @@ jobs:
         working-directory: frontend
 
       - name: Run Playwright tests
+        # Live-stack auth secrets are deterministic test-only values in
+        # frontend/playwright.config.ts and are stripped from the Vite dev server.
         env:
           PLAYWRIGHT_ARGS: ${{ matrix.playwright_args }}
           PW_ENABLE_LIVE_STACK: ${{ matrix.pw_enable_live_stack }}
+          PW_BACKEND_PORT: "28000"
+          PW_MOCK_LLM_PORT: "18080"
         run: |
           if [ -n "$PLAYWRIGHT_ARGS" ]; then
             npm run test:e2e -- "$PLAYWRIGHT_ARGS"

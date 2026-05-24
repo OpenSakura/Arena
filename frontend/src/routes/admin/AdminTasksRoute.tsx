@@ -417,21 +417,21 @@ function toEditTaskState(task: Task): EditTaskState {
 }
 
 export default function AdminTasksRoute() {
-  const { headers } = useAuthHeaders();
+  const { authStatus } = useAuthHeaders();
   const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadTaskSets() {
-      if (!headers) {
+      if (authStatus !== "authenticated") {
         dispatch({ type: "LOAD_TASK_SETS_SUCCESS", taskSets: [] });
         return;
       }
 
       dispatch({ type: "LOAD_TASK_SETS_START" });
       try {
-        const res = parseTaskSetsResponse(await apiGet("/admin/task-sets?limit=1000", { headers }));
+        const res = parseTaskSetsResponse(await apiGet("/admin/task-sets?limit=1000"));
         if (cancelled) return;
         dispatch({ type: "LOAD_TASK_SETS_SUCCESS", taskSets: res.task_sets });
       } catch (err) {
@@ -447,13 +447,13 @@ export default function AdminTasksRoute() {
     return () => {
       cancelled = true;
     };
-  }, [headers]);
+  }, [authStatus]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadTasks() {
-      if (!headers) {
+      if (authStatus !== "authenticated") {
         dispatch({ type: "LOAD_TASKS_SUCCESS", tasks: [], visibleCount: TASKS_PAGE_SIZE });
         return;
       }
@@ -463,7 +463,7 @@ export default function AdminTasksRoute() {
         const qs = state.selectedTaskSetId
           ? `?task_set_id=${encodeURIComponent(state.selectedTaskSetId)}`
           : "";
-        const res = parseTasksResponse(await apiGet(`/admin/tasks${qs ? qs + "&limit=1000" : "?limit=1000"}`, { headers }));
+        const res = parseTasksResponse(await apiGet(`/admin/tasks${qs ? qs + "&limit=1000" : "?limit=1000"}`));
         if (cancelled) return;
         dispatch({
           type: "LOAD_TASKS_SUCCESS",
@@ -483,14 +483,14 @@ export default function AdminTasksRoute() {
     return () => {
       cancelled = true;
     };
-  }, [headers, state.selectedTaskSetId]);
+  }, [authStatus, state.selectedTaskSetId]);
 
   useEffect(() => {
     dispatch({ type: "SYNC_EDITING_SET" });
   }, [state.selectedTaskSetId, state.taskSets]);
 
   async function handleCreateTaskSet() {
-    if (!headers) return;
+    if (authStatus !== "authenticated") return;
 
     dispatch({ type: "CREATE_SET_START" });
     try {
@@ -502,7 +502,7 @@ export default function AdminTasksRoute() {
         metadata: parseJsonObjectOrNull(state.newSetMetadataText),
       };
 
-      const created = parseTaskSet(await apiPost("/admin/task-sets", payload, { headers }));
+      const created = parseTaskSet(await apiPost("/admin/task-sets", payload));
       dispatch({ type: "CREATE_SET_SUCCESS", created });
     } catch (err) {
       dispatch({
@@ -513,7 +513,7 @@ export default function AdminTasksRoute() {
   }
 
   async function handleSaveSelectedTaskSet() {
-    if (!headers || !state.editingSet) return;
+    if (authStatus !== "authenticated" || !state.editingSet) return;
 
     dispatch({ type: "SAVE_SET_START" });
     try {
@@ -526,9 +526,7 @@ export default function AdminTasksRoute() {
       };
 
       const updated = parseTaskSet(
-        await apiPut(`/admin/task-sets/${encodeURIComponent(state.editingSet.id)}`, payload, {
-          headers,
-        }),
+        await apiPut(`/admin/task-sets/${encodeURIComponent(state.editingSet.id)}`, payload),
       );
       dispatch({ type: "SAVE_SET_SUCCESS", updated });
     } catch (err) {
@@ -540,11 +538,11 @@ export default function AdminTasksRoute() {
   }
 
   async function handleDeleteSelectedTaskSet() {
-    if (!headers || !state.editingSet) return;
+    if (authStatus !== "authenticated" || !state.editingSet) return;
     if (!confirm("Delete this task set? (must be empty)")) return;
 
     try {
-      await apiDelete(`/admin/task-sets/${encodeURIComponent(state.editingSet.id)}`, { headers });
+      await apiDelete(`/admin/task-sets/${encodeURIComponent(state.editingSet.id)}`);
       dispatch({ type: "DELETE_SET_SUCCESS", id: state.editingSet.id });
     } catch (err) {
       dispatch({
@@ -555,7 +553,7 @@ export default function AdminTasksRoute() {
   }
 
   async function handleCreateTask() {
-    if (!headers) return;
+    if (authStatus !== "authenticated") return;
 
     dispatch({ type: "CREATE_TASK_START" });
     try {
@@ -569,7 +567,7 @@ export default function AdminTasksRoute() {
         metadata: parseJsonObjectOrNull(state.taskMetadataText),
       };
 
-      const created = parseTask(await apiPost("/admin/tasks", payload, { headers }));
+      const created = parseTask(await apiPost("/admin/tasks", payload));
       dispatch({ type: "CREATE_TASK_SUCCESS", created });
     } catch (err) {
       dispatch({
@@ -580,7 +578,7 @@ export default function AdminTasksRoute() {
   }
 
   async function handleSaveTaskEdit() {
-    if (!headers || !state.editingTask) return;
+    if (authStatus !== "authenticated" || !state.editingTask) return;
 
     dispatch({ type: "SAVE_TASK_START" });
     try {
@@ -597,9 +595,7 @@ export default function AdminTasksRoute() {
       };
 
       const updated = parseTask(
-        await apiPut(`/admin/tasks/${encodeURIComponent(state.editingTask.id)}`, payload, {
-          headers,
-        }),
+        await apiPut(`/admin/tasks/${encodeURIComponent(state.editingTask.id)}`, payload),
       );
       dispatch({ type: "SAVE_TASK_SUCCESS", updated });
     } catch (err) {
@@ -611,11 +607,11 @@ export default function AdminTasksRoute() {
   }
 
   async function handleDeleteTask(id: string) {
-    if (!headers) return;
+    if (authStatus !== "authenticated") return;
     if (!confirm("Delete this task?")) return;
 
     try {
-      await apiDelete(`/admin/tasks/${encodeURIComponent(id)}`, { headers });
+      await apiDelete(`/admin/tasks/${encodeURIComponent(id)}`);
       dispatch({ type: "DELETE_TASK_SUCCESS", id });
     } catch (err) {
       dispatch({
@@ -626,7 +622,7 @@ export default function AdminTasksRoute() {
   }
 
   async function handleImportJsonl() {
-    if (!headers) return;
+    if (authStatus !== "authenticated") return;
     if (!state.importFile) {
       dispatch({ type: "IMPORT_ERROR", error: "Select a .jsonl file first" });
       return;
@@ -643,7 +639,7 @@ export default function AdminTasksRoute() {
       if (state.importTargetLang.trim()) qs.set("target_lang", state.importTargetLang.trim());
 
       const path = `/admin/tasks/import-jsonl?${qs.toString()}`;
-      const body = parseImportResponse(await apiPost(path, form, { headers }));
+      const body = parseImportResponse(await apiPost(path, form));
 
       const refreshed = parseTasksResponse(
         await apiGet(
@@ -652,7 +648,6 @@ export default function AdminTasksRoute() {
               ? `?task_set_id=${encodeURIComponent(state.selectedTaskSetId)}&limit=1000`
               : "?limit=1000"
           }`,
-          { headers },
         ),
       );
       dispatch({ type: "IMPORT_SUCCESS", result: body, tasks: refreshed.tasks });

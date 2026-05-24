@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.csrf import require_csrf_for_session
 from app.core.security import require_admin
 from app.db.session import get_db
 from app.models.task import Task, TaskSet
@@ -44,7 +45,7 @@ from app.utils.id import parse_optional_uuid_or_422, parse_uuid_or_422
 router = APIRouter(
     prefix="/admin",
     tags=["admin", "tasks"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_admin), Depends(require_csrf_for_session)],
 )
 
 _LANG_CODE_MAX_LENGTH = 16

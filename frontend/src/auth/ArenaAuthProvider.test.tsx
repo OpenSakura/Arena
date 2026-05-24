@@ -3,43 +3,103 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { useArenaAuth } from "@/hooks/useArenaAuth";
+
 import {
   ArenaAuthProvider,
-  finishSpaRedirect,
-  handleSigninCallback,
-  handleSignoutCallback,
+  arenaAuthNavigation,
   loadArenaPublicConfig,
-  matchArenaSignoutCallback,
 } from "./ArenaAuthProvider";
+import { normalizeReturnTo } from "./session";
 
-const useAuthMock = vi.fn();
-const oidcProviderSpy = vi.fn();
-
-vi.mock("react-oidc-context", () => ({
-  AuthProvider: ({ children, ...props }: Record<string, unknown>) => {
-    oidcProviderSpy(props);
-    return <div data-testid="oidc-provider">{children as React.ReactNode}</div>;
+const PUBLIC_CONFIG = {
+  anon_battle_turnstile_required: false,
+  auth: {
+    mode: "backend_session",
+    login_path: "/api/v1/auth/login",
+    logout_path: "/api/v1/auth/logout",
+    session_path: "/api/v1/auth/session",
   },
-  useAuth: () => useAuthMock(),
-}));
+} as const;
+
+const AUTHENTICATED_SESSION = {
+  authenticated: true,
+  is_admin: true,
+  user: {
+    id: "user-1",
+    oidc_issuer: "https://issuer.example",
+    oidc_sub: "subject-1",
+    created_at: "2026-05-24T00:00:00Z",
+  },
+  profile: {
+    display_name: "Arena User",
+    ui_language: "en",
+    zh_variant: "simplified",
+    jp_proficiency: null,
+    translation_experience: null,
+    consents: null,
+    completed_at: "2026-05-24T00:00:00Z",
+  },
+  csrf_token: "csrf-token-1",
+} as const;
+
+function jsonResponse(body: unknown, init: ResponseInit = {}) {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+    ...init,
+  });
+}
+
+function createNavigateSpy() {
+  return vi.spyOn(arenaAuthNavigation, "to").mockImplementation(() => undefined);
+}
 
 function Probe() {
-  return <div>child-content</div>;
+  const auth = useArenaAuth();
+
+  return (
+    <div>
+      <div>child-content</div>
+      <div data-testid="auth-status">{auth.authStatus}</div>
+      <div data-testid="is-authenticated">{String(auth.isAuthenticated)}</div>
+      <div data-testid="is-loading">{String(auth.isLoading)}</div>
+      <div data-testid="csrf-token">{auth.csrfToken ?? "none"}</div>
+      <div data-testid="session-error">{auth.sessionError ?? "none"}</div>
+      <div data-testid="user-id">{auth.user?.id ?? "none"}</div>
+      <div data-testid="user-label">{auth.user?.profile.display_name ?? "none"}</div>
+      <div data-testid="has-access-token">{String("accessToken" in auth)}</div>
+      <div data-testid="has-refresh-token">{String("refreshToken" in auth)}</div>
+      <div data-testid="has-id-token">{String("idToken" in auth)}</div>
+      <div data-testid="has-client-secret">{String("clientSecret" in auth)}</div>
+      <div data-testid="has-auth-headers">{String("headers" in auth)}</div>
+      <button type="button" onClick={() => void auth.signinRedirect({ state: { returnTo: "/battle/1?tab=vote#panel" } })}>
+        Login
+      </button>
+      <button type="button" onClick={() => void auth.signinRedirect({ state: { returnTo: "https://evil.example/pwn" } })}>
+        Unsafe Login
+      </button>
+      <button type="button" onClick={() => void auth.signoutRedirect()}>
+        Logout
+      </button>
+    </div>
+  );
+}
+
+async function renderProviderWithFetch(fetchMock: ReturnType<typeof vi.fn>) {
+  vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
+
+  render(
+    <ArenaAuthProvider>
+      <Probe />
+    </ArenaAuthProvider>,
+  );
+
+  await screen.findByText("child-content");
 }
 
 describe("ArenaAuthProvider helpers", () => {
   beforeEach(() => {
-    useAuthMock.mockReset();
-    oidcProviderSpy.mockReset();
-    useAuthMock.mockReturnValue({
-      isLoading: false,
-      activeNavigator: null,
-      isAuthenticated: false,
-      user: null,
-      error: null,
-      signinRedirect: vi.fn(),
-      signoutRedirect: vi.fn(),
-    });
     window.sessionStorage.clear();
     window.history.replaceState({}, "", "/");
   });
@@ -48,26 +108,8 @@ describe("ArenaAuthProvider helpers", () => {
     vi.restoreAllMocks();
   });
 
-  it("loads public config from the backend contract", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          anon_battle_turnstile_required: false,
-          oidc: {
-            issuer: "https://auth.example/application/o/arena/",
-            client_id: "arena-client",
-            scope: "openid profile email offline_access",
-            redirect_path: "/auth/callback",
-            silent_redirect_path: "/auth/silent-callback",
-            post_logout_redirect_path: "/auth/logout-callback",
-          },
-        }),
-        {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        },
-      ),
-    );
+  it("loads public config from the backend-session contract", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(PUBLIC_CONFIG));
 
     const result = await loadArenaPublicConfig(new AbortController().signal);
 
@@ -75,85 +117,19 @@ describe("ArenaAuthProvider helpers", () => {
       signal: expect.any(AbortSignal),
       headers: { Accept: "application/json" },
     });
-    expect(result.oidc.redirect_path).toBe("/auth/callback");
+    expect(result.auth).toEqual(PUBLIC_CONFIG.auth);
   });
 
-  it("replaces callback urls with the saved returnTo on sign-in callback", () => {
-    window.history.replaceState({}, "", "/auth/callback?code=abc&state=def");
-
-    handleSigninCallback({ state: { returnTo: "/battle/arena-1?tab=vote#panel" } } as never);
-
-    expect(window.location.pathname).toBe("/battle/arena-1");
-    expect(window.location.search).toBe("?tab=vote");
-    expect(window.location.hash).toBe("#panel");
-  });
-
-  it("falls back to home when sign-in callback state is missing or unsafe", () => {
-    window.history.replaceState({}, "", "/auth/callback?code=abc&state=def");
-
-    handleSigninCallback({ state: { returnTo: "https://evil.example/pwn" } } as never);
-
-    expect(window.location.pathname).toBe("/");
-    expect(window.location.search).toBe("");
-  });
-
-  it("routes logout callbacks back to the SPA root", () => {
-    window.history.replaceState({}, "", "/auth/logout-callback?state=abc");
-
-    handleSignoutCallback();
-
-    expect(window.location.pathname).toBe("/");
-    expect(window.location.search).toBe("");
-  });
-
-  it("matches only same-origin logout callback urls", () => {
-    window.history.replaceState({}, "", "/auth/logout-callback?state=abc");
-
-    expect(
-      matchArenaSignoutCallback({
-        post_logout_redirect_uri: `${window.location.origin}/auth/logout-callback`,
-      }),
-    ).toBe(true);
-    expect(
-      matchArenaSignoutCallback({
-        post_logout_redirect_uri: `${window.location.origin}/auth/callback`,
-      }),
-    ).toBe(false);
-    expect(
-      matchArenaSignoutCallback({
-        post_logout_redirect_uri: `https://other.example/auth/logout-callback`,
-      }),
-    ).toBe(false);
-  });
-
-  it("updates history and emits a popstate event when finishing SPA redirects", () => {
-    const popstateListener = vi.fn();
-    window.addEventListener("popstate", popstateListener);
-
-    finishSpaRedirect("/leaderboard?filter=recent#top");
-
-    expect(window.location.pathname).toBe("/leaderboard");
-    expect(window.location.search).toBe("?filter=recent");
-    expect(window.location.hash).toBe("#top");
-    expect(popstateListener).toHaveBeenCalledTimes(1);
-
-    window.removeEventListener("popstate", popstateListener);
+  it("normalizes login returnTo values to backend-safe paths", () => {
+    expect(normalizeReturnTo(`${window.location.origin}/battle/1?tab=vote#panel`)).toBe(
+      "/battle/1?tab=vote#panel",
+    );
+    expect(normalizeReturnTo("https://evil.example/pwn")).toBe("/");
   });
 });
 
 describe("ArenaAuthProvider component", () => {
   beforeEach(() => {
-    useAuthMock.mockReset();
-    oidcProviderSpy.mockReset();
-    useAuthMock.mockReturnValue({
-      isLoading: false,
-      activeNavigator: null,
-      isAuthenticated: false,
-      user: null,
-      error: null,
-      signinRedirect: vi.fn(),
-      signoutRedirect: vi.fn(),
-    });
     window.sessionStorage.clear();
     window.history.replaceState({}, "", "/");
   });
@@ -162,52 +138,107 @@ describe("ArenaAuthProvider component", () => {
     vi.restoreAllMocks();
   });
 
-  it("initializes OIDC from /api/v1/public-config with the required callback paths", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          anon_battle_turnstile_required: false,
-          oidc: {
-            issuer: "https://auth.example/application/o/arena/",
-            client_id: "arena-client",
-            scope: "openid profile email offline_access",
-            redirect_path: "/auth/callback",
-            silent_redirect_path: "/auth/silent-callback",
-            post_logout_redirect_path: "/auth/logout-callback",
-          },
+  it("bootstraps authenticated session state from backend session JSON", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(PUBLIC_CONFIG))
+      .mockResolvedValueOnce(jsonResponse(AUTHENTICATED_SESSION));
+
+    await renderProviderWithFetch(fetchMock);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/v1/public-config", {
+      signal: expect.any(AbortSignal),
+      headers: { Accept: "application/json" },
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/v1/auth/session", {
+      signal: expect.any(AbortSignal),
+      credentials: "include",
+      headers: { Accept: "application/json" },
+    });
+    expect(screen.getByTestId("auth-status").textContent).toBe("authenticated");
+    expect(screen.getByTestId("is-authenticated").textContent).toBe("true");
+    expect(screen.getByTestId("is-loading").textContent).toBe("false");
+    expect(screen.getByTestId("csrf-token").textContent).toBe("csrf-token-1");
+    expect(screen.getByTestId("session-error").textContent).toBe("none");
+    expect(screen.getByTestId("user-id").textContent).toBe("user-1");
+    expect(screen.getByTestId("user-label").textContent).toBe("Arena User");
+    expect(screen.getByTestId("has-access-token").textContent).toBe("false");
+    expect(screen.getByTestId("has-refresh-token").textContent).toBe("false");
+    expect(screen.getByTestId("has-id-token").textContent).toBe("false");
+    expect(screen.getByTestId("has-client-secret").textContent).toBe("false");
+    expect(screen.getByTestId("has-auth-headers").textContent).toBe("false");
+  });
+
+  it("bootstraps unauthenticated backend session state without throwing", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(PUBLIC_CONFIG))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          authenticated: false,
+          is_admin: false,
+          user: null,
+          profile: null,
+          csrf_token: null,
         }),
-        {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        },
-      ),
-    );
+      );
 
-    render(
-      <ArenaAuthProvider>
-        <Probe />
-      </ArenaAuthProvider>,
-    );
+    await renderProviderWithFetch(fetchMock);
 
-    await screen.findByText("child-content");
+    expect(screen.getByTestId("auth-status").textContent).toBe("unauthenticated");
+    expect(screen.getByTestId("is-authenticated").textContent).toBe("false");
+    expect(screen.getByTestId("csrf-token").textContent).toBe("none");
+    expect(screen.getByTestId("user-id").textContent).toBe("none");
+  });
+
+  it("navigates login compatibility calls to backend login with sanitized returnTo", async () => {
+    const navigateSpy = createNavigateSpy();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(PUBLIC_CONFIG))
+      .mockResolvedValueOnce(jsonResponse({ authenticated: false, is_admin: false, user: null, profile: null, csrf_token: null }));
+
+    await renderProviderWithFetch(fetchMock);
+
+    screen.getByRole("button", { name: "Login" }).click();
+    screen.getByRole("button", { name: "Unsafe Login" }).click();
+
+    expect(navigateSpy).toHaveBeenNthCalledWith(1, "/api/v1/auth/login?returnTo=%2Fbattle%2F1%3Ftab%3Dvote%23panel");
+    expect(navigateSpy).toHaveBeenNthCalledWith(2, "/api/v1/auth/login?returnTo=%2F");
+  });
+
+  it("posts logout with credentials and CSRF, clears local auth state, and navigates home", async () => {
+    const navigateSpy = createNavigateSpy();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(PUBLIC_CONFIG))
+      .mockResolvedValueOnce(jsonResponse(AUTHENTICATED_SESSION))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, authenticated: false, logout_url: null }));
+
+    await renderProviderWithFetch(fetchMock);
+
+    screen.getByRole("button", { name: "Logout" }).click();
 
     await waitFor(() => {
-      expect(oidcProviderSpy).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/v1/auth/logout", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          Accept: "application/json",
+          "X-CSRF-Token": "csrf-token-1",
+        },
+      });
     });
-
-    const props = oidcProviderSpy.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(props.authority).toBe("https://auth.example/application/o/arena");
-    expect(props.client_id).toBe("arena-client");
-    expect(props.response_type).toBe("code");
-    expect(props.automaticSilentRenew).toBe(true);
-    expect(props.redirect_uri).toBe(`${window.location.origin}/auth/callback`);
-    expect(props.silent_redirect_uri).toBe(`${window.location.origin}/auth/silent-callback`);
-    expect(props.post_logout_redirect_uri).toBe(`${window.location.origin}/auth/logout-callback`);
-    expect(props.userStore).toBeDefined();
+    await waitFor(() => {
+      expect(screen.getByTestId("auth-status").textContent).toBe("unauthenticated");
+    });
+    expect(screen.getByTestId("csrf-token").textContent).toBe("none");
+    expect(navigateSpy).toHaveBeenCalledWith("/");
   });
 
   it("shows an error shell when public config bootstrap fails", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("boom", { status: 500 }));
+    const fetchMock = vi.fn().mockResolvedValue(new Response("boom", { status: 500 }));
+    vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
 
     render(
       <ArenaAuthProvider>
@@ -216,6 +247,47 @@ describe("ArenaAuthProvider component", () => {
     );
 
     await screen.findByText("Failed to load public config (500)");
-    expect(oidcProviderSpy).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows an error shell when backend session bootstrap fails", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(PUBLIC_CONFIG))
+      .mockResolvedValueOnce(new Response("unauthorized", { status: 401 }));
+    vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
+
+    render(
+      <ArenaAuthProvider>
+        <Probe />
+      </ArenaAuthProvider>,
+    );
+
+    await screen.findByText("Failed to load auth session (401)");
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/v1/auth/session", {
+      signal: expect.any(AbortSignal),
+      credentials: "include",
+      headers: { Accept: "application/json" },
+    });
+  });
+
+  it("does not call provider token endpoints or write oidc.user sessionStorage keys", async () => {
+    const setItemSpy = vi.spyOn(window.sessionStorage.__proto__, "setItem");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(PUBLIC_CONFIG))
+      .mockResolvedValueOnce(jsonResponse(AUTHENTICATED_SESSION));
+
+    await renderProviderWithFetch(fetchMock);
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "/api/v1/public-config",
+      "/api/v1/auth/session",
+    ]);
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/token"))).toBe(false);
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/authorize"))).toBe(false);
+    expect(setItemSpy.mock.calls.some(([key]) => String(key).startsWith("oidc.user:"))).toBe(false);
+    expect(Object.keys(window.sessionStorage).some((key) => key.startsWith("oidc.user:"))).toBe(false);
+    expect(JSON.stringify([...setItemSpy.mock.calls])).not.toMatch(/accessToken|refreshToken|idToken|clientSecret/);
   });
 });

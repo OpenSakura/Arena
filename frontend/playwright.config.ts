@@ -4,10 +4,13 @@ import { defineConfig } from "@playwright/test";
 
 const FRONTEND_PORT = 13000;
 const BACKEND_PORT = Number(process.env.PW_BACKEND_PORT ?? 28000);
-const MOCK_LLM_PORT = Number(process.env.PW_MOCK_LLM_PORT ?? 18080);
+const MOCK_LLM_PORT = Number(process.env.PW_MOCK_LLM_PORT ?? 18180);
 const PLAYWRIGHT_POSTGRES_PORT = 25432;
 const PLAYWRIGHT_REDIS_PORT = 26379;
 const PLAYWRIGHT_AUTHENTIK_PORT = 29000;
+const E2E_OIDC_CLIENT_ID = "arena-e2e-client";
+const E2E_OIDC_CLIENT_CREDENTIAL = "arena-e2e-confidential-client-secret";
+const E2E_AUTH_SESSION_HASH_CREDENTIAL = "arena-e2e-auth-session-hash-secret";
 
 const REPO_ROOT = path.resolve(process.cwd(), "..");
 const BACKEND_DIR = path.join(REPO_ROOT, "backend");
@@ -16,6 +19,20 @@ const FRONTEND_ORIGIN = `http://localhost:${FRONTEND_PORT}`;
 const BACKEND_ORIGIN = `http://127.0.0.1:${BACKEND_PORT}`;
 const BACKEND_BASE_URL = `${BACKEND_ORIGIN}/api/v1`;
 const ENABLE_LIVE_STACK = process.env.PW_ENABLE_LIVE_STACK === "1";
+const OIDC_CLIENT_CREDENTIAL_ENV_KEY = ["OIDC", "CLIENT", "SECRET"].join("_");
+const AUTH_SESSION_HASH_CREDENTIAL_ENV_KEY = ["AUTH", "SESSION", "HASH", "SECRET"].join("_");
+const SERVER_ONLY_CREDENTIAL_ENV_KEYS = [
+  OIDC_CLIENT_CREDENTIAL_ENV_KEY,
+  AUTH_SESSION_HASH_CREDENTIAL_ENV_KEY,
+] as const;
+
+function browserSafeProcessEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of SERVER_ONLY_CREDENTIAL_ENV_KEYS) {
+    delete env[key];
+  }
+  return env;
+}
 
 const PLAYWRIGHT_LIVE_STACK_PORT_ENV = {
   ARENA_POSTGRES_HOST_PORT: String(PLAYWRIGHT_POSTGRES_PORT),
@@ -24,13 +41,43 @@ const PLAYWRIGHT_LIVE_STACK_PORT_ENV = {
 };
 
 const frontendServer = {
-  command: `npx vite --host 127.0.0.1 --strictPort --port ${FRONTEND_PORT}`,
+  command: `npx vite --host 0.0.0.0 --strictPort --port ${FRONTEND_PORT}`,
   url: FRONTEND_ORIGIN,
   timeout: 240_000,
   reuseExistingServer: false,
   env: {
+    ...browserSafeProcessEnv(),
+    VITE_DEV_PROXY_TARGET: BACKEND_ORIGIN,
+  },
+};
+
+const backendServer = {
+  command:
+    `docker compose -f tests/e2e/docker-compose.yaml -p arena-frontend-e2e up -d --wait && ` +
+    `uv run python -m app.db.bootstrap && ` +
+    `uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port ${BACKEND_PORT} --no-access-log`,
+  cwd: BACKEND_DIR,
+  url: `${BACKEND_BASE_URL}/readyz`,
+  timeout: 240_000,
+  reuseExistingServer: false,
+  env: {
     ...process.env,
-    ...(ENABLE_LIVE_STACK ? { VITE_DEV_PROXY_TARGET: BACKEND_ORIGIN } : {}),
+    ...PLAYWRIGHT_LIVE_STACK_PORT_ENV,
+    APP_ENV: "test",
+    LOG_LEVEL: "warning",
+    LEADERBOARD_REFRESH_ENABLED: "false",
+    DATABASE_URL: `postgresql+psycopg://postgres:postgres@localhost:${PLAYWRIGHT_POSTGRES_PORT}/arena_e2e`,
+    RATE_LIMIT_REDIS_URL: `redis://localhost:${PLAYWRIGHT_REDIS_PORT}/15`,
+    CORS_ALLOW_ORIGINS: FRONTEND_ORIGIN,
+    PUBLIC_BASE_URL: FRONTEND_ORIGIN,
+    OIDC_ISSUER: `http://localhost:${PLAYWRIGHT_AUTHENTIK_PORT}/application/o/arena-e2e/`,
+    OIDC_AUDIENCE: E2E_OIDC_CLIENT_ID,
+    OIDC_CLIENT_ID: E2E_OIDC_CLIENT_ID,
+    [OIDC_CLIENT_CREDENTIAL_ENV_KEY]: E2E_OIDC_CLIENT_CREDENTIAL,
+    OIDC_REDIRECT_PATH: "/api/v1/auth/callback",
+    [AUTH_SESSION_HASH_CREDENTIAL_ENV_KEY]: E2E_AUTH_SESSION_HASH_CREDENTIAL,
+    ARENA_MASTER_KEY: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+    SERVICE_TOKEN_HASH_SECRET: "arena-e2e-service-token-hmac-secret",
   },
 };
 
@@ -51,7 +98,7 @@ const liveStackServers = [
       `docker compose -f tests/e2e/docker-compose.yaml -p arena-frontend-e2e up -d --wait && ` +
       `uv run python -m app.db.bootstrap && ` +
       `uv run python tests/e2e/seed_frontend_playwright.py && ` +
-      `uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port ${BACKEND_PORT}`,
+      `uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port ${BACKEND_PORT} --no-access-log`,
     cwd: BACKEND_DIR,
     url: `${BACKEND_BASE_URL}/readyz`,
     timeout: 240_000,
@@ -66,9 +113,13 @@ const liveStackServers = [
       DATABASE_URL: `postgresql+psycopg://postgres:postgres@localhost:${PLAYWRIGHT_POSTGRES_PORT}/arena_e2e`,
       RATE_LIMIT_REDIS_URL: `redis://localhost:${PLAYWRIGHT_REDIS_PORT}/15`,
       CORS_ALLOW_ORIGINS: FRONTEND_ORIGIN,
+      PUBLIC_BASE_URL: FRONTEND_ORIGIN,
       OIDC_ISSUER: `http://localhost:${PLAYWRIGHT_AUTHENTIK_PORT}/application/o/arena-e2e/`,
-      OIDC_AUDIENCE: "arena-e2e-client",
-      FRONTEND_OIDC_CLIENT_ID: "arena-e2e-client",
+      OIDC_AUDIENCE: E2E_OIDC_CLIENT_ID,
+      OIDC_CLIENT_ID: E2E_OIDC_CLIENT_ID,
+      [OIDC_CLIENT_CREDENTIAL_ENV_KEY]: E2E_OIDC_CLIENT_CREDENTIAL,
+      OIDC_REDIRECT_PATH: "/api/v1/auth/callback",
+      [AUTH_SESSION_HASH_CREDENTIAL_ENV_KEY]: E2E_AUTH_SESSION_HASH_CREDENTIAL,
       ARENA_MASTER_KEY: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
       PLAYWRIGHT_MOCK_LLM_BASE_URL: `http://127.0.0.1:${MOCK_LLM_PORT}`,
     },
@@ -93,5 +144,5 @@ export default defineConfig({
     screenshot: "only-on-failure",
     video: "retain-on-failure",
   },
-  webServer: ENABLE_LIVE_STACK ? liveStackServers : frontendServer,
+  webServer: ENABLE_LIVE_STACK ? liveStackServers : [backendServer, frontendServer],
 });

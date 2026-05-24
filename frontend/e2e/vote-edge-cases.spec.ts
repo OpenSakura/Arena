@@ -17,9 +17,8 @@ async function handleCorsIfPreflight(route: Route): Promise<boolean> {
   return false;
 }
 
-async function mockAuthenticatedSession(page: Page, accessToken: string): Promise<void> {
+async function mockAuthenticatedSession(page: Page): Promise<void> {
   await mockSpaAuthenticatedSession(page, {
-    accessToken,
     profile: {
       sub: "vote-e2e-user",
       name: "Vote E2E",
@@ -156,15 +155,15 @@ async function mockCompletedBattle(page: Page, battleId: string): Promise<void> 
 }
 
 test("submits tie votes with rubric tags and comment payload", async ({ page }) => {
-  const votePayloads: Array<{ authHeader: string | undefined; payload: unknown }> = [];
+  const votePayloads: Array<{ csrfHeader: string | undefined; payload: unknown }> = [];
 
-  await mockAuthenticatedSession(page, "vote-tie-access-token");
+  await mockAuthenticatedSession(page);
   await mockCompletedBattle(page, "battle-vote-tie");
 
   await page.route(/\/api\/v1\/battles\/[^/]+\/vote$/, async (route) => {
     if (await handleCorsIfPreflight(route)) return;
     votePayloads.push({
-      authHeader: route.request().headers()["authorization"],
+      csrfHeader: route.request().headers()["x-csrf-token"],
       payload: route.request().postDataJSON(),
     });
 
@@ -197,7 +196,7 @@ test("submits tie votes with rubric tags and comment payload", async ({ page }) 
   await expect(page.getByText("Model A", { exact: true }).first()).toBeVisible();
 
   expect(votePayloads).toHaveLength(1);
-  expect(votePayloads[0]?.authHeader).toBe("Bearer vote-tie-access-token");
+  expect(votePayloads[0]?.csrfHeader).toBe("playwright-csrf-token");
   const payload = votePayloads[0]?.payload as Record<string, unknown>;
   expect(payload).toMatchObject({
     winner: "tie",
@@ -209,17 +208,17 @@ test("submits tie votes with rubric tags and comment payload", async ({ page }) 
 });
 
 test("shows conflict errors and allows retry with the same vote state", async ({ page }) => {
-  const votePayloads: Array<{ authHeader: string | undefined; payload: unknown }> = [];
+  const votePayloads: Array<{ csrfHeader: string | undefined; payload: unknown }> = [];
   let submitCount = 0;
 
-  await mockAuthenticatedSession(page, "vote-conflict-access-token");
+  await mockAuthenticatedSession(page);
   await mockCompletedBattle(page, "battle-vote-conflict");
 
   await page.route(/\/api\/v1\/battles\/[^/]+\/vote$/, async (route) => {
     if (await handleCorsIfPreflight(route)) return;
     submitCount += 1;
     votePayloads.push({
-      authHeader: route.request().headers()["authorization"],
+      csrfHeader: route.request().headers()["x-csrf-token"],
       payload: route.request().postDataJSON(),
     });
 
@@ -270,8 +269,8 @@ test("shows conflict errors and allows retry with the same vote state", async ({
   await expect(page.getByText(/Vote already submitted for this battle/)).toHaveCount(0);
 
   expect(votePayloads).toHaveLength(2);
-  expect(votePayloads[0]?.authHeader).toBe("Bearer vote-conflict-access-token");
-  expect(votePayloads[1]?.authHeader).toBe("Bearer vote-conflict-access-token");
+  expect(votePayloads[0]?.csrfHeader).toBe("playwright-csrf-token");
+  expect(votePayloads[1]?.csrfHeader).toBe("playwright-csrf-token");
   const firstPayload = votePayloads[0]?.payload as Record<string, unknown>;
   const secondPayload = votePayloads[1]?.payload as Record<string, unknown>;
 
@@ -291,17 +290,17 @@ test("shows conflict errors and allows retry with the same vote state", async ({
 });
 
 test("submits only once when users double-click submit under latency", async ({ page }) => {
-  const votePayloads: Array<{ authHeader: string | undefined; payload: unknown }> = [];
+  const votePayloads: Array<{ csrfHeader: string | undefined; payload: unknown }> = [];
   let voteCallCount = 0;
 
-  await mockAuthenticatedSession(page, "vote-idempotent-access-token");
+  await mockAuthenticatedSession(page);
   await mockCompletedBattle(page, "battle-vote-idempotent");
 
   await page.route(/\/api\/v1\/battles\/[^/]+\/vote$/, async (route) => {
     if (await handleCorsIfPreflight(route)) return;
     voteCallCount += 1;
     votePayloads.push({
-      authHeader: route.request().headers()["authorization"],
+      csrfHeader: route.request().headers()["x-csrf-token"],
       payload: route.request().postDataJSON(),
     });
 
@@ -339,7 +338,7 @@ test("submits only once when users double-click submit under latency", async ({ 
 
   expect(voteCallCount).toBe(1);
   expect(votePayloads).toHaveLength(1);
-  expect(votePayloads[0]?.authHeader).toBe("Bearer vote-idempotent-access-token");
+  expect(votePayloads[0]?.csrfHeader).toBe("playwright-csrf-token");
   expect(votePayloads[0]?.payload).toMatchObject({
     winner: "A",
   });

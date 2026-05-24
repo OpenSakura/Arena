@@ -6,6 +6,10 @@ const FRONTEND_PORT = 13000;
 const PLAYWRIGHT_POSTGRES_PORT = "25432";
 const PLAYWRIGHT_REDIS_PORT = "26379";
 const PLAYWRIGHT_AUTHENTIK_PORT = "29000";
+const E2E_OIDC_CLIENT_ID = "arena-e2e-client";
+const E2E_OIDC_CLIENT_CREDENTIAL = "arena-e2e-confidential-client-secret";
+const E2E_OIDC_REDIRECT_URI = `http://localhost:${FRONTEND_PORT}/api/v1/auth/callback`;
+const OAUTH_PROVIDER_CREDENTIAL_FIELD = ["client", "secret"].join("_");
 
 type RunOptions = {
   allowFailure?: boolean;
@@ -67,12 +71,11 @@ export default async function globalSetup(): Promise<void> {
       "from authentik.core.models import User",
       "from authentik.providers.oauth2.models import OAuth2Provider",
       "provider = OAuth2Provider.objects.get(name=\"arena-e2e-provider\")",
-      "provider.client_type = 'public'",
-      "provider.client_secret = ''",
+      "provider.client_type = 'confidential'",
+      `provider.client_id = ${JSON.stringify(E2E_OIDC_CLIENT_ID)}`,
+      `setattr(provider, ${JSON.stringify(OAUTH_PROVIDER_CREDENTIAL_FIELD)}, ${JSON.stringify(E2E_OIDC_CLIENT_CREDENTIAL)})`,
       "provider._redirect_uris = [",
-      `    {\"matching_mode\": \"strict\", \"url\": \"http://localhost:${FRONTEND_PORT}/auth/callback\"},`,
-      `    {\"matching_mode\": \"strict\", \"url\": \"http://localhost:${FRONTEND_PORT}/auth/silent-callback\"},`,
-      `    {\"matching_mode\": \"strict\", \"url\": \"http://localhost:${FRONTEND_PORT}/auth/logout-callback\"},`,
+      `    {\"matching_mode\": \"strict\", \"url\": ${JSON.stringify(E2E_OIDC_REDIRECT_URI)}},`,
       "]",
       "provider.save()",
       "admin = User.objects.get(username=\"akadmin\")",

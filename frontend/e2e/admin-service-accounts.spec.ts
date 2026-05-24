@@ -1,45 +1,36 @@
 import { expect, test, type Page } from "@playwright/test";
+import { mockSpaAuthenticatedSession } from "./spa-auth";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-async function mockAuthenticatedSession(page: Page, accessToken = "frontend-admin-access-token", isAdmin = true): Promise<void> {
-  await page.route("**/api/v1/public-config", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        oidc: {
-          issuer: "http://localhost:13000/mock-oidc",
-          client_id: "arena",
-          scope: "openid profile email",
-          redirect_path: "/auth/callback",
-          silent_redirect_path: "/auth/silent-callback",
-          post_logout_redirect_path: "/auth/logout-callback"
-        }
-      }),
-    });
-  });
+type TokenRecord = {
+  id: string;
+  service_account_id: string;
+  token_prefix: string;
+  status: string;
+  scopes: string[];
+  created_at: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+  revoked_at: string | null;
+};
 
-  await page.route(/\/api\/v1\/me$/, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        authenticated: true,
-        is_admin: isAdmin,
-      }),
-    });
-  });
+type AccountRecord = {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  scopes: string[];
+  tokens: TokenRecord[];
+  created_at: string;
+  updated_at: string;
+};
 
-  await page.addInitScript((token) => {
-    sessionStorage.setItem("oidc.user:http://localhost:13000/mock-oidc:arena", JSON.stringify({
-      access_token: token,
-      expires_at: Math.floor(Date.now() / 1000) + 3600,
-      token_type: "Bearer",
-      scope: "openid profile email",
-      profile: { sub: "admin123" }
-    }));
-  }, accessToken);
+async function mockAuthenticatedSession(page: Page, isAdmin = true): Promise<void> {
+  await mockSpaAuthenticatedSession(page, {
+    isAdmin,
+    profile: { sub: "admin123", name: "Playwright Admin" },
+  });
 }
 
 test("admin service accounts token lifecycle", async ({ page }) => {
@@ -47,7 +38,7 @@ test("admin service accounts token lifecycle", async ({ page }) => {
   const createTokenCalls: any[] = [];
   const revokeTokenCalls: any[] = [];
   
-  let accounts = [
+  let accounts: AccountRecord[] = [
     {
       id: "sa-1",
       name: "Playwright Bot",

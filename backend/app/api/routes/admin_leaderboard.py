@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.api.routes import leaderboard as leaderboard_route
+from app.core.csrf import require_csrf_for_session
 from app.core.config import Settings, get_settings
 from app.core.security import require_admin
 from app.db.session import get_db
@@ -21,7 +22,7 @@ from app.services.leaderboard_refresh import get_leaderboard_refresher
 router = APIRouter(
     prefix="/admin/leaderboard",
     tags=["admin", "leaderboard"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_admin), Depends(require_csrf_for_session)],
 )
 
 

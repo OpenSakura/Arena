@@ -18,11 +18,7 @@ function makeAuthState(overrides: Record<string, unknown> = {}) {
     isLoading: false,
     isAuthenticated: false,
     user: null,
-    accessToken: null,
     sessionError: null,
-    headers: undefined,
-    headersRef: { current: undefined },
-    accessTokenRef: { current: null },
     signinRedirect: vi.fn(),
     signoutRedirect: vi.fn(),
     ...overrides,
@@ -53,7 +49,7 @@ describe("Footer", () => {
 
   it("shows battle, leaderboard, and profile links for authenticated users", () => {
     useArenaAuthMock.mockReturnValue(
-      makeAuthState({ authStatus: "authenticated", isAuthenticated: true, accessToken: "token" }),
+      makeAuthState({ authStatus: "authenticated", isAuthenticated: true }),
     );
 
     renderFooter();

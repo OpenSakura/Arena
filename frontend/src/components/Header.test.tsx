@@ -35,11 +35,7 @@ function makeAuthState(overrides: Record<string, unknown> = {}) {
     isLoading: false,
     isAuthenticated: false,
     user: null,
-    accessToken: null,
     sessionError: null,
-    headers: undefined,
-    headersRef: { current: undefined },
-    accessTokenRef: { current: null },
     signinRedirect: vi.fn(),
     signoutRedirect: vi.fn(),
     ...overrides,
@@ -65,7 +61,7 @@ describe("Header", () => {
     expect(screen.queryByRole("button", { name: "Login" })).toBeNull();
   });
 
-  it("starts OIDC sign-in when login is clicked", async () => {
+  it("starts backend-session sign-in with the current route as returnTo when login is clicked", async () => {
     const signinRedirect = vi.fn();
     useArenaAuthMock.mockReturnValue(makeAuthState({ signinRedirect }));
 
@@ -77,7 +73,7 @@ describe("Header", () => {
     expect(signinRedirect).toHaveBeenCalledWith({ state: { returnTo: "/leaderboard?mode=recent#top" } });
   });
 
-  it("uses callbackUrl as returnTo if provided in query string", async () => {
+  it("preserves callbackUrl query strings as same-origin route state instead of trusting them as redirects", async () => {
     const signinRedirect = vi.fn();
     useArenaAuthMock.mockReturnValue(makeAuthState({ signinRedirect }));
 
@@ -86,19 +82,25 @@ describe("Header", () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Login" }));
 
-    expect(signinRedirect).toHaveBeenCalledWith({ state: { returnTo: "/admin/models" } });
+    expect(signinRedirect).toHaveBeenCalledWith({ state: { returnTo: "/?callbackUrl=%2Fadmin%2Fmodels" } });
   });
 
-  it("shows session identity and calls signoutRedirect for authenticated users", async () => {
+  it("shows backend-session identity and calls signoutRedirect for authenticated users", async () => {
     const signoutRedirect = vi.fn();
     useArenaAuthMock.mockReturnValue(
       makeAuthState({
         authStatus: "authenticated",
         isAuthenticated: true,
-        accessToken: "test-token",
         user: {
+          id: "user-1",
+          oidcIssuer: "https://issuer.example",
+          oidcSub: "subject-1",
+          createdAt: "2026-05-24T00:00:00Z",
+          isAdmin: false,
           profile: {
-            email: "arena-user@example.com",
+            display_name: "Arena User",
+            preferred_username: "subject-1",
+            email: null,
           },
         },
         signoutRedirect,
@@ -108,12 +110,12 @@ describe("Header", () => {
 
     renderHeader();
 
-    expect(screen.getByText("arena-user@example.com")).toBeDefined();
+    expect(screen.getByText("Arena User")).toBeDefined();
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Logout" }));
 
-    expect(signoutRedirect).toHaveBeenCalledWith({ state: { returnTo: "/" } });
+    expect(signoutRedirect).toHaveBeenCalledWith();
   });
 
   it("hides Battle nav link for anonymous users", () => {
@@ -124,7 +126,18 @@ describe("Header", () => {
 
   it("shows Admin nav link for authenticated admin users", () => {
     useArenaAuthMock.mockReturnValue(
-      makeAuthState({ authStatus: "authenticated", isAuthenticated: true, accessToken: "admin-token" }),
+      makeAuthState({
+        authStatus: "authenticated",
+        isAuthenticated: true,
+        user: {
+          id: "admin-1",
+          oidcIssuer: "https://issuer.example",
+          oidcSub: "admin-subject",
+          createdAt: "2026-05-24T00:00:00Z",
+          isAdmin: true,
+          profile: {},
+        },
+      }),
     );
     useAdminAccessMock.mockReturnValue({ isAuthenticated: true, isAdmin: true, loading: false });
 
@@ -146,7 +159,7 @@ describe("Header", () => {
 
   it("hides Admin nav link for authenticated non-admin users", () => {
     useArenaAuthMock.mockReturnValue(
-      makeAuthState({ authStatus: "authenticated", isAuthenticated: true, accessToken: "normal-token" }),
+      makeAuthState({ authStatus: "authenticated", isAuthenticated: true }),
     );
     useAdminAccessMock.mockReturnValue({ isAuthenticated: true, isAdmin: false, loading: false });
 

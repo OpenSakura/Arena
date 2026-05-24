@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.csrf import require_csrf_for_session
 from app.core.crypto import decrypt_secret, encrypt_secret
 from app.core.security import require_admin
 from app.db.session import get_db
@@ -28,7 +29,7 @@ from app.utils.id import parse_uuid_or_422
 router = APIRouter(
     prefix="/admin/models",
     tags=["admin", "models"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_admin), Depends(require_csrf_for_session)],
 )
 
 

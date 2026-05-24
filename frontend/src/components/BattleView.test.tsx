@@ -48,7 +48,7 @@ function createUseBattleState(overrides: Record<string, unknown> = {}) {
     dispatch: vi.fn(),
     isAuthed: true,
     authStatus: "authenticated",
-    hasRefreshError: false,
+    hasSessionError: false,
     canVote: true,
     canRetry: false,
     voteSubmitted: false,
@@ -121,11 +121,11 @@ describe("BattleView", () => {
     expect(screen.getByText("Login required to view battles.")).toBeDefined();
   });
 
-  it("shows refresh-expired messaging when session refresh failed", async () => {
+  it("shows expired-session messaging when the backend session failed", async () => {
     useBattleMock.mockReturnValue(
       createUseBattleState({
         state: { status: "done" },
-        hasRefreshError: true,
+        hasSessionError: true,
         canVote: false,
         statusLabel: "Complete",
       }),

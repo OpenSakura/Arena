@@ -34,22 +34,16 @@ beforeEach(() => {
 
   useAuthHeadersMock.mockReturnValue({
     authStatus: "unauthenticated",
-    accessToken: null,
     sessionError: null,
-    headers: undefined,
-    headersRef: { current: undefined },
-    accessTokenRef: { current: null },
+    csrfToken: null,
   });
 });
 
 function authenticatedSession() {
   useAuthHeadersMock.mockReturnValue({
     authStatus: "authenticated",
-    accessToken: "admin-token",
+    csrfToken: "csrf-token",
     sessionError: null,
-    headers: { Authorization: "Bearer admin-token" },
-    headersRef: { current: { Authorization: "Bearer admin-token" } },
-    accessTokenRef: { current: "admin-token" },
   });
 }
 
@@ -94,9 +88,7 @@ describe("AdminServiceAccountsRoute", () => {
     render(<AdminServiceAccountsRoute />);
     await screen.findByText("Bot One");
 
-    expect(apiGetMock).toHaveBeenCalledWith("/admin/service-accounts", {
-      headers: { Authorization: "Bearer admin-token" },
-    });
+    expect(apiGetMock).toHaveBeenCalledWith("/admin/service-accounts");
   });
 
   it("creates a new service account", async () => {
@@ -116,10 +108,10 @@ describe("AdminServiceAccountsRoute", () => {
     await waitFor(() => {
       expect(apiPostMock).toHaveBeenCalledWith(
         "/admin/service-accounts",
-        { name: "Bot Two", description: null, enabled: true },
-        { headers: { Authorization: "Bearer admin-token" } }
+        { name: "Bot Two", description: null, enabled: true }
       );
     });
+    expect(apiPostMock.mock.calls[0]).toHaveLength(2);
 
     await screen.findByText("Bot Two");
   });
@@ -156,6 +148,14 @@ describe("AdminServiceAccountsRoute", () => {
 
     await user.click(screen.getByRole("button", { name: "Confirm Create" }));
 
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith(
+        "/admin/service-accounts/sa-1/tokens",
+        { scopes: ["battle:create"], expires_at: null },
+      );
+    });
+    expect(apiPostMock.mock.calls[0]).toHaveLength(2);
+
     await screen.findByText("Copy now. This token will not be shown again.");
     await screen.findByText("pt_secret_token_123");
 
@@ -177,6 +177,14 @@ describe("AdminServiceAccountsRoute", () => {
     await screen.findByText("tok_abc...");
     
     await user.click(screen.getByRole("button", { name: "Revoke" }));
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith(
+        "/admin/service-account-tokens/tok-1/revoke",
+        {},
+      );
+    });
+    expect(apiPostMock.mock.calls[0]).toHaveLength(2);
     
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: "Revoke" })).toBeNull();

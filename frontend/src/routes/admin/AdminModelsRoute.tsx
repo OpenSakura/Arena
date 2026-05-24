@@ -298,21 +298,21 @@ function toEditState(model: ModelAdmin): EditState {
 }
 
 export default function AdminModelsRoute() {
-  const { headers } = useAuthHeaders();
+  const { authStatus } = useAuthHeaders();
   const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
 
   useEffect(() => {
     let cancelled = false;
 
     async function load() {
-      if (!headers) {
+      if (authStatus !== "authenticated") {
         dispatch({ type: "LOAD_SUCCESS", models: [] });
         return;
       }
 
       dispatch({ type: "LOAD_START" });
       try {
-        const res = parseListModelsResponse(await apiGet("/admin/models?limit=1000", { headers }));
+        const res = parseListModelsResponse(await apiGet("/admin/models?limit=1000"));
         if (cancelled) return;
         dispatch({ type: "LOAD_SUCCESS", models: res.models });
       } catch (err) {
@@ -328,10 +328,10 @@ export default function AdminModelsRoute() {
     return () => {
       cancelled = true;
     };
-  }, [headers]);
+  }, [authStatus]);
 
   async function handleCreate() {
-    if (!headers) return;
+    if (authStatus !== "authenticated") return;
 
     dispatch({ type: "CREATE_START" });
     try {
@@ -366,7 +366,7 @@ export default function AdminModelsRoute() {
       payload.system_prompt = state.create.systemPrompt.trim() || null;
       payload.user_prompt = state.create.userPrompt.trim() || null;
 
-      const created = parseModelAdmin(await apiPost("/admin/models", payload, { headers }));
+      const created = parseModelAdmin(await apiPost("/admin/models", payload));
       dispatch({ type: "CREATE_SUCCESS", created });
     } catch (err) {
       dispatch({
@@ -377,7 +377,7 @@ export default function AdminModelsRoute() {
   }
 
   async function handleSaveEdit() {
-    if (!headers || !state.edit) return;
+    if (authStatus !== "authenticated" || !state.edit) return;
 
     dispatch({ type: "SAVE_EDIT_START" });
     try {
@@ -410,7 +410,7 @@ export default function AdminModelsRoute() {
       }
 
       const updated = parseModelAdmin(
-        await apiPut(`/admin/models/${encodeURIComponent(state.edit.id)}`, patch, { headers }),
+        await apiPut(`/admin/models/${encodeURIComponent(state.edit.id)}`, patch),
       );
 
       dispatch({ type: "SAVE_EDIT_SUCCESS", updated });
@@ -423,12 +423,12 @@ export default function AdminModelsRoute() {
   }
 
   async function handleDelete(id: string) {
-    if (!headers) return;
+    if (authStatus !== "authenticated") return;
     if (!confirm("Delete this model?")) return;
 
     dispatch({ type: "CLEAR_TEST_RESULT" });
     try {
-      await apiDelete(`/admin/models/${encodeURIComponent(id)}`, { headers });
+      await apiDelete(`/admin/models/${encodeURIComponent(id)}`);
       dispatch({ type: "DELETE_SUCCESS", id });
     } catch (err) {
       dispatch({
@@ -439,12 +439,12 @@ export default function AdminModelsRoute() {
   }
 
   async function handleTest(id: string) {
-    if (!headers) return;
+    if (authStatus !== "authenticated") return;
 
     dispatch({ type: "CLEAR_TEST_RESULT" });
     try {
       const result = parseModelTestResponse(
-        await apiPost(`/admin/models/${encodeURIComponent(id)}/test`, {}, { headers }),
+        await apiPost(`/admin/models/${encodeURIComponent(id)}/test`, {}),
       );
       dispatch({ type: "TEST_SUCCESS", result });
     } catch (err) {

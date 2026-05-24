@@ -26,11 +26,11 @@ const EXPERIENCE_ROLES = ["translator", "editor", "qc", "tl"] as const;
 type ExperienceRole = (typeof EXPERIENCE_ROLES)[number];
 
 export default function OnboardingRoute() {
-  const { authStatus, accessToken, headers, sessionError } = useAuthHeaders();
-  const hasRefreshError = sessionError !== null && ["RefreshTokenMissing", "RefreshDiscoveryFailed", "RefreshTokenExpired", "RefreshTokenError"].includes(sessionError);
-  const canSave = authStatus === "authenticated" && Boolean(accessToken) && !hasRefreshError;
-  const authNoticeTitle = hasRefreshError ? "Session expired" : "Login required to save";
-  const authNoticeBody = hasRefreshError
+  const { authStatus, sessionError } = useAuthHeaders();
+  const hasSessionError = sessionError !== null;
+  const canSave = authStatus === "authenticated" && !hasSessionError;
+  const authNoticeTitle = hasSessionError ? "Session expired" : "Login required to save";
+  const authNoticeBody = hasSessionError
     ? "Your session expired before we could load or save your profile. Sign in again to save profile info, create battles, view battles, and vote. You can still browse the leaderboard while signed out."
     : "You can browse the leaderboard without logging in, but creating battles, viewing battles, and voting require a login. Profile info is stored for logged-in users only.";
 
@@ -57,7 +57,7 @@ export default function OnboardingRoute() {
       setLoadingProfile(true);
       setErrorText(null);
       try {
-        const me = parseMeResponse(await apiGet("/me", { headers }));
+        const me = parseMeResponse(await apiGet("/me"));
         if (cancelled) return;
         const profile = me.profile ?? {};
 
@@ -96,7 +96,7 @@ export default function OnboardingRoute() {
     return () => {
       cancelled = true;
     };
-  }, [canSave, headers]);
+  }, [canSave]);
 
   function toggleRole(role: ExperienceRole) {
     setExperienceRoles((prev) => (prev.includes(role) ? prev.filter((r) => r !== role) : [...prev, role]));
@@ -125,7 +125,7 @@ export default function OnboardingRoute() {
         consents: { research_use: consentResearch },
       };
 
-      const res = parseMeResponse(await apiPut("/me/profile", payload, { headers }));
+      const res = parseMeResponse(await apiPut("/me/profile", payload));
       setSavedAt((res.profile?.completed_at as string) ?? new Date().toISOString());
     } catch (err) {
       setErrorText(err instanceof Error ? err.message : "Failed to save profile");

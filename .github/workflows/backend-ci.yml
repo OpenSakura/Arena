@@ -49,5 +49,20 @@ jobs:
         working-directory: backend
 
       - name: Test
+        env:
+          # Deterministic non-production backend auth settings for tests only.
+          APP_ENV: test
+          PUBLIC_BASE_URL: http://localhost:13000
+          OIDC_ISSUER: http://localhost:19000/application/o/arena-e2e/
+          OIDC_AUDIENCE: arena-e2e-client
+          OIDC_CLIENT_ID: arena-e2e-client
+          OIDC_CLIENT_SECRET: arena-ci-confidential-client-secret
+          OIDC_CLIENT_AUTH_METHOD: client_secret_basic
+          OIDC_SCOPE: openid email profile
+          OIDC_REDIRECT_PATH: /api/v1/auth/callback
+          AUTH_SESSION_HASH_SECRET: arena-ci-auth-session-hash-secret
+          AUTH_SESSION_COOKIE_NAME: arena_session
+          AUTH_SESSION_MAX_AGE_SECONDS: "28800"
+          AUTH_CSRF_HEADER_NAME: X-CSRF-Token
         run: uv run pytest
         working-directory: backend

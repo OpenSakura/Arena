@@ -1,4 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
+import { auditBrowserAuthLeakage, expectNoAuthorizationHeaders } from "./browser-leakage";
+import { mockSpaAuthenticatedSession } from "./spa-auth";
 
 type AdminModel = {
   id: string;
@@ -36,44 +38,11 @@ type AdminTask = {
   metadata: Record<string, unknown> | null;
 };
 
-async function mockAuthenticatedSession(page: Page, accessToken = "frontend-admin-access-token", isAdmin = true): Promise<void> {
-  await page.route("**/api/v1/public-config", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        oidc: {
-          issuer: "http://localhost:13000/mock-oidc",
-          client_id: "arena",
-          scope: "openid profile email",
-          redirect_path: "/auth/callback",
-          silent_redirect_path: "/auth/silent-callback",
-          post_logout_redirect_path: "/auth/logout-callback"
-        }
-      }),
-    });
+async function mockAuthenticatedSession(page: Page, isAdmin = true): Promise<void> {
+  await mockSpaAuthenticatedSession(page, {
+    isAdmin,
+    profile: { sub: "admin123", name: "Playwright Admin" },
   });
-
-  await page.route(/\/api\/v1\/me$/, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        authenticated: true,
-        is_admin: isAdmin,
-      }),
-    });
-  });
-
-  await page.addInitScript((token) => {
-    sessionStorage.setItem("oidc.user:http://localhost:13000/mock-oidc:arena", JSON.stringify({
-      access_token: token,
-      expires_at: Math.floor(Date.now() / 1000) + 3600,
-      token_type: "Bearer",
-      scope: "openid profile email",
-      profile: { sub: "admin123" }
-    }));
-  }, accessToken);
 }
 
 function modelRecord(overrides: Partial<AdminModel> = {}): AdminModel {
@@ -99,10 +68,10 @@ function modelRecord(overrides: Partial<AdminModel> = {}): AdminModel {
   };
 }
 
-test("admin models supports test, update, clear key, and delete", async ({ page }) => {
-  const updateCalls: Array<{ authHeader: string | undefined; payload: Record<string, unknown> }> = [];
-  const testCalls: Array<{ authHeader: string | undefined; id: string }> = [];
-  const deleteCalls: Array<{ authHeader: string | undefined; id: string }> = [];
+test("admin models supports test, update, clear key, and delete", async ({ page }, testInfo) => {
+  const updateCalls: Array<{ authorizationHeader: string | undefined; payload: Record<string, unknown> }> = [];
+  const testCalls: Array<{ authorizationHeader: string | undefined; id: string }> = [];
+  const deleteCalls: Array<{ authorizationHeader: string | undefined; id: string }> = [];
 
   let models: AdminModel[] = [modelRecord()];
 
@@ -128,7 +97,7 @@ test("admin models supports test, update, clear key, and delete", async ({ page 
     if (route.request().method() === "PUT") {
       const payload = route.request().postDataJSON() as Record<string, unknown>;
       updateCalls.push({
-        authHeader: route.request().headers()["authorization"],
+        authorizationHeader: route.request().headers()["authorization"],
         payload,
       });
 
@@ -162,7 +131,7 @@ test("admin models supports test, update, clear key, and delete", async ({ page 
 
     if (route.request().method() === "DELETE") {
       deleteCalls.push({
-        authHeader: route.request().headers()["authorization"],
+        authorizationHeader: route.request().headers()["authorization"],
         id: modelId,
       });
       models = models.filter((model) => model.id !== modelId);
@@ -180,7 +149,7 @@ test("admin models supports test, update, clear key, and delete", async ({ page 
     const modelId = parts[parts.length - 2] ?? "";
 
     testCalls.push({
-      authHeader: route.request().headers()["authorization"],
+      authorizationHeader: route.request().headers()["authorization"],
       id: modelId,
     });
 
@@ -211,11 +180,11 @@ test("admin models supports test, update, clear key, and delete", async ({ page 
   await expect(page.locator("tr").filter({ hasText: "Model One Updated" })).toHaveCount(1);
 
   expect(testCalls).toHaveLength(1);
-  expect(testCalls[0]?.authHeader).toBe("Bearer frontend-admin-access-token");
+  expect(testCalls[0]?.authorizationHeader).toBeUndefined();
   expect(testCalls[0]?.id).toBe("model-1");
 
   expect(updateCalls).toHaveLength(1);
-  expect(updateCalls[0]?.authHeader).toBe("Bearer frontend-admin-access-token");
+  expect(updateCalls[0]?.authorizationHeader).toBeUndefined();
   expect(updateCalls[0]?.payload).toMatchObject({
     display_name: "Model One Updated",
     api_key: null,
@@ -228,19 +197,21 @@ test("admin models supports test, update, clear key, and delete", async ({ page 
   await expect(page.locator("tr").filter({ hasText: "Model One Updated" })).toHaveCount(0);
 
   expect(deleteCalls).toHaveLength(1);
-  expect(deleteCalls[0]?.authHeader).toBe("Bearer frontend-admin-access-token");
+  expect(deleteCalls[0]?.authorizationHeader).toBeUndefined();
   expect(deleteCalls[0]?.id).toBe("model-1");
+  expectNoAuthorizationHeaders(page);
+  await auditBrowserAuthLeakage(page, "admin-model-edit-delete-flow", testInfo);
 });
 
 
 test("admin tasks supports task-set/task CRUD and jsonl import", async ({ page }) => {
-  const createTaskSetCalls: Array<{ authHeader: string | undefined; payload: Record<string, unknown> }> = [];
-  const createTaskCalls: Array<{ authHeader: string | undefined; payload: Record<string, unknown> }> = [];
-  const updateTaskSetCalls: Array<{ authHeader: string | undefined; payload: Record<string, unknown> }> = [];
-  const updateTaskCalls: Array<{ authHeader: string | undefined; payload: Record<string, unknown> }> = [];
-  const deleteTaskCalls: Array<{ authHeader: string | undefined; id: string }> = [];
+  const createTaskSetCalls: Array<{ authorizationHeader: string | undefined; payload: Record<string, unknown> }> = [];
+  const createTaskCalls: Array<{ authorizationHeader: string | undefined; payload: Record<string, unknown> }> = [];
+  const updateTaskSetCalls: Array<{ authorizationHeader: string | undefined; payload: Record<string, unknown> }> = [];
+  const updateTaskCalls: Array<{ authorizationHeader: string | undefined; payload: Record<string, unknown> }> = [];
+  const deleteTaskCalls: Array<{ authorizationHeader: string | undefined; id: string }> = [];
   const importCalls: Array<{
-    authHeader: string | undefined;
+    authorizationHeader: string | undefined;
     taskSetId: string | null;
     sourceLang: string | null;
     targetLang: string | null;
@@ -268,7 +239,7 @@ test("admin tasks supports task-set/task CRUD and jsonl import", async ({ page }
     if (method === "POST") {
       const payload = route.request().postDataJSON() as Record<string, unknown>;
       createTaskSetCalls.push({
-        authHeader: route.request().headers()["authorization"],
+        authorizationHeader: route.request().headers()["authorization"],
         payload,
       });
 
@@ -302,7 +273,7 @@ test("admin tasks supports task-set/task CRUD and jsonl import", async ({ page }
     if (route.request().method() === "PUT") {
       const payload = route.request().postDataJSON() as Record<string, unknown>;
       updateTaskSetCalls.push({
-        authHeader: route.request().headers()["authorization"],
+        authorizationHeader: route.request().headers()["authorization"],
         payload,
       });
 
@@ -350,7 +321,7 @@ test("admin tasks supports task-set/task CRUD and jsonl import", async ({ page }
     const targetLang = requestUrl.searchParams.get("target_lang");
 
     importCalls.push({
-      authHeader: route.request().headers()["authorization"],
+      authorizationHeader: route.request().headers()["authorization"],
       taskSetId,
       sourceLang,
       targetLang,
@@ -400,7 +371,7 @@ test("admin tasks supports task-set/task CRUD and jsonl import", async ({ page }
     if (method === "POST") {
       const payload = route.request().postDataJSON() as Record<string, unknown>;
       createTaskCalls.push({
-        authHeader: route.request().headers()["authorization"],
+        authorizationHeader: route.request().headers()["authorization"],
         payload,
       });
 
@@ -437,7 +408,7 @@ test("admin tasks supports task-set/task CRUD and jsonl import", async ({ page }
     if (route.request().method() === "PUT") {
       const payload = route.request().postDataJSON() as Record<string, unknown>;
       updateTaskCalls.push({
-        authHeader: route.request().headers()["authorization"],
+        authorizationHeader: route.request().headers()["authorization"],
         payload,
       });
 
@@ -460,7 +431,7 @@ test("admin tasks supports task-set/task CRUD and jsonl import", async ({ page }
 
     if (route.request().method() === "DELETE") {
       deleteTaskCalls.push({
-        authHeader: route.request().headers()["authorization"],
+        authorizationHeader: route.request().headers()["authorization"],
         id: taskId,
       });
 
@@ -531,36 +502,36 @@ test("admin tasks supports task-set/task CRUD and jsonl import", async ({ page }
   await expect(page.locator("tr").filter({ hasText: "Playwright task line updated" })).toHaveCount(0);
 
   expect(createTaskSetCalls).toHaveLength(1);
-  expect(createTaskSetCalls[0]?.authHeader).toBe("Bearer frontend-admin-access-token");
+  expect(createTaskSetCalls[0]?.authorizationHeader).toBeUndefined();
   expect(createTaskSetCalls[0]?.payload).toMatchObject({ name: "Playwright Set" });
 
   expect(createTaskCalls).toHaveLength(1);
-  expect(createTaskCalls[0]?.authHeader).toBe("Bearer frontend-admin-access-token");
+  expect(createTaskCalls[0]?.authorizationHeader).toBeUndefined();
   expect(createTaskCalls[0]?.payload).toMatchObject({
     task_set_id: "set-1",
     source_text: "Playwright task line",
   });
 
   expect(updateTaskSetCalls).toHaveLength(1);
-  expect(updateTaskSetCalls[0]?.authHeader).toBe("Bearer frontend-admin-access-token");
+  expect(updateTaskSetCalls[0]?.authorizationHeader).toBeUndefined();
   expect(updateTaskSetCalls[0]?.payload).toMatchObject({ name: "Playwright Set Updated" });
 
   expect(importCalls).toHaveLength(1);
-  expect(importCalls[0]?.authHeader).toBe("Bearer frontend-admin-access-token");
+  expect(importCalls[0]?.authorizationHeader).toBeUndefined();
   expect(importCalls[0]?.taskSetId).toBe("set-1");
   expect(importCalls[0]?.sourceLang).toBe("ja");
   expect(importCalls[0]?.targetLang).toBe("zh");
 
   expect(updateTaskCalls).toHaveLength(1);
-  expect(updateTaskCalls[0]?.authHeader).toBe("Bearer frontend-admin-access-token");
+  expect(updateTaskCalls[0]?.authorizationHeader).toBeUndefined();
   expect(updateTaskCalls[0]?.payload).toMatchObject({ source_text: "Playwright task line updated" });
 
   expect(deleteTaskCalls).toHaveLength(1);
-  expect(deleteTaskCalls[0]?.authHeader).toBe("Bearer frontend-admin-access-token");
+  expect(deleteTaskCalls[0]?.authorizationHeader).toBeUndefined();
 });
 
 test("admin models surfaces 403 for signed-in non-admin users", async ({ page }) => {
-  await mockAuthenticatedSession(page, "frontend-non-admin-token", false);
+  await mockAuthenticatedSession(page, false);
 
   await page.route("**/api/v1/admin/models", async (route) => {
     await route.fulfill({
@@ -578,7 +549,7 @@ test("admin models surfaces 403 for signed-in non-admin users", async ({ page })
 
 
 test("admin tasks surfaces 403 for signed-in non-admin users", async ({ page }) => {
-  await mockAuthenticatedSession(page, "frontend-non-admin-token", false);
+  await mockAuthenticatedSession(page, false);
 
   await page.route("**/api/v1/admin/task-sets", async (route) => {
     await route.fulfill({

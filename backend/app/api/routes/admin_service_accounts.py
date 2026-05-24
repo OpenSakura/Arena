@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.csrf import require_csrf_for_session
 from app.core.security import Principal, require_admin
 from app.core.service_tokens import (
     generate_service_token,
@@ -42,7 +43,7 @@ def require_oidc_admin(principal: Principal = Depends(require_admin)) -> Princip
 router = APIRouter(
     prefix="/admin",
     tags=["admin", "service-accounts"],
-    dependencies=[Depends(require_oidc_admin)],
+    dependencies=[Depends(require_oidc_admin), Depends(require_csrf_for_session)],
 )
 
 

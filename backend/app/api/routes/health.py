@@ -29,18 +29,16 @@ class HealthResponse(BaseModel):
     checks: dict[str, bool] | None = None
 
 
-class PublicOidcConfig(BaseModel):
-    issuer: str
-    client_id: str
-    scope: str
-    redirect_path: str
-    silent_redirect_path: str
-    post_logout_redirect_path: str
+class PublicAuthConfig(BaseModel):
+    mode: str
+    login_path: str
+    logout_path: str
+    session_path: str
 
 
 class PublicConfigResponse(BaseModel):
     anon_battle_turnstile_required: bool
-    oidc: PublicOidcConfig
+    auth: PublicAuthConfig
 
 
 @router.get("/livez", response_model_exclude_none=True)
@@ -111,19 +109,17 @@ def readyz() -> HealthResponse:
 
 @router.get("/public-config")
 def public_config(
-    settings: Settings = Depends(get_settings),
+    _settings: Settings = Depends(get_settings),
 ) -> PublicConfigResponse:
     return PublicConfigResponse(
         # Retained for older SPA clients, but Turnstile is currently a
         # deprecated placeholder from the former anonymous battle flow and is
         # not enforced for authenticated battle creation.
         anon_battle_turnstile_required=False,
-        oidc=PublicOidcConfig(
-            issuer=settings.oidc_issuer,
-            client_id=settings.frontend_oidc_client_id,
-            scope=settings.frontend_oidc_scope,
-            redirect_path=settings.frontend_oidc_redirect_path,
-            silent_redirect_path=settings.frontend_oidc_silent_redirect_path,
-            post_logout_redirect_path=settings.frontend_oidc_post_logout_redirect_path,
+        auth=PublicAuthConfig(
+            mode="backend_session",
+            login_path="/api/v1/auth/login",
+            logout_path="/api/v1/auth/logout",
+            session_path="/api/v1/auth/session",
         ),
     )

@@ -7,7 +7,7 @@
 
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
-import { SESSION_EXPIRED_MESSAGE } from "@/auth/oidc";
+import { SESSION_EXPIRED_MESSAGE } from "@/auth/session";
 
 import { useBattle } from "@/hooks/useBattle";
 
@@ -28,7 +28,7 @@ export function BattleView({ battleId }: { battleId: string }) {
     state,
     dispatch,
     isAuthed,
-    hasRefreshError,
+    hasSessionError,
     canVote,
     canRetry,
     voteSubmitted,
@@ -128,7 +128,7 @@ export function BattleView({ battleId }: { battleId: string }) {
           className="glass-panel-accent p-8 flex flex-col items-center gap-6"
         >
           {status === "done" && (
-            hasRefreshError ? (
+            hasSessionError ? (
               <div className="w-full max-w-2xl text-center glass-panel-accent p-6 border-red-500/20 bg-red-500/5">
                 <div className="flex flex-col items-center gap-3">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-8 w-8 text-red-600/80" aria-hidden>

@@ -1,10 +1,9 @@
 # infra/k8s/configmap.yaml
 #
-# All environment settings for the OpenSakura Arena platform.
-#
-# WARNING: This ConfigMap includes secret placeholders for completeness.
-# In production, move values marked [SECRET] into a Kubernetes Secret and
-# reference them via secretKeyRef instead of configMapKeyRef.
+# Non-secret environment settings for the OpenSakura Arena platform.
+# Store secret values in Kubernetes Secrets and wire them into the backend
+# Deployment with secretKeyRef. Do not put literal secret values in this
+# ConfigMap.
 
 apiVersion: v1
 kind: ConfigMap
@@ -14,50 +13,51 @@ metadata:
     app.kubernetes.io/name: opensakura-arena
     app.kubernetes.io/part-of: opensakura
 data:
-  # ──────────────────────────────────────────────
-  # Backend — Core
-  # ──────────────────────────────────────────────
+  # Backend core
   APP_ENV: "production"
   APP_NAME: "OpenSakura Arena API"
   API_V1_PREFIX: "/api/v1"
+  PUBLIC_BASE_URL: "https://arena.example.com"
   WEB_CONCURRENCY: "1"
 
-  # ──────────────────────────────────────────────
-  # Backend — Logging / Observability
-  # ──────────────────────────────────────────────
+  # Logging and observability
   LOG_LEVEL: ""
   LOG_JSON: "true"
   ACCESS_LOG_ENABLED: "false"
 
-  # ──────────────────────────────────────────────
-  # Backend — Database [SECRET]
-  # ──────────────────────────────────────────────
+  # Database connection should come from a Secret in production.
   DATABASE_URL: "postgresql+psycopg://postgres:postgres@postgres:5432/arena"
 
-  # ──────────────────────────────────────────────
-  # Backend — CORS
-  # ──────────────────────────────────────────────
+  # CORS
   CORS_ALLOW_ORIGINS: "https://arena.example.com"
 
-  # ──────────────────────────────────────────────
-  # Backend — OIDC (Authentik)
-  # ──────────────────────────────────────────────
-  OIDC_ISSUER: ""                          # [SECRET] e.g. https://auth.example.com/application/o/arena/
-  OIDC_AUDIENCE: ""                        # [SECRET]
+  # Backend confidential OIDC. The callback URI is
+  # https://arena.example.com/api/v1/auth/callback.
+  OIDC_ISSUER: "https://auth.example.com/application/o/arena/"
+  OIDC_AUDIENCE: "arena"
+  OIDC_CLIENT_ID: "arena-backend"
+  OIDC_CLIENT_AUTH_METHOD: "client_secret_basic"
+  OIDC_SCOPE: "openid email profile"
+  OIDC_REDIRECT_PATH: "/api/v1/auth/callback"
   OIDC_ADMIN_GROUP_CLAIM: "groups"
   OIDC_ADMIN_GROUP_NAME: "arena_admin"
   OIDC_JWKS_CACHE_TTL_SECONDS: "300"
   OIDC_HTTP_TIMEOUT_SECONDS: "5"
 
-  # ──────────────────────────────────────────────
-  # Backend — Cloudflare Turnstile
-  # ──────────────────────────────────────────────
-  TURNSTILE_SECRET_KEY: ""                 # [SECRET]
+  # Backend-owned app session and CSRF settings. AUTH_SESSION_HASH_SECRET must
+  # come from a Secret because it HMAC-hashes opaque session, CSRF, and login
+  # state tokens server-side.
+  AUTH_SESSION_COOKIE_NAME: "arena_session"
+  AUTH_LOGIN_STATE_COOKIE_NAME: "arena_oauth_state"
+  AUTH_SESSION_MAX_AGE_SECONDS: "28800"
+  AUTH_CSRF_HEADER_NAME: "X-CSRF-Token"
+
+  # Cloudflare Turnstile, retained as a deprecated placeholder.
+  # TURNSTILE_SECRET_KEY should come from a Secret in production.
+  TURNSTILE_SECRET_KEY: ""
   TURNSTILE_VERIFY_URL: "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 
-  # ──────────────────────────────────────────────
-  # Backend — Authenticated Rate Limits
-  # ──────────────────────────────────────────────
+  # Authenticated rate limits
   AUTH_BATTLE_CREATE_RATE_LIMIT: "60"
   AUTH_BATTLE_CREATE_RATE_LIMIT_WINDOW_SECONDS: "60"
   AUTH_BATTLE_STREAM_RATE_LIMIT: "90"
@@ -65,62 +65,46 @@ data:
   AUTH_VOTE_SUBMIT_RATE_LIMIT: "90"
   AUTH_VOTE_SUBMIT_RATE_LIMIT_WINDOW_SECONDS: "60"
 
-  # ──────────────────────────────────────────────
-  # Backend — Redis
-  # ──────────────────────────────────────────────
-  RATE_LIMIT_REDIS_URL: ""                 # [SECRET] e.g. redis://redis:6379/0
+  # Redis. Leave RATE_LIMIT_REDIS_URL empty unless explicitly enabling Redis-backed
+  # rate limiting and shared confidence caching for the deployment.
+  RATE_LIMIT_REDIS_URL: ""
   RATE_LIMIT_REDIS_KEY_PREFIX: "arena"
   RATE_LIMIT_REDIS_TIMEOUT_SECONDS: "0.25"
 
-  # ──────────────────────────────────────────────
-  # Backend — Reverse Proxy
-  # ──────────────────────────────────────────────
+  # Reverse proxy
   TRUST_X_FORWARDED_FOR: "true"
 
-  # ──────────────────────────────────────────────
-  # Backend — Encryption Keys [SECRET]
-  # ──────────────────────────────────────────────
-  ARENA_MASTER_KEY: ""                     # [SECRET] base64url-encoded 32-byte key
+  # Encryption keys should come from Secrets in production.
+  ARENA_MASTER_KEY: ""
+  ARENA_MASTER_KEY_OLD: ""
 
-  # ──────────────────────────────────────────────
-  # Backend — Battle Sampling
-  # ──────────────────────────────────────────────
+  # Battle sampling
   BATTLE_SAMPLING_WEIGHTS: "{}"
   BATTLE_TARGETS: "{}"
   BATTLE_STRICT_TARGETS: "{}"
   BATTLE_OUTAGE_MODELS: "[]"
   BATTLE_SAMPLING_BOOST_MODELS: "[]"
-  # Owner-task timeouts consume the one-shot automatic retry budget before
-  # the backend records a final timeout failure.
   BATTLE_RUNNING_WAIT_TIMEOUT_SECONDS: "600"
 
-  # ──────────────────────────────────────────────
-  # Backend — Leaderboard Refresh
-  # ──────────────────────────────────────────────
+  # Leaderboard refresh
   LEADERBOARD_REFRESH_ENABLED: "true"
   LEADERBOARD_REFRESH_INTERVAL_SECONDS: "300"
   LEADERBOARD_REFRESH_DAILY_VOTE_CAP: "0"
   LEADERBOARD_REFRESH_ELO_K: "32"
 
-  # ──────────────────────────────────────────────
-  # Backend — Leaderboard Confidence (throttled)
-  # ──────────────────────────────────────────────
+  # Leaderboard confidence, throttled
   LEADERBOARD_CONFIDENCE_CACHE_TTL_SECONDS: "15"
   LEADERBOARD_CONFIDENCE_RATE_LIMIT: "6"
   LEADERBOARD_CONFIDENCE_RATE_LIMIT_WINDOW_SECONDS: "60"
 
-  # ──────────────────────────────────────────────
-  # Backend — Elo Bootstrap / Confidence
-  # ──────────────────────────────────────────────
+  # Elo bootstrap and confidence
   LEADERBOARD_ELO_BOOTSTRAP_ROUNDS: "200"
   LEADERBOARD_ELO_BOOTSTRAP_SEED: "0"
   LEADERBOARD_ELO_CONFIDENCE_LEVEL: "0.95"
   LEADERBOARD_ELO_SHUFFLE_ROUNDS: "5"
   LEADERBOARD_ELO_SHUFFLE_SEED: "0"
 
-  # ──────────────────────────────────────────────
-  # Backend — Bradley-Terry Leaderboard
-  # ──────────────────────────────────────────────
+  # Bradley-Terry leaderboard
   LEADERBOARD_BT_MAX_ITERATIONS: "200"
   LEADERBOARD_BT_TOLERANCE: "1e-6"
   LEADERBOARD_BT_BOOTSTRAP_ROUNDS: "200"
@@ -128,13 +112,36 @@ data:
   LEADERBOARD_BT_PRIOR: "1e-6"
   LEADERBOARD_BT_CONFIDENCE_LEVEL: "0.95"
 
-  # ──────────────────────────────────────────────
-  # Frontend SPA — OIDC (served via /api/v1/public-config)
-  # ──────────────────────────────────────────────
-  # The SPA is a static bundle with no server-side env vars.
-  # Public OIDC bootstrap values are configured on the backend
-  # and exposed at GET /api/v1/public-config:
-  #   FRONTEND_OIDC_CLIENT_ID, FRONTEND_OIDC_SCOPE,
-  #   FRONTEND_OIDC_REDIRECT_PATH, FRONTEND_OIDC_SILENT_REDIRECT_PATH,
-  #   FRONTEND_OIDC_POST_LOGOUT_REDIRECT_PATH
-  # See the backend section above for OIDC_ISSUER.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: arena-auth-secrets
+  labels:
+    app.kubernetes.io/name: opensakura-arena
+    app.kubernetes.io/part-of: opensakura
+type: Opaque
+# Populate this Secret out of band with backend secret values. Keep real values
+# in your secret manager, sealed secret, or cluster secret store.
+
+# Backend Deployment env wiring example:
+# - name: OIDC_CLIENT_SECRET
+#   valueFrom:
+#     secretKeyRef:
+#       name: arena-auth-secrets
+#       key: OIDC_CLIENT_SECRET
+# - name: AUTH_SESSION_HASH_SECRET
+#   valueFrom:
+#     secretKeyRef:
+#       name: arena-auth-secrets
+#       key: AUTH_SESSION_HASH_SECRET
+# - name: TURNSTILE_SECRET_KEY
+#   valueFrom:
+#     secretKeyRef:
+#       name: arena-auth-secrets
+#       key: TURNSTILE_SECRET_KEY
+# - name: ARENA_MASTER_KEY
+#   valueFrom:
+#     secretKeyRef:
+#       name: arena-auth-secrets
+#       key: ARENA_MASTER_KEY

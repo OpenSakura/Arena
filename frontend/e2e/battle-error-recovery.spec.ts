@@ -77,9 +77,8 @@ async function handleCorsIfPreflight(route: Route): Promise<boolean> {
   return false;
 }
 
-async function mockAuthenticatedSession(page: Page, accessToken: string): Promise<void> {
+async function mockAuthenticatedSession(page: Page): Promise<void> {
   await mockSpaAuthenticatedSession(page, {
-    accessToken,
     profile: {
       sub: "battle-e2e-user",
       name: "Battle E2E",
@@ -116,10 +115,10 @@ async function mockBattleDetails(
 
 test("surfaces battle.error details and can recover via restart", async ({ page }) => {
   let createCount = 0;
-  const createAuthHeaders: Array<string | undefined> = [];
+  const createCsrfHeaders: Array<string | undefined> = [];
   const battlesById = new Map<string, BattlePublic>();
 
-  await mockAuthenticatedSession(page, "battle-recovery-access-token");
+  await mockAuthenticatedSession(page);
 
   await mockBattleDetails(page, battlesById);
 
@@ -130,7 +129,7 @@ test("surfaces battle.error details and can recover via restart", async ({ page 
       return;
     }
 
-    createAuthHeaders.push(route.request().headers()["authorization"]);
+    createCsrfHeaders.push(route.request().headers()["x-csrf-token"]);
     createCount += 1;
     const battle =
       createCount === 1
@@ -200,16 +199,13 @@ test("surfaces battle.error details and can recover via restart", async ({ page 
   await expect(page.getByRole("button", { name: "Submit Vote" })).toBeDisabled();
 
   expect(createCount).toBe(2);
-  expect(createAuthHeaders).toEqual([
-    "Bearer battle-recovery-access-token",
-    "Bearer battle-recovery-access-token",
-  ]);
+  expect(createCsrfHeaders).toEqual(["playwright-csrf-token", "playwright-csrf-token"]);
 });
 
 test("disables voting when stream terminal state is battle.failed", async ({ page }) => {
   const battlesById = new Map<string, BattlePublic>();
 
-  await mockAuthenticatedSession(page, "battle-failed-access-token");
+  await mockAuthenticatedSession(page);
 
   await mockBattleDetails(page, battlesById);
 
@@ -266,10 +262,10 @@ test("disables voting when stream terminal state is battle.failed", async ({ pag
 
 test("recovers when initial battle bootstrap fails and retry starts cleanly", async ({ page }) => {
   let createCount = 0;
-  const createAuthHeaders: Array<string | undefined> = [];
+  const createCsrfHeaders: Array<string | undefined> = [];
   const battlesById = new Map<string, BattlePublic>();
 
-  await mockAuthenticatedSession(page, "battle-bootstrap-access-token");
+  await mockAuthenticatedSession(page);
 
   await mockBattleDetails(page, battlesById);
 
@@ -280,7 +276,7 @@ test("recovers when initial battle bootstrap fails and retry starts cleanly", as
       return;
     }
 
-    createAuthHeaders.push(route.request().headers()["authorization"]);
+    createCsrfHeaders.push(route.request().headers()["x-csrf-token"]);
     createCount += 1;
     if (createCount === 1) {
       await route.fulfill({
@@ -343,16 +339,13 @@ test("recovers when initial battle bootstrap fails and retry starts cleanly", as
   ).toHaveCount(0);
 
   expect(createCount).toBe(2);
-  expect(createAuthHeaders).toEqual([
-    "Bearer battle-bootstrap-access-token",
-    "Bearer battle-bootstrap-access-token",
-  ]);
+  expect(createCsrfHeaders).toEqual(["playwright-csrf-token", "playwright-csrf-token"]);
 });
 
 test("marks status as error on run.error and keeps voting disabled", async ({ page }) => {
   const battlesById = new Map<string, BattlePublic>();
 
-  await mockAuthenticatedSession(page, "battle-run-error-access-token");
+  await mockAuthenticatedSession(page);
 
   await mockBattleDetails(page, battlesById);
 
@@ -406,7 +399,7 @@ test("marks status as error on run.error and keeps voting disabled", async ({ pa
 test("surfaces stream transport failures and keeps voting disabled", async ({ page }) => {
   const battlesById = new Map<string, BattlePublic>();
 
-  await mockAuthenticatedSession(page, "battle-stream-failure-access-token");
+  await mockAuthenticatedSession(page);
   await mockBattleDetails(page, battlesById);
 
   await page.route("**/api/v1/battles", async (route) => {

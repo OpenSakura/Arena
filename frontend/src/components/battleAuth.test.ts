@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { hasBattleRefreshError, isBattleBootstrapReady } from "./battleAuth";
+import { hasBattleSessionError, isBattleBootstrapReady } from "./battleAuth";
 
 describe("isBattleBootstrapReady", () => {
   it("waits while auth state is loading", () => {
@@ -13,14 +13,14 @@ describe("isBattleBootstrapReady", () => {
   });
 });
 
-describe("hasBattleRefreshError", () => {
-  it("detects known refresh-session failures", () => {
-    expect(hasBattleRefreshError("RefreshTokenMissing")).toBe(true);
-    expect(hasBattleRefreshError("RefreshTokenExpired")).toBe(true);
+describe("hasBattleSessionError", () => {
+  it("detects backend session failures", () => {
+    expect(hasBattleSessionError("SessionExpired")).toBe(true);
+    expect(hasBattleSessionError("SessionBootstrapFailed")).toBe(true);
   });
 
   it("ignores unrelated or missing auth errors", () => {
-    expect(hasBattleRefreshError(null)).toBe(false);
-    expect(hasBattleRefreshError("OidcSigninFailed")).toBe(false);
+    expect(hasBattleSessionError(null)).toBe(false);
+    expect(hasBattleSessionError("")).toBe(false);
   });
 });

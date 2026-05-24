@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.csrf import require_csrf_for_session
 from app.core.config import get_settings
 from app.core.security import (
     Principal,
@@ -80,7 +81,7 @@ def get_me(
     )
 
 
-@router.put("/me/profile")
+@router.put("/me/profile", dependencies=[Depends(require_csrf_for_session)])
 def put_profile(
     payload: ProfileUpsert,
     principal: Principal = Depends(get_principal_optional),

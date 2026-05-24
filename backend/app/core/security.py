@@ -12,19 +12,19 @@ Notes:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timezone
 import logging
 from typing import Any
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.service_tokens import (
     SERVICE_TOKEN_PREFIX,
     constant_time_verify,
@@ -33,8 +33,14 @@ from app.core.service_tokens import (
     normalize_scopes as normalize_service_token_scopes,
 )
 from app.db.session import get_db
+from app.models.auth_session import AuthSession
 from app.models.service_account import ServiceAccount, ServiceAccountToken
 from app.models.user import User
+from app.services.auth_session import (
+    load_auth_session,
+    load_user_for_auth_session,
+    refresh_auth_session_last_seen,
+)
 from app.services.oidc import (
     OIDCConfigurationError,
     OIDCVerificationError,
@@ -47,13 +53,23 @@ bearer_scheme = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
 
 
+def _request_dependency(request: Request) -> Request:
+    return request
+
+
+def _settings_dependency() -> Settings:
+    return get_settings()
+
+
 class Principal(BaseModel):
     """Represents the requester identity (or lack thereof)."""
 
     is_authenticated: bool = False
     actor_type: str = "human"
+    auth_method: str = "none"
     # Set when authenticated; maps to our internal `users.id`.
     user_id: str | None = None
+    auth_session_id: str | None = None
     oidc_issuer: str | None = None
     oidc_sub: str | None = None
     service_account_id: str | None = None
@@ -118,19 +134,30 @@ def normalize_groups(value: Any) -> set[str]:
 
 
 async def get_principal_optional(
+    request: Request | None = Depends(_request_dependency),
     creds: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: Session = Depends(get_db),
     oidc_verifier: OIDCVerifier = Depends(get_oidc_verifier),
+    settings: Any = Depends(_settings_dependency),
 ) -> Principal:
     """Return an authenticated principal when possible.
 
     Notes:
-    - Missing or invalid bearer tokens return unauthenticated principal.
+    - Bearer credentials take precedence over session cookies.
+    - Missing or invalid bearer/session credentials return unauthenticated principal.
     - Valid tokens are mapped to an internal user row keyed by (issuer, sub).
     """
 
+    _clear_auth_session_context(request=request)
+
     if creds is None:
-        return Principal(is_authenticated=False)
+        if _request_has_authorization_header(request):
+            return Principal(is_authenticated=False)
+        return _principal_from_session_cookie(
+            request=request,
+            db=db,
+            settings=settings,
+        )
     if creds.scheme.lower() != "bearer":
         return Principal(is_authenticated=False)
 
@@ -161,11 +188,117 @@ async def get_principal_optional(
     return Principal(
         is_authenticated=True,
         actor_type=_principal_actor_type(user),
+        auth_method="bearer",
         user_id=str(user.id),
         oidc_issuer=user.oidc_issuer,
         oidc_sub=user.oidc_sub,
         claims=claims,
     )
+
+
+def _principal_from_session_cookie(
+    *,
+    request: Request | object | None,
+    db: Session,
+    settings: Any = None,
+) -> Principal:
+    cookies = _request_cookies(request)
+    if cookies is None:
+        return Principal(is_authenticated=False)
+
+    settings = _select_auth_session_settings(settings)
+
+    try:
+        auth_session = load_auth_session(
+            db,
+            session_token=cookies.get(settings.auth_session_cookie_name),
+            settings=settings,
+        )
+    except RuntimeError:
+        logger.error("Auth session rejected because hash secret is not configured")
+        return Principal(is_authenticated=False)
+    if auth_session is None:
+        return Principal(is_authenticated=False)
+
+    user = load_user_for_auth_session(db, auth_session=auth_session)
+    if user is None:
+        logger.error("Auth session %s references a missing user", auth_session.id)
+        return Principal(is_authenticated=False)
+
+    claims = auth_session.claims
+    if not isinstance(claims, dict):
+        logger.error("Auth session %s has invalid claims payload", auth_session.id)
+        return Principal(is_authenticated=False)
+
+    refresh_auth_session_last_seen(db, auth_session=auth_session)
+    _attach_auth_session_context(request=request, auth_session=auth_session)
+    return _principal_from_auth_session(
+        auth_session=auth_session,
+        user=user,
+        claims=claims,
+    )
+
+
+def _principal_from_auth_session(
+    *,
+    auth_session: AuthSession,
+    user: User,
+    claims: dict[str, Any],
+) -> Principal:
+    return Principal(
+        is_authenticated=True,
+        actor_type="human",
+        auth_method="session",
+        user_id=str(user.id),
+        auth_session_id=str(auth_session.id),
+        oidc_issuer=auth_session.oidc_issuer,
+        oidc_sub=auth_session.oidc_sub,
+        claims=dict(claims),
+    )
+
+
+def _request_cookies(request: Request | object | None) -> Mapping[str, str] | None:
+    cookies = getattr(request, "cookies", None)
+    return cookies if isinstance(cookies, Mapping) else None
+
+
+def _request_has_authorization_header(request: Request | object | None) -> bool:
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        return False
+    try:
+        return headers.get("authorization") is not None
+    except AttributeError:
+        return False
+
+
+def _select_auth_session_settings(settings: Any) -> Any:
+    if settings is not None and hasattr(settings, "auth_session_cookie_name"):
+        return settings
+    return get_settings()
+
+
+def _clear_auth_session_context(*, request: Request | object | None) -> None:
+    state = getattr(request, "state", None)
+    if state is None:
+        return
+    for attribute in ("auth_session", "auth_session_id"):
+        try:
+            delattr(state, attribute)
+        except (AttributeError, KeyError):
+            pass
+
+
+def _attach_auth_session_context(
+    *,
+    request: Request | object | None,
+    auth_session: AuthSession,
+) -> None:
+    state = getattr(request, "state", None)
+    if state is None:
+        return
+    setattr(state, "auth_session", auth_session)
+    setattr(state, "auth_session_id", str(auth_session.id))
 
 
 def _principal_from_service_token(*, db: Session, token: str) -> Principal:
@@ -245,6 +378,7 @@ def _validated_service_token_principal(
     return Principal(
         is_authenticated=True,
         actor_type="bot",
+        auth_method="service_token",
         user_id=str(bot_user.id),
         oidc_issuer=bot_user.oidc_issuer,
         oidc_sub=bot_user.oidc_sub,

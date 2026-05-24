@@ -10,11 +10,7 @@ vi.mock("@/hooks/useArenaAuth", () => ({
     isLoading: false,
     isAuthenticated: false,
     user: null,
-    accessToken: null,
     sessionError: null,
-    headers: undefined,
-    headersRef: { current: undefined },
-    accessTokenRef: { current: null },
     signinRedirect: vi.fn(),
     signoutRedirect: vi.fn(),
   }),
@@ -37,31 +33,29 @@ describe("router", () => {
     expect(await screen.findByText("Battle route: new")).toBeDefined();
   });
 
-  it("registers the signin callback route", async () => {
-    const memRouter = createMemoryRouter(router.routes, {
-      initialEntries: ["/auth/callback?code=abc&state=def"],
-      future: routerFutureConfig,
-    });
-    render(<RouterProvider router={memRouter} future={{ v7_startTransition: true }} />);
-    expect(await screen.findByText("Auth Callback")).toBeDefined();
+  it("has no frontend auth callback route", async () => {
+    const authRoute = router.routes[0].children?.find(r => r.path === "auth/callback");
+    expect(authRoute).toBeUndefined();
   });
 
-  it("registers the silent renew callback route", async () => {
-    const memRouter = createMemoryRouter(router.routes, {
-      initialEntries: ["/auth/silent-callback?state=silent-renew"],
-      future: routerFutureConfig,
-    });
-    render(<RouterProvider router={memRouter} future={{ v7_startTransition: true }} />);
-    expect(await screen.findByText("Auth Silent Callback")).toBeDefined();
+  it("has no frontend silent callback route", async () => {
+    const authRoute = router.routes[0].children?.find(r => r.path === "auth/silent-callback");
+    expect(authRoute).toBeUndefined();
   });
 
-  it("registers the logout callback route", async () => {
+  it("has no frontend logout callback route", async () => {
+    const authRoute = router.routes[0].children?.find(r => r.path === "auth/logout-callback");
+    expect(authRoute).toBeUndefined();
+  });
+
+  it("renders a simple backend auth error route", async () => {
     const memRouter = createMemoryRouter(router.routes, {
-      initialEntries: ["/auth/logout-callback?state=logout"],
+      initialEntries: ["/auth/error?message=Login%20failed"],
       future: routerFutureConfig,
     });
     render(<RouterProvider router={memRouter} future={{ v7_startTransition: true }} />);
-    expect(await screen.findByText("Auth Logout Callback")).toBeDefined();
+    expect(await screen.findByRole("heading", { name: "Authentication error" })).toBeDefined();
+    expect(screen.getByText("Login failed")).toBeDefined();
   });
 
   it("redirects /admin to /admin/models", () => {

@@ -193,7 +193,6 @@ async function setupLeaderboardRoutes(
 
 test("integrated bot admin token and leaderboard filters regression", async ({ page }) => {
   await mockSpaAuthenticatedSession(page, {
-    accessToken: "task-12-admin-access-token",
     isAdmin: true,
   });
   const adminRoutes = await setupAdminServiceAccountRoutes(page);

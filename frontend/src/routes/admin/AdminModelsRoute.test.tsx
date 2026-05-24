@@ -37,22 +37,16 @@ beforeEach(() => {
 
   useAuthHeadersMock.mockReturnValue({
     authStatus: "unauthenticated",
-    accessToken: null,
     sessionError: null,
-    headers: undefined,
-    headersRef: { current: undefined },
-    accessTokenRef: { current: null },
+    csrfToken: null,
   });
 });
 
 function authenticatedSession() {
   useAuthHeadersMock.mockReturnValue({
     authStatus: "authenticated",
-    accessToken: "admin-token",
+    csrfToken: "csrf-token",
     sessionError: null,
-    headers: { Authorization: "Bearer admin-token" },
-    headersRef: { current: { Authorization: "Bearer admin-token" } },
-    accessTokenRef: { current: "admin-token" },
   });
 }
 
@@ -83,8 +77,6 @@ describe("AdminModelsRoute", () => {
   it("does not load models when unauthenticated and shows empty state", async () => {
     render(<AdminModelsRoute />);
 
-    // Without a valid session, the page renders the heading but no API calls
-    // are made (headers are undefined, so the useEffect early-returns).
     await screen.findByText("Model Registry");
     expect(apiGetMock).not.toHaveBeenCalled();
 
@@ -99,9 +91,7 @@ describe("AdminModelsRoute", () => {
 
     await screen.findByText("Model One");
 
-    expect(apiGetMock).toHaveBeenCalledWith("/admin/models?limit=1000", {
-      headers: { Authorization: "Bearer admin-token" },
-    });
+    expect(apiGetMock).toHaveBeenCalledWith("/admin/models?limit=1000");
 
     expect(screen.getAllByText("yes").length).toBeGreaterThanOrEqual(2);
   });
@@ -139,11 +129,9 @@ describe("AdminModelsRoute", () => {
           system_prompt: null,
           user_prompt: null,
         },
-        {
-          headers: { Authorization: "Bearer admin-token" },
-        },
       );
     });
+    expect(apiPostMock.mock.calls[0]).toHaveLength(2);
 
     await screen.findByText("Model Two");
   });
@@ -208,11 +196,9 @@ describe("AdminModelsRoute", () => {
           tags: null,
           params: null,
         }),
-        {
-          headers: { Authorization: "Bearer admin-token" },
-        },
       );
     });
+    expect(apiPutMock.mock.calls[0]).toHaveLength(2);
 
     await screen.findByText("Model One Server Normalized");
     expect((displayNameInput as HTMLInputElement).value).toBe(
@@ -234,13 +220,9 @@ describe("AdminModelsRoute", () => {
     await user.click(screen.getByRole("button", { name: "Delete" }));
 
     await waitFor(() => {
-      expect(apiDeleteMock).toHaveBeenCalledWith(
-        "/admin/models/model-1",
-        {
-          headers: { Authorization: "Bearer admin-token" },
-        },
-      );
+      expect(apiDeleteMock).toHaveBeenCalledWith("/admin/models/model-1");
     });
+    expect(apiDeleteMock.mock.calls[0]).toHaveLength(1);
 
     await waitFor(() => {
       expect(screen.queryByText("Model One")).toBeNull();
@@ -292,7 +274,6 @@ describe("AdminModelsRoute", () => {
       expect(apiPostMock).toHaveBeenCalledWith(
         "/admin/models/model-1/test",
         {},
-        { headers: { Authorization: "Bearer admin-token" } },
       );
     });
   });
@@ -346,7 +327,6 @@ describe("AdminModelsRoute", () => {
           user_prompt:
             "Translate from {{ source_lang }} to {{ target_lang }}:\n{{ source_text }}",
         }),
-        { headers: { Authorization: "Bearer admin-token" } },
       );
     });
   });
@@ -384,7 +364,6 @@ describe("AdminModelsRoute", () => {
           user_prompt:
             "Translate from {{ source_lang }} to {{ target_lang }}:\n{{ source_text }}",
         }),
-        { headers: { Authorization: "Bearer admin-token" } },
       );
     });
   });

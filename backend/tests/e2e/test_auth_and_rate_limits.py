@@ -2,10 +2,60 @@ from __future__ import annotations
 
 import uuid
 
+import httpx
 import pytest
 
 
 pytestmark = pytest.mark.e2e
+
+
+def test_backend_e2e_confidential_oidc_settings(configured_backend_env: None) -> None:
+    del configured_backend_env
+
+    from app.core.config import get_settings
+
+    settings = get_settings()
+
+    assert settings.oidc_client_id == "arena-e2e-client"
+    assert settings.oidc_client_secret == "arena-e2e-confidential-client-secret"
+    assert settings.public_base_url == "http://localhost:13000"
+    assert settings.oidc_redirect_path == "/api/v1/auth/callback"
+    assert settings.auth_session_hash_secret == "arena-e2e-auth-session-hash-secret"
+    assert settings.oidc_issuer == "http://localhost:19000/application/o/arena-e2e/"
+    assert settings.oidc_audience == "arena-e2e-client"
+
+
+def test_authentik_provider_is_confidential_for_e2e(
+    authentik_provider_config: dict[str, object],
+) -> None:
+    assert authentik_provider_config["client_type"] == "confidential"
+    assert authentik_provider_config["client_id"] == "arena-e2e-client"
+    assert authentik_provider_config["client_secret_configured"] is True
+    assert authentik_provider_config["client_secret_matches_expected"] is True
+    assert authentik_provider_config["redirect_uris"] == [
+        {
+            "matching_mode": "strict",
+            "url": "http://localhost:13000/api/v1/auth/callback",
+        }
+    ]
+
+
+def test_authentik_token_endpoint_requires_confidential_secret(
+    e2e_stack,
+    authentik_token: str,
+) -> None:
+    del e2e_stack
+
+    assert authentik_token.count(".") == 2
+
+    response = httpx.post(
+        "http://localhost:19000/application/o/token/",
+        data={"grant_type": "client_credentials", "scope": "openid"},
+        auth=("arena-e2e-client", "wrong-arena-e2e-secret"),
+        timeout=10.0,
+    )
+
+    assert response.status_code in {400, 401}
 
 
 def test_authenticated_me_uses_authentik_jwt(

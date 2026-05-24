@@ -37,22 +37,16 @@ beforeEach(() => {
 
   useAuthHeadersMock.mockReturnValue({
     authStatus: "unauthenticated",
-    accessToken: null,
     sessionError: null,
-    headers: undefined,
-    headersRef: { current: undefined },
-    accessTokenRef: { current: null },
+    csrfToken: null,
   });
 });
 
 function authenticatedSession() {
   useAuthHeadersMock.mockReturnValue({
     authStatus: "authenticated",
-    accessToken: "admin-token",
+    csrfToken: "csrf-token",
     sessionError: null,
-    headers: { Authorization: "Bearer admin-token" },
-    headersRef: { current: { Authorization: "Bearer admin-token" } },
-    accessTokenRef: { current: "admin-token" },
   });
 }
 
@@ -82,8 +76,6 @@ describe("AdminTasksRoute", () => {
   it("does not make API calls when user is not authenticated and shows empty state", async () => {
     render(<AdminTasksRoute />);
 
-    // Route still renders its UI (protection handles redirect),
-    // but no admin API calls are made without a token.
     await screen.findByText("Tasks & Task Sets");
     expect(apiGetMock).not.toHaveBeenCalled();
 
@@ -110,12 +102,8 @@ describe("AdminTasksRoute", () => {
     await screen.findByText("Public Samples");
     await screen.findByText("テストです");
 
-    expect(apiGetMock).toHaveBeenCalledWith("/admin/task-sets?limit=1000", {
-      headers: { Authorization: "Bearer admin-token" },
-    });
-    expect(apiGetMock).toHaveBeenCalledWith("/admin/tasks?limit=1000", {
-      headers: { Authorization: "Bearer admin-token" },
-    });
+    expect(apiGetMock).toHaveBeenCalledWith("/admin/task-sets?limit=1000");
+    expect(apiGetMock).toHaveBeenCalledWith("/admin/tasks?limit=1000");
 
     await waitFor(() => {
       expect(screen.getByText("Showing 1 task(s)")).toBeDefined();
@@ -181,11 +169,9 @@ describe("AdminTasksRoute", () => {
           description: "manually curated",
           metadata: { source: "manual" },
         },
-        {
-          headers: { Authorization: "Bearer admin-token" },
-        },
       );
     });
+    expect(apiPostMock.mock.calls[0]).toHaveLength(2);
 
     await screen.findByRole("radio", { name: /Set Two/ });
     await user.click(screen.getByRole("radio", { name: /Set Two/ }));
@@ -206,9 +192,6 @@ describe("AdminTasksRoute", () => {
           target_lang: "zh",
           source_text: "JP line",
           metadata: null,
-        },
-        {
-          headers: { Authorization: "Bearer admin-token" },
         },
       );
     });
@@ -255,24 +238,18 @@ describe("AdminTasksRoute", () => {
           description: "curated",
           metadata: null,
         },
-        {
-          headers: { Authorization: "Bearer admin-token" },
-        },
       );
     });
+    expect(apiPutMock.mock.calls[0]).toHaveLength(2);
 
     await screen.findByRole("radio", { name: /Renamed Samples/ });
 
     await user.click(screen.getByRole("button", { name: "Delete" }));
 
     await waitFor(() => {
-      expect(apiDeleteMock).toHaveBeenCalledWith(
-        "/admin/task-sets/set-1",
-        {
-          headers: { Authorization: "Bearer admin-token" },
-        },
-      );
+      expect(apiDeleteMock).toHaveBeenCalledWith("/admin/task-sets/set-1");
     });
+    expect(apiDeleteMock.mock.calls[0]).toHaveLength(1);
 
     await waitFor(() => {
       expect(screen.queryByRole("radio", { name: /Renamed Samples/ })).toBeNull();
@@ -320,9 +297,6 @@ describe("AdminTasksRoute", () => {
           source_text: "Updated source text",
           metadata: null,
         },
-        {
-          headers: { Authorization: "Bearer admin-token" },
-        },
       );
     });
 
@@ -331,12 +305,7 @@ describe("AdminTasksRoute", () => {
     await user.click(screen.getByRole("button", { name: "Delete" }));
 
     await waitFor(() => {
-      expect(apiDeleteMock).toHaveBeenCalledWith(
-        "/admin/tasks/task-1",
-        {
-          headers: { Authorization: "Bearer admin-token" },
-        },
-      );
+      expect(apiDeleteMock).toHaveBeenCalledWith("/admin/tasks/task-1");
     });
 
     await waitFor(() => {
@@ -405,9 +374,6 @@ describe("AdminTasksRoute", () => {
       expect(apiPostMock).toHaveBeenCalledWith(
         "/admin/tasks/import-jsonl?source_lang=ja&target_lang=zh",
         expect.any(FormData),
-        {
-          headers: { Authorization: "Bearer admin-token" },
-        },
       );
     });
 
@@ -416,7 +382,6 @@ describe("AdminTasksRoute", () => {
     expect(apiGetMock.mock.calls.filter(([path]) => path.startsWith("/admin/tasks")).length).toBeGreaterThan(1);
     expect(apiGetMock.mock.calls).toContainEqual([
       "/admin/tasks?limit=1000",
-      { headers: { Authorization: "Bearer admin-token" } },
     ]);
   });
 

@@ -62,8 +62,8 @@ export function isServiceAccount(value: unknown): value is ServiceAccount {
   );
 }
 
-export async function listServiceAccounts(headers: HeadersInit): Promise<ServiceAccount[]> {
-  const res = await apiGet<unknown>("/admin/service-accounts", { headers });
+export async function listServiceAccounts(): Promise<ServiceAccount[]> {
+  const res = await apiGet<unknown>("/admin/service-accounts");
   if (!isRecord(res) || !Array.isArray(res.service_accounts)) {
     throw new Error("Invalid response format");
   }
@@ -72,9 +72,8 @@ export async function listServiceAccounts(headers: HeadersInit): Promise<Service
 
 export async function createServiceAccount(
   payload: { name: string; description: string | null; enabled: boolean },
-  headers: HeadersInit,
 ): Promise<ServiceAccount> {
-  const res = await apiPost<unknown>("/admin/service-accounts", payload, { headers });
+  const res = await apiPost<unknown>("/admin/service-accounts", payload);
   if (!isServiceAccount(res)) throw new Error("Invalid create response");
   return res;
 }
@@ -82,9 +81,8 @@ export async function createServiceAccount(
 export async function updateServiceAccount(
   id: string,
   payload: { name?: string; description?: string | null; enabled?: boolean },
-  headers: HeadersInit,
 ): Promise<ServiceAccount> {
-  const res = await apiPatch<unknown>(`/admin/service-accounts/${encodeURIComponent(id)}`, payload, { headers });
+  const res = await apiPatch<unknown>(`/admin/service-accounts/${encodeURIComponent(id)}`, payload);
   if (!isServiceAccount(res)) throw new Error("Invalid update response");
   return res;
 }
@@ -92,9 +90,8 @@ export async function updateServiceAccount(
 export async function createServiceAccountToken(
   id: string,
   payload: { scopes: string[]; expires_at: string | null },
-  headers: HeadersInit,
 ): Promise<CreateTokenResponse> {
-  const res = await apiPost<unknown>(`/admin/service-accounts/${encodeURIComponent(id)}/tokens`, payload, { headers });
+  const res = await apiPost<unknown>(`/admin/service-accounts/${encodeURIComponent(id)}/tokens`, payload);
   if (
     !isRecord(res) ||
     !isServiceAccount(res.service_account) ||
@@ -112,9 +109,8 @@ export async function createServiceAccountToken(
 
 export async function revokeServiceAccountToken(
   tokenId: string,
-  headers: HeadersInit,
 ): Promise<{ token_id: string; revoked: boolean }> {
-  const res = await apiPost<unknown>(`/admin/service-account-tokens/${encodeURIComponent(tokenId)}/revoke`, {}, { headers });
+  const res = await apiPost<unknown>(`/admin/service-account-tokens/${encodeURIComponent(tokenId)}/revoke`, {});
   if (!isRecord(res) || typeof res.token_id !== "string" || typeof res.revoked !== "boolean") {
     throw new Error("Invalid revoke response");
   }

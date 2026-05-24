@@ -20,16 +20,17 @@ test("completes a live battle, submits vote, and updates leaderboard", async ({ 
 
   const identifyAction = authForm.getByRole("button", { name: /log in|continue/i });
   await identifyAction.waitFor({ state: "visible", timeout: 30_000 });
-  await identifyAction.click({ force: true });
+  await expect(identifyAction).toBeEnabled({ timeout: 30_000 });
+  await identifyAction.click();
 
   const passwordInput = authForm.locator('input[name="password"]');
   await passwordInput.waitFor({ state: "visible", timeout: 60_000 });
   await passwordInput.fill("password1234");
-  await passwordInput.press("Enter");
 
   const passwordAction = authForm.getByRole("button", { name: /log in|continue/i });
   await passwordAction.waitFor({ state: "visible", timeout: 30_000 });
-  await passwordAction.click({ force: true });
+  await expect(passwordAction).toBeEnabled({ timeout: 30_000 });
+  await passwordAction.click();
 
   await page.getByRole("button", { name: "Logout" }).waitFor({ state: "visible", timeout: 60_000 });
 

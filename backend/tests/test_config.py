@@ -29,21 +29,81 @@ def test_settings_accepts_json_array_cors_origins() -> None:
     ]
 
 
-def _production_settings(**overrides) -> dict:
-    defaults = dict(
+def _production_settings(**overrides: object) -> dict[str, object]:
+    defaults: dict[str, object] = dict(
         app_env="production",
+        public_base_url="https://arena.example",
         oidc_issuer="https://auth.example",
         oidc_audience="arena",
+        oidc_client_id="arena-client",
+        oidc_client_secret="oidc-client-secret",
+        auth_session_hash_secret="auth-session-hash-secret",
         arena_master_key="secret-key",
         service_token_hash_secret="service-token-secret",
         database_url="postgresql+psycopg://prod:prod@db:5432/arena",
         turnstile_secret_key="turnstile-secret",
         cors_allow_origins="https://arena.example",
         web_concurrency=1,
-        frontend_oidc_client_id="spa-client",
     )
     defaults.update(overrides)
     return defaults
+
+
+def test_settings_exposes_confidential_client_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for env_name in (
+        "PUBLIC_BASE_URL",
+        "OIDC_CLIENT_ID",
+        "OIDC_CLIENT_SECRET",
+        "OIDC_CLIENT_AUTH_METHOD",
+        "OIDC_SCOPE",
+        "OIDC_REDIRECT_PATH",
+        "OIDC_LOGIN_STATE_MAX_AGE_SECONDS",
+        "AUTH_SESSION_COOKIE_NAME",
+        "AUTH_LOGIN_STATE_COOKIE_NAME",
+        "AUTH_SESSION_MAX_AGE_SECONDS",
+        "AUTH_SESSION_HASH_SECRET",
+        "AUTH_CSRF_HEADER_NAME",
+        "AUTH_COOKIE_SECURE",
+        "OIDC_ISSUER",
+        "OIDC_AUDIENCE",
+        "OIDC_ADMIN_GROUP_CLAIM",
+        "OIDC_ADMIN_GROUP_NAME",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.public_base_url == ""
+    assert settings.oidc_client_id == ""
+    assert settings.oidc_client_secret == ""
+    assert settings.oidc_client_auth_method == "client_secret_basic"
+    assert settings.oidc_scope == "openid email profile"
+    assert settings.oidc_redirect_path == "/api/v1/auth/callback"
+    assert settings.oidc_login_state_max_age_seconds == 600
+    assert settings.auth_session_cookie_name == "arena_session"
+    assert settings.auth_login_state_cookie_name == "arena_oauth_state"
+    assert settings.auth_session_max_age_seconds == 28800
+    assert settings.auth_session_hash_secret == ""
+    assert settings.auth_csrf_header_name == "X-CSRF-Token"
+    assert settings.auth_cookie_secure is None
+    assert settings.oidc_issuer == ""
+    assert hasattr(settings, "oidc_audience")
+    assert Settings(oidc_audience="arena").oidc_audience == "arena"
+    assert settings.oidc_admin_group_claim == "groups"
+    assert settings.oidc_admin_group_name == "arena_admin"
+
+
+def test_production_accepts_confidential_client_settings_without_public_client_requirement() -> None:
+    settings = Settings(**_production_settings())
+
+    assert settings.public_base_url == "https://arena.example"
+    assert settings.oidc_issuer == "https://auth.example"
+    assert settings.oidc_audience == "arena"
+    assert settings.oidc_client_id == "arena-client"
+    assert settings.oidc_client_secret == "oidc-client-secret"
+    assert settings.auth_session_hash_secret == "auth-session-hash-secret"
 
 
 def test_production_warns_when_redis_url_missing(caplog) -> None:
@@ -98,6 +158,50 @@ def test_production_rejects_missing_service_token_hash_secret() -> None:
         Settings(**_production_settings(service_token_hash_secret=""))
 
 
-def test_production_rejects_missing_frontend_oidc_client_id_when_issuer_set() -> None:
-    with pytest.raises(ValueError, match="FRONTEND_OIDC_CLIENT_ID"):
-        Settings(**_production_settings(frontend_oidc_client_id=""))
+@pytest.mark.parametrize(
+    ("field", "setting_name"),
+    [
+        ("oidc_client_id", "OIDC_CLIENT_ID"),
+        ("oidc_client_secret", "OIDC_CLIENT_SECRET"),
+        ("auth_session_hash_secret", "AUTH_SESSION_HASH_SECRET"),
+        ("public_base_url", "PUBLIC_BASE_URL"),
+    ],
+)
+def test_production_rejects_missing_confidential_client_setting(
+    field: str, setting_name: str
+) -> None:
+    with pytest.raises(ValueError, match=setting_name):
+        Settings(**_production_settings(**{field: ""}))
+
+
+@pytest.mark.parametrize(
+    ("field", "setting_name"),
+    [
+        ("oidc_issuer", "OIDC_ISSUER"),
+        ("oidc_audience", "OIDC_AUDIENCE"),
+    ],
+)
+def test_production_rejects_missing_bearer_oidc_setting(
+    field: str, setting_name: str
+) -> None:
+    with pytest.raises(ValueError, match=setting_name):
+        Settings(**_production_settings(**{field: ""}))
+
+
+def test_production_rejects_missing_arena_master_key() -> None:
+    with pytest.raises(ValueError, match="ARENA_MASTER_KEY"):
+        Settings(**_production_settings(arena_master_key=""))
+
+
+def test_production_rejects_default_database_url() -> None:
+    with pytest.raises(ValueError, match="DATABASE_URL"):
+        Settings(
+            **_production_settings(
+                database_url="postgresql+psycopg://postgres:postgres@localhost:5432/arena"
+            )
+        )
+
+
+def test_production_rejects_wildcard_cors_origin() -> None:
+    with pytest.raises(ValueError, match="CORS_ALLOW_ORIGINS"):
+        Settings(**_production_settings(cors_allow_origins="*"))

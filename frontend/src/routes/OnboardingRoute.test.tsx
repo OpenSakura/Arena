@@ -22,11 +22,8 @@ vi.mock("@/lib/api", () => ({
 function authenticatedSession() {
   useAuthHeadersMock.mockReturnValue({
     authStatus: "authenticated",
-    accessToken: "access-token",
+    csrfToken: "csrf-token",
     sessionError: null,
-    headers: { Authorization: "Bearer access-token" },
-    headersRef: { current: { Authorization: "Bearer access-token" } },
-    accessTokenRef: { current: "access-token" },
   });
 }
 
@@ -37,11 +34,8 @@ beforeEach(() => {
 
   useAuthHeadersMock.mockReturnValue({
     authStatus: "unauthenticated",
-    accessToken: null,
     sessionError: null,
-    headers: undefined,
-    headersRef: { current: undefined },
-    accessTokenRef: { current: null },
+    csrfToken: null,
   });
 });
 
@@ -57,11 +51,8 @@ describe("OnboardingRoute", () => {
   it("shows explicit re-login copy for expired sessions", async () => {
     useAuthHeadersMock.mockReturnValue({
       authStatus: "authenticated",
-      accessToken: "access-token",
-      sessionError: "RefreshTokenExpired",
-      headers: { Authorization: "Bearer access-token" },
-      headersRef: { current: { Authorization: "Bearer access-token" } },
-      accessTokenRef: { current: "access-token" },
+      csrfToken: "csrf-token",
+      sessionError: "SessionExpired",
     });
 
     render(<OnboardingRoute />);
@@ -74,7 +65,7 @@ describe("OnboardingRoute", () => {
     expect(screen.getByRole("button", { name: "Save profile" }).hasAttribute("disabled")).toBe(true);
   });
 
-  it("loads profile fields using authenticated access token", async () => {
+  it("loads profile fields using the backend session", async () => {
     authenticatedSession();
     apiGetMock.mockResolvedValue({
       authenticated: true,
@@ -97,10 +88,9 @@ describe("OnboardingRoute", () => {
     render(<OnboardingRoute />);
 
     await waitFor(() => {
-      expect(apiGetMock).toHaveBeenCalledWith("/me", {
-        headers: { Authorization: "Bearer access-token" },
-      });
+      expect(apiGetMock).toHaveBeenCalledWith("/me");
     });
+    expect(apiGetMock.mock.calls[0]).toHaveLength(1);
 
     const displayName = screen.getByLabelText("Display name (optional)") as HTMLInputElement;
     const uiLanguage = screen.getByLabelText("UI language") as HTMLSelectElement;
@@ -146,11 +136,9 @@ describe("OnboardingRoute", () => {
           translation_experience: null,
           consents: { research_use: false },
         },
-        {
-          headers: { Authorization: "Bearer access-token" },
-        },
       );
     });
+    expect(apiPutMock.mock.calls[0]).toHaveLength(2);
 
     await screen.findByText("Saved successfully");
   });
@@ -201,11 +189,9 @@ describe("OnboardingRoute", () => {
           },
           consents: { research_use: true },
         },
-        {
-          headers: { Authorization: "Bearer access-token" },
-        },
       );
     });
+    expect(apiPutMock.mock.calls[0]).toHaveLength(2);
 
     await screen.findByText("Saved successfully");
   });

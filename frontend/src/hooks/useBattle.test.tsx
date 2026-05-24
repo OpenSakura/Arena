@@ -52,21 +52,15 @@ const mockedStreamSSE = vi.mocked(streamSSE);
 type HookResult = ReturnType<typeof useBattle>;
 
 function createAuthState(overrides: Record<string, unknown> = {}) {
-  const accessToken = (overrides.accessToken as string | null | undefined) ?? "token-123";
-  const accessTokenRefCurrent =
-    (overrides.accessTokenRefCurrent as string | null | undefined) ?? accessToken;
-  const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined;
+  const authStatus = (overrides.authStatus as string | undefined) ?? "authenticated";
 
   return {
-    authStatus: accessToken ? "authenticated" : "unauthenticated",
+    authStatus,
     isLoading: false,
-    isAuthenticated: Boolean(accessToken),
+    isAuthenticated: authStatus === "authenticated",
     user: null,
-    accessToken,
+    csrfToken: authStatus === "authenticated" ? "csrf-token" : null,
     sessionError: null,
-    headers,
-    headersRef: { current: headers },
-    accessTokenRef: { current: accessTokenRefCurrent },
     signinRedirect: vi.fn(),
     signoutRedirect: vi.fn(),
     ...overrides,
@@ -154,7 +148,7 @@ describe("useBattle", () => {
   });
 
   it("shows an inline auth error for /battle/new when unauthenticated", async () => {
-    mockedUseArenaAuth.mockReturnValue(createAuthState({ accessToken: null }));
+    mockedUseArenaAuth.mockReturnValue(createAuthState({ authStatus: "unauthenticated" }));
 
     const { resultRef } = renderUseBattle({ battleId: "new" });
 
@@ -166,11 +160,10 @@ describe("useBattle", () => {
     expect(navigateMock).not.toHaveBeenCalled();
   });
 
-  it("shows a session-expired inline error for /battle/new when refresh auth expired", async () => {
+  it("shows a session-expired inline error for /battle/new when the backend session failed", async () => {
     mockedUseArenaAuth.mockReturnValue(
       createAuthState({
-        accessToken: null,
-        sessionError: "RefreshTokenExpired",
+        sessionError: "SessionExpired",
       }),
     );
 
@@ -254,22 +247,19 @@ describe("useBattle", () => {
     });
   });
 
-  it("uses the current access token for /battle/new bootstrap before auth refs catch up", async () => {
-    mockedUseArenaAuth.mockReturnValue(
-      createAuthState({ accessToken: "fresh-token", accessTokenRefCurrent: null }),
-    );
+  it("bootstraps new battles without browser bearer headers", async () => {
+    mockedUseArenaAuth.mockReturnValue(createAuthState());
     mockedLoadOrCreateBattle.mockResolvedValueOnce(createBattle({ id: "battle-created" }));
 
     renderUseBattle({ battleId: "new" });
 
     await waitFor(() => {
-      expect(mockedLoadOrCreateBattle).toHaveBeenCalledWith("new", "fresh-token");
+      expect(mockedLoadOrCreateBattle).toHaveBeenCalledWith("new");
     });
   });
 
-  it("passes a lazy auth header supplier to SSE so reconnects use fresh tokens", async () => {
-    const authState = createAuthState();
-    mockedUseArenaAuth.mockReturnValue(authState);
+  it("starts SSE streams without browser auth header suppliers", async () => {
+    mockedUseArenaAuth.mockReturnValue(createAuthState());
     mockedLoadOrCreateBattle.mockResolvedValueOnce(
       createBattle({ id: "battle-stream", status: "pending" }),
     );
@@ -282,15 +272,11 @@ describe("useBattle", () => {
 
     const [, init] = mockedStreamSSE.mock.calls[0] as [
       string,
-      { getHeaders?: () => Record<string, string> | undefined; headers?: unknown },
+      { getHeaders?: unknown; headers?: unknown },
     ];
 
     expect(init.headers).toBeUndefined();
-    expect(init.getHeaders?.()).toEqual({ Authorization: "Bearer token-123" });
-
-    authState.headersRef.current = { Authorization: "Bearer refreshed-token" };
-
-    expect(init.getHeaders?.()).toEqual({ Authorization: "Bearer refreshed-token" });
+    expect(init.getHeaders).toBeUndefined();
   });
 
   it("continues streaming across run.error until backend emits the terminal event", async () => {
@@ -342,7 +328,7 @@ describe("useBattle", () => {
     });
 
     expect(mockedLoadOrCreateBattle).toHaveBeenCalledTimes(2);
-    expect(mockedLoadOrCreateBattle).toHaveBeenNthCalledWith(2, "battle-failed", "token-123");
+    expect(mockedLoadOrCreateBattle).toHaveBeenNthCalledWith(2, "battle-failed");
   });
 
   it("attempts reveal immediately after a successful vote submit", async () => {
@@ -392,8 +378,8 @@ describe("useBattle", () => {
         rubric: { tags: [] },
         comment: null,
       },
-      { headers: { Authorization: "Bearer token-123" } },
     );
+    expect(mockedApiPost.mock.calls[0]).toHaveLength(2);
     expect(mockedApiPost).toHaveBeenCalledTimes(1);
     expect(resultRef.current?.canVote).toBe(false);
   });

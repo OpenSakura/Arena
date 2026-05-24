@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import cast
 
@@ -60,11 +61,6 @@ def _settings(
         rate_limit_redis_timeout_seconds=0.5,
         web_concurrency=web_concurrency,
         oidc_issuer="",
-        frontend_oidc_client_id="",
-        frontend_oidc_scope="openid email profile offline_access",
-        frontend_oidc_redirect_path="/auth/callback",
-        frontend_oidc_silent_redirect_path="/auth/silent-callback",
-        frontend_oidc_post_logout_redirect_path="/auth/logout-callback",
     )
 
 
@@ -159,13 +155,39 @@ def test_request_id_is_generated_when_header_is_missing(monkeypatch) -> None:
     int(request_id, 16)
 
 
-def test_public_config_keeps_turnstile_disabled_while_deprecated(monkeypatch) -> None:
+FORBIDDEN_PUBLIC_CONFIG_KEYS = {
+    "access_token",
+    "client_id",
+    "client_secret",
+    "issuer",
+    "redirect_path",
+    "refresh_token",
+    "scope",
+    "secret",
+    "token_endpoint",
+}
+
+
+def _flatten_keys(value: object) -> set[str]:
+    if isinstance(value, dict):
+        keys = set(value)
+        for item in value.values():
+            keys.update(_flatten_keys(item))
+        return keys
+    if isinstance(value, list):
+        keys: set[str] = set()
+        for item in value:
+            keys.update(_flatten_keys(item))
+        return keys
+    return set()
+
+
+def test_public_config_exposes_backend_session_auth_paths(monkeypatch) -> None:
     from app.core.config import get_settings as core_get_settings
 
     app = _create_test_app(monkeypatch)
     override = _settings(turnstile_secret_key="secret")
     override.oidc_issuer = "https://auth.example"
-    override.frontend_oidc_client_id = "spa-client"
     app.dependency_overrides[core_get_settings] = lambda: override
 
     with TestClient(app) as client:
@@ -174,14 +196,28 @@ def test_public_config_keeps_turnstile_disabled_while_deprecated(monkeypatch) ->
     assert response.status_code == 200
     body = response.json()
     assert body["anon_battle_turnstile_required"] is False
-    assert body["oidc"] == {
-        "issuer": "https://auth.example",
-        "client_id": "spa-client",
-        "scope": "openid email profile offline_access",
-        "redirect_path": "/auth/callback",
-        "silent_redirect_path": "/auth/silent-callback",
-        "post_logout_redirect_path": "/auth/logout-callback",
+    assert body["auth"] == {
+        "mode": "backend_session",
+        "login_path": "/api/v1/auth/login",
+        "logout_path": "/api/v1/auth/logout",
+        "session_path": "/api/v1/auth/session",
     }
+    assert "oidc" not in body
+
+
+def test_public_config_no_secret_or_oidc_bootstrap_fields(monkeypatch) -> None:
+    app = _create_test_app(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/public-config")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert _flatten_keys(body).isdisjoint(FORBIDDEN_PUBLIC_CONFIG_KEYS)
+
+    serialized = json.dumps(body).lower()
+    for forbidden in FORBIDDEN_PUBLIC_CONFIG_KEYS:
+        assert forbidden not in serialized
 
 
 def test_prod_like_env_disables_docs_routes_at_construction(monkeypatch) -> None:

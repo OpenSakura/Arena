@@ -8,13 +8,13 @@
 import { useEffect, useMemo, useReducer, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
-import { hasBattleRefreshError, isBattleBootstrapReady } from "@/components/battleAuth";
+import { hasBattleSessionError, isBattleBootstrapReady } from "@/components/battleAuth";
 import { loadOrCreateBattle, mergeBattleDelta } from "@/components/battleViewUtils";
 import { getApiPrefix, apiPost } from "@/lib/api";
 import { streamSSE } from "@/lib/sse";
 import { useArenaAuth } from "@/hooks/useArenaAuth";
 import { asRecord, isRecord } from "@/lib/typeGuards";
-import { SESSION_EXPIRED_MESSAGE } from "@/auth/oidc";
+import { SESSION_EXPIRED_MESSAGE } from "@/auth/session";
 
 type Side = "A" | "B";
 type ReplayPolicy = "consume" | "ignore";
@@ -62,14 +62,13 @@ export function __resetBattleRedirectCacheForTests() {
 function getBootstrapBattle(
   bootstrapKey: string,
   battleId: string,
-  accessToken?: string,
 ): Promise<BattlePublic> {
   const cached = bootstrapRequestCache.get(bootstrapKey);
   if (cached) {
     return cached;
   }
 
-  const request = loadOrCreateBattle(battleId, accessToken)
+  const request = loadOrCreateBattle(battleId)
     .then(parseBattlePublic)
     .finally(() => {
       if (bootstrapRequestCache.get(bootstrapKey) === request) {
@@ -437,9 +436,9 @@ export function useBattle(battleId: string) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const restartKey = searchParams.get("r") ?? "";
-  const { headersRef, accessTokenRef, authStatus, accessToken, sessionError } = useArenaAuth();
-  const isAuthed = authStatus === "authenticated" && Boolean(accessToken);
-  const hasRefreshError = hasBattleRefreshError(sessionError);
+  const { authStatus, sessionError } = useArenaAuth();
+  const isAuthed = authStatus === "authenticated";
+  const hasSessionError = hasBattleSessionError(sessionError);
 
   const [state, dispatch] = useReducer(battleReducer, INITIAL_STATE);
 
@@ -462,7 +461,7 @@ export function useBattle(battleId: string) {
         return;
       }
       if (battleId === "new") {
-        if (hasRefreshError) {
+        if (hasSessionError) {
           dispatch({ type: "BOOTSTRAP_ERROR", error: SESSION_EXPIRED_MESSAGE });
           return;
         }
@@ -513,11 +512,7 @@ export function useBattle(battleId: string) {
       voteSubmitLockRef.current = false;
 
       try {
-        const battle = await getBootstrapBattle(
-          bootstrapKey,
-          battleId,
-          accessToken ?? accessTokenRef.current ?? undefined,
-        );
+        const battle = await getBootstrapBattle(bootstrapKey, battleId);
         if (cancelled) return;
 
         const isFinished = battle.status === "completed" || battle.status === "failed";
@@ -562,15 +557,13 @@ export function useBattle(battleId: string) {
     return () => {
       cancelled = true;
     };
-    }, [
-    accessTokenRef,
-    accessToken,
+  }, [
     authStatus,
     battleId,
-    hasRefreshError,
+    hasSessionError,
     isAuthed,
     restartKey,
-    navigate
+    navigate,
   ]);
 
   const streamUrl = useMemo(() => {
@@ -594,7 +587,7 @@ export function useBattle(battleId: string) {
       !state.resolvedBattleId ||
       state.retryAllowed ||
       !isAuthed ||
-      hasRefreshError ||
+      hasSessionError ||
       !isBattleBootstrapReady(authStatus)
     ) {
       return;
@@ -610,11 +603,7 @@ export function useBattle(battleId: string) {
 
     async function syncTerminalBattle() {
       try {
-        const battle = await getBootstrapBattle(
-          `terminal:${syncKey}`,
-          state.resolvedBattleId!,
-          accessToken ?? accessTokenRef.current ?? undefined,
-        );
+        const battle = await getBootstrapBattle(`terminal:${syncKey}`, state.resolvedBattleId!);
         if (cancelled) {
           return;
         }
@@ -637,10 +626,8 @@ export function useBattle(battleId: string) {
       cancelled = true;
     };
   }, [
-    accessTokenRef,
-    accessToken,
     authStatus,
-    hasRefreshError,
+    hasSessionError,
     isAuthed,
     state.resolvedBattleId,
     state.retryAllowed,
@@ -672,7 +659,6 @@ export function useBattle(battleId: string) {
         });
 
         for await (const evt of streamSSE(url, {
-          getHeaders: () => headersRef.current,
           signal: abortController.signal,
         })) {
           if (cancelled) {
@@ -778,10 +764,10 @@ export function useBattle(battleId: string) {
       cancelled = true;
       abortController.abort();
     };
-  }, [headersRef, state.resolvedBattleId, state.retryCount, streamUrl]);
+  }, [state.resolvedBattleId, state.retryCount, streamUrl]);
 
   async function handleVoteSubmit() {
-    if (hasRefreshError) {
+    if (hasSessionError) {
       dispatch({ type: "VOTE_ERROR", error: SESSION_EXPIRED_MESSAGE });
       return;
     }
@@ -808,9 +794,7 @@ export function useBattle(battleId: string) {
         comment: state.comment || null,
       };
       const result = parseVoteSubmitResponse(
-        await apiPost(`/battles/${encodeURIComponent(state.resolvedBattleId)}/vote`, payload, {
-          headers: headersRef.current,
-        }),
+        await apiPost(`/battles/${encodeURIComponent(state.resolvedBattleId)}/vote`, payload),
       );
       dispatch({ type: "VOTE_SUCCESS", voteId: result.vote_id });
       dispatch({ type: "REVEAL_SUCCESS", reveal: result.reveal });
@@ -832,7 +816,7 @@ export function useBattle(battleId: string) {
   async function handleRetry() {
     const retryFallbackStatus = state.status === "failed" ? "failed" : "error";
 
-    if (hasRefreshError) {
+    if (hasSessionError) {
       dispatch({ type: "RETRY_ERROR", error: SESSION_EXPIRED_MESSAGE, status: retryFallbackStatus });
       return;
     }
@@ -845,9 +829,7 @@ export function useBattle(battleId: string) {
     }
 
     try {
-      await apiPost(`/battles/${encodeURIComponent(state.resolvedBattleId)}/retry`, {}, {
-        headers: headersRef.current,
-      });
+      await apiPost(`/battles/${encodeURIComponent(state.resolvedBattleId)}/retry`, {});
       replayPolicyRef.current = { A: "consume", B: "consume" };
       voteSubmitLockRef.current = false;
       dispatch({ type: "RETRY_BATTLE" });
@@ -864,7 +846,7 @@ export function useBattle(battleId: string) {
 
   const canVote =
     isAuthed &&
-    !hasRefreshError &&
+    !hasSessionError &&
     state.resolvedBattleId !== null &&
     state.winner !== null &&
     state.reveal === null &&
@@ -873,7 +855,7 @@ export function useBattle(battleId: string) {
 
   const canRetry =
     isAuthed &&
-    !hasRefreshError &&
+    !hasSessionError &&
     state.resolvedBattleId !== null &&
     state.retryAllowed &&
     (state.status === "failed" || state.status === "error") &&
@@ -899,7 +881,7 @@ export function useBattle(battleId: string) {
     dispatch,
     isAuthed,
     authStatus,
-    hasRefreshError,
+    hasSessionError,
     canVote,
     canRetry,
     voteSubmitted,

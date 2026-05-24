@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
+from app.core.csrf import csrf_exempt
 from app.core.security import Principal, require_scopes
 from app.db.session import get_db
 from app.models.battle import Battle, Run
@@ -54,6 +55,7 @@ router = APIRouter(
     response_model=BotBattleCreateAndWaitResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
+@csrf_exempt("bearer/service-token-only endpoint")
 async def create_and_wait_battle(
     payload: BotBattleCreateAndWaitRequest,
     request: Request,

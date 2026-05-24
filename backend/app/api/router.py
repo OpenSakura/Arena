@@ -18,6 +18,7 @@ from app.api.routes import (
     admin_models,
     admin_service_accounts,
     admin_tasks,
+    auth,
     battles,
     bot_battles,
     health,
@@ -28,6 +29,7 @@ from app.api.routes import (
 
 api_router = APIRouter()
 
+api_router.include_router(auth.router)
 api_router.include_router(health.router)
 api_router.include_router(me.router)
 api_router.include_router(battles.router)

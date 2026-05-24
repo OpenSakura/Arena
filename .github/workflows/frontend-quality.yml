@@ -25,6 +25,10 @@ jobs:
     name: typecheck-and-test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      # Frontend quality jobs do not receive provider secrets. This value only
+      # makes the dev proxy target deterministic for Vite config evaluation.
+      VITE_DEV_PROXY_TARGET: http://localhost:8000
 
     steps:
       - name: Checkout repository

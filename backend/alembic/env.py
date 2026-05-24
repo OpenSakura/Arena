@@ -20,6 +20,7 @@ from sqlalchemy import engine_from_config, pool
 from app.db.base import Base
 
 # Import all models so Base.metadata is fully populated.
+import app.models.auth_session  # noqa: F401
 import app.models.battle  # noqa: F401
 import app.models.model_registry  # noqa: F401
 import app.models.rating  # noqa: F401

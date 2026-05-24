@@ -1,4 +1,4 @@
-import { createBrowserRouter, Navigate } from "react-router-dom";
+import { createBrowserRouter, Navigate, useLocation } from "react-router-dom";
 import { RootLayout } from "./layouts/RootLayout";
 import { AdminLayout } from "./routes/admin/AdminLayout";
 import AdminModelsRoute from "./routes/admin/AdminModelsRoute";
@@ -9,7 +9,18 @@ import BattleRoute from "./routes/BattleRoute";
 import LeaderboardRoute from "./routes/LeaderboardRoute";
 import OnboardingRoute from "./routes/OnboardingRoute";
 
-const Placeholder = ({ name }: { name: string }) => <div>{name}</div>;
+function AuthErrorRoute() {
+  const location = useLocation();
+  const searchParams = new URLSearchParams(location.search);
+  const message = searchParams.get("message") || "Authentication could not be completed. Please try again.";
+
+  return (
+    <div className="mx-auto max-w-xl px-6 py-16 text-center">
+      <h1 className="text-2xl font-semibold text-foreground">Authentication error</h1>
+      <p className="mt-3 text-sm text-muted-foreground">{message}</p>
+    </div>
+  );
+}
 
 export const routerFutureConfig = {
   v7_startTransition: true,
@@ -25,9 +36,7 @@ export const router = createBrowserRouter([
       { path: "battle/:battleId", element: <BattleRoute /> },
       { path: "leaderboard", element: <LeaderboardRoute /> },
       { path: "onboarding", element: <OnboardingRoute /> },
-      { path: "auth/callback", element: <Placeholder name="Auth Callback" /> },
-      { path: "auth/silent-callback", element: <Placeholder name="Auth Silent Callback" /> },
-      { path: "auth/logout-callback", element: <Placeholder name="Auth Logout Callback" /> },
+      { path: "auth/error", element: <AuthErrorRoute /> },
       {
         path: "admin",
         element: <AdminLayout />,

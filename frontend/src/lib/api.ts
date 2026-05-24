@@ -4,16 +4,32 @@
  * Thin client for the backend REST API.
  *
  * All requests target same-origin `/api/v1/...` paths so no absolute backend
- * URL or environment variable is needed — the browser's default same-origin
- * fetch behaviour handles everything.
+ * URL or environment variable is needed. Human browser auth is carried by the
+ * backend-owned same-origin session cookie, with unsafe requests protected by
+ * the in-memory CSRF token supplied by the auth session bootstrap.
  */
 
 import { toHeaderObject } from "@/lib/sse";
 
 const API_PREFIX = "/api/v1";
+const CSRF_HEADER_NAME = "X-CSRF-Token";
+
+type ApiMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+const UNSAFE_METHODS = new Set<ApiMethod>(["POST", "PUT", "PATCH", "DELETE"]);
+
+let apiCsrfToken: string | null = null;
 
 export function getApiPrefix(): string {
   return API_PREFIX;
+}
+
+export function setApiCsrfToken(token: string | null | undefined): void {
+  apiCsrfToken = token ?? null;
+}
+
+export function getApiCsrfToken(): string | null {
+  return apiCsrfToken;
 }
 
 async function readErrorDetail(res: Response): Promise<string | null> {
@@ -76,8 +92,40 @@ async function readSuccessBody(res: Response): Promise<unknown> {
   return text ? text : null;
 }
 
+function hasHeader(headers: Record<string, string>, name: string): boolean {
+  const normalizedName = name.toLowerCase();
+  return Object.keys(headers).some((key) => key.toLowerCase() === normalizedName);
+}
+
+function setDefaultHeader(headers: Record<string, string>, name: string, value: string): void {
+  if (!hasHeader(headers, name)) {
+    headers[name] = value;
+  }
+}
+
+function buildRequestHeaders(
+  method: ApiMethod,
+  initHeaders: HeadersInit | undefined,
+  hasJsonBody: boolean,
+): Record<string, string> {
+  const mergedHeaders = {
+    ...toHeaderObject(initHeaders),
+  };
+
+  setDefaultHeader(mergedHeaders, "Accept", "application/json");
+  if (hasJsonBody) {
+    setDefaultHeader(mergedHeaders, "Content-Type", "application/json");
+  }
+
+  if (UNSAFE_METHODS.has(method) && apiCsrfToken && !hasHeader(mergedHeaders, CSRF_HEADER_NAME)) {
+    mergedHeaders[CSRF_HEADER_NAME] = apiCsrfToken;
+  }
+
+  return mergedHeaders;
+}
+
 async function apiRequest<T = unknown>(
-  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+  method: ApiMethod,
   path: string,
   body?: unknown,
   init?: RequestInit,
@@ -86,15 +134,12 @@ async function apiRequest<T = unknown>(
   const url = `${API_PREFIX}${normalizedPath}`;
   const hasJsonBody =
     method !== "GET" && method !== "DELETE" && body !== undefined && !isFormDataBody(body);
-  const mergedHeaders = {
-    ...toHeaderObject(init?.headers),
-    Accept: "application/json",
-    ...(hasJsonBody ? { "Content-Type": "application/json" } : {}),
-  };
+  const mergedHeaders = buildRequestHeaders(method, init?.headers, hasJsonBody);
 
   const res = await fetch(url, {
     ...init,
     method,
+    credentials: "include",
     headers: mergedHeaders,
     body:
       method === "GET" || method === "DELETE"

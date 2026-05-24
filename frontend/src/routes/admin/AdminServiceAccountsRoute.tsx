@@ -196,19 +196,19 @@ function reducer(state: State, action: Action): State {
 }
 
 export default function AdminServiceAccountsRoute() {
-  const { headers } = useAuthHeaders();
+  const { authStatus } = useAuthHeaders();
   const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      if (!headers) {
+      if (authStatus !== "authenticated") {
         dispatch({ type: "LOAD_SUCCESS", accounts: [] });
         return;
       }
       dispatch({ type: "LOAD_START" });
       try {
-        const accounts = await listServiceAccounts(headers);
+        const accounts = await listServiceAccounts();
         if (cancelled) return;
         dispatch({ type: "LOAD_SUCCESS", accounts });
       } catch (err) {
@@ -218,7 +218,7 @@ export default function AdminServiceAccountsRoute() {
     }
     void load();
     return () => { cancelled = true; };
-  }, [headers]);
+  }, [authStatus]);
 
   // Make sure we don't leak token state if component unmounts
   useEffect(() => {
@@ -228,7 +228,7 @@ export default function AdminServiceAccountsRoute() {
   }, []);
 
   async function handleCreate() {
-    if (!headers) return;
+    if (authStatus !== "authenticated") return;
     dispatch({ type: "CREATE_START" });
     try {
       if (!state.create.name.trim()) throw new Error("name is required");
@@ -236,7 +236,7 @@ export default function AdminServiceAccountsRoute() {
         name: state.create.name.trim(),
         description: state.create.description.trim() || null,
         enabled: state.create.enabled,
-      }, headers);
+      });
       dispatch({ type: "CREATE_SUCCESS", created });
     } catch (err) {
       dispatch({ type: "CREATE_ERROR", error: err instanceof Error ? err.message : "Failed to create" });
@@ -244,7 +244,7 @@ export default function AdminServiceAccountsRoute() {
   }
 
   async function handleSaveEdit() {
-    if (!headers || !state.edit) return;
+    if (authStatus !== "authenticated" || !state.edit) return;
     dispatch({ type: "SAVE_EDIT_START" });
     try {
       if (!state.edit.name.trim()) throw new Error("name is required");
@@ -252,7 +252,7 @@ export default function AdminServiceAccountsRoute() {
         name: state.edit.name.trim(),
         description: state.edit.description.trim() || null,
         enabled: state.edit.enabled,
-      }, headers);
+      });
       dispatch({ type: "SAVE_EDIT_SUCCESS", updated });
     } catch (err) {
       dispatch({ type: "SAVE_EDIT_ERROR", error: err instanceof Error ? err.message : "Failed to save" });
@@ -260,7 +260,7 @@ export default function AdminServiceAccountsRoute() {
   }
 
   async function handleCreateToken() {
-    if (!headers || !state.tokenCreate.serviceAccountId) return;
+    if (authStatus !== "authenticated" || !state.tokenCreate.serviceAccountId) return;
     dispatch({ type: "CREATE_TOKEN_START" });
     try {
       if (state.tokenCreate.scopes.length === 0) throw new Error("at least one scope is required");
@@ -271,7 +271,7 @@ export default function AdminServiceAccountsRoute() {
       const res = await createServiceAccountToken(state.tokenCreate.serviceAccountId, {
         scopes: state.tokenCreate.scopes,
         expires_at,
-      }, headers);
+      });
       dispatch({ type: "CREATE_TOKEN_SUCCESS", account: res.service_account, plaintext: res.plaintext_token });
     } catch (err) {
       dispatch({ type: "CREATE_TOKEN_ERROR", error: err instanceof Error ? err.message : "Failed to create token" });
@@ -279,11 +279,11 @@ export default function AdminServiceAccountsRoute() {
   }
 
   async function handleRevokeToken(accountId: string, tokenId: string) {
-    if (!headers) return;
+    if (authStatus !== "authenticated") return;
     if (!confirm("Are you sure you want to revoke this token?")) return;
     dispatch({ type: "REVOKE_TOKEN_START", tokenId });
     try {
-      await revokeServiceAccountToken(tokenId, headers);
+      await revokeServiceAccountToken(tokenId);
       dispatch({ type: "REVOKE_TOKEN_SUCCESS", accountId, tokenId, revokedAt: new Date().toISOString() });
     } catch (err) {
       dispatch({ type: "REVOKE_TOKEN_ERROR", error: err instanceof Error ? err.message : "Failed to revoke token" });
