@@ -49,6 +49,7 @@ def test_iter_text_chunks_splits_text_into_bounded_chunks() -> None:
     text = "abcdefghij"
     chunks = list(_iter_text_chunks(text, 4))
     assert chunks == ["abcd", "efgh", "ij"]
+    assert list(_iter_text_chunks("abc", 0)) == ["a", "b", "c"]
 
 
 def test_observe_running_battle_replays_terminal_state_without_mutating_battle(
@@ -766,6 +767,7 @@ def test_execute_runs_synced_emits_deltas_in_lockstep(
     battle_id = uuid.uuid4()
     run_a_id = uuid.uuid4()
     run_b_id = uuid.uuid4()
+    monkeypatch.setattr(orchestrator_module, "SYNC_DISPLAY_DELTA_CHARS", 2)
 
     prepared_a = PreparedRun(
         battle_id=battle_id,
@@ -796,8 +798,7 @@ def test_execute_runs_synced_emits_deltas_in_lockstep(
         async def stream_chat_completion(self, *, model: str, **kwargs: object):
             _ = kwargs
             if model == "model-a":
-                yield LLMStreamChunk(text_delta="A1")
-                yield LLMStreamChunk(text_delta="A2", finish_reason="stop")
+                yield LLMStreamChunk(text_delta="A1A2", finish_reason="stop")
                 return
 
             # Slow side: ensure the fast side has time to run ahead.
@@ -839,8 +840,113 @@ def test_execute_runs_synced_emits_deltas_in_lockstep(
 
     # Both outputs are persisted from the streamed deltas.
     outputs_by_run = {call["run_id"]: call["output_text"] for call in persisted}
+    raw_outputs_by_run = {call["run_id"]: call["output_text_raw"] for call in persisted}
     assert outputs_by_run[run_a_id] == "A1A2"
     assert outputs_by_run[run_b_id] == "B1B2"
+    assert raw_outputs_by_run[run_a_id] == "A1A2"
+    assert raw_outputs_by_run[run_b_id] == "B1B2"
+
+
+def test_execute_runs_synced_paces_active_display_rounds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = BattleOrchestrator()
+    battle_id = uuid.uuid4()
+    run_a_id = uuid.uuid4()
+    run_b_id = uuid.uuid4()
+    min_interval = 0.01
+    current_time = 100.0
+    real_sleep = asyncio.sleep
+
+    def monotonic() -> float:
+        return current_time
+
+    async def fake_sleep(delay: float) -> None:
+        nonlocal current_time
+        current_time += delay
+        await real_sleep(0)
+
+    monkeypatch.setattr(orchestrator_module, "SYNC_DISPLAY_DELTA_CHARS", 2)
+    monkeypatch.setattr(
+        orchestrator_module,
+        "SYNC_REMAINING_DELTA_MIN_INTERVAL_SECONDS",
+        min_interval,
+    )
+    monkeypatch.setattr(orchestrator_module.time, "monotonic", monotonic)
+    monkeypatch.setattr(orchestrator_module.asyncio, "sleep", fake_sleep)
+
+    prepared_a = PreparedRun(
+        battle_id=battle_id,
+        run_id=run_a_id,
+        side="A",
+        model_id=uuid.uuid4(),
+        base_url="https://gateway.example/v1",
+        model_name="model-a",
+        api_key=None,
+        messages=[{"role": "user", "content": "Translate this"}],
+        params={},
+        request_id="arena-req-sync",
+    )
+    prepared_b = PreparedRun(
+        battle_id=battle_id,
+        run_id=run_b_id,
+        side="B",
+        model_id=uuid.uuid4(),
+        base_url="https://gateway.example/v1",
+        model_name="model-b",
+        api_key=None,
+        messages=[{"role": "user", "content": "Translate this"}],
+        params={},
+        request_id="arena-req-sync",
+    )
+
+    class _StreamingClient:
+        async def stream_chat_completion(self, *, model: str, **kwargs: object):
+            _ = kwargs
+            if model == "model-a":
+                yield LLMStreamChunk(text_delta="A1A2A3", finish_reason="stop")
+                return
+            yield LLMStreamChunk(text_delta="B1B2B3", finish_reason="stop")
+
+    monkeypatch.setattr(orchestrator, "_llm_client", _StreamingClient())
+    monkeypatch.setattr(orchestrator, "_persist_run_result", lambda **_: None)
+
+    emitted: list[tuple[str, dict[str, object], float]] = []
+
+    async def emit(event: str, data: object) -> None:
+        emitted.append((event, cast(dict[str, object], data), current_time))
+
+    results = asyncio.run(
+        orchestrator._execute_runs_synced(
+            prepared_runs=[prepared_a, prepared_b],
+            emit=emit,
+        )
+    )
+
+    assert results == [True, True]
+    deltas = [
+        (cast(str, payload["text_delta"]), emitted_at)
+        for event, payload, emitted_at in emitted
+        if event == "run.delta"
+    ]
+    assert [text_delta for text_delta, _ in deltas] == [
+        "A1",
+        "B1",
+        "A2",
+        "B2",
+        "A3",
+        "B3",
+    ]
+
+    round_times = [deltas[index][1] for index in range(0, len(deltas), 2)]
+    assert [deltas[index][1] for index in range(0, len(deltas), 2)] == [
+        deltas[index + 1][1] for index in range(0, len(deltas), 2)
+    ]
+    round_spacings = [
+        later - earlier for earlier, later in zip(round_times, round_times[1:])
+    ]
+    assert len(round_spacings) == 2
+    assert all(spacing >= min_interval - 1e-9 for spacing in round_spacings)
 
 
 def test_execute_runs_synced_paces_remaining_side_after_peer_finishes(
@@ -853,6 +959,7 @@ def test_execute_runs_synced_paces_remaining_side_after_peer_finishes(
     min_interval = 0.01
     current_time = 100.0
     real_sleep = asyncio.sleep
+    monkeypatch.setattr(orchestrator_module, "SYNC_DISPLAY_DELTA_CHARS", 2)
 
     def monotonic() -> float:
         return current_time
@@ -902,9 +1009,7 @@ def test_execute_runs_synced_paces_remaining_side_after_peer_finishes(
                 yield LLMStreamChunk(text_delta="A1", finish_reason="stop")
                 return
 
-            for text_delta in ["B1", "B2", "B3", "B4"]:
-                yield LLMStreamChunk(text_delta=text_delta)
-            yield LLMStreamChunk(finish_reason="stop")
+            yield LLMStreamChunk(text_delta="B1B2B3B4", finish_reason="stop")
 
     monkeypatch.setattr(orchestrator, "_llm_client", _StreamingClient())
 

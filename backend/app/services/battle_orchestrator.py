@@ -54,6 +54,7 @@ logger = logging.getLogger(__name__)
 EmitFn = Callable[[str, object], Awaitable[None]]
 MAX_REPLAY_DELTA_CHARS = 32_000
 MAX_LIVE_HISTORY_BYTES = 512_000
+SYNC_DISPLAY_DELTA_CHARS = 4
 SYNC_REMAINING_DELTA_MIN_INTERVAL_SECONDS = 0.05
 StreamQueue = asyncio.Queue[bytes | None]
 
@@ -1179,7 +1180,13 @@ class BattleOrchestrator:
                 if not text_delta:
                     continue
                 state.text_parts.append(text_delta)
-                await state.queue.put(_RunStreamItem(kind="delta", text_delta=text_delta))
+                for display_delta in _iter_text_chunks(
+                    text_delta,
+                    SYNC_DISPLAY_DELTA_CHARS,
+                ):
+                    await state.queue.put(
+                        _RunStreamItem(kind="delta", text_delta=display_delta)
+                    )
 
         except httpx.HTTPError as exc:
             state.error_text = f"LLM HTTP error: {exc}"
@@ -1244,6 +1251,14 @@ class BattleOrchestrator:
         done: set[str] = set()
         last_delta_emitted_at: float | None = None
 
+        async def wait_for_display_interval() -> None:
+            if last_delta_emitted_at is None:
+                return
+            elapsed = time.monotonic() - last_delta_emitted_at
+            delay = SYNC_REMAINING_DELTA_MIN_INTERVAL_SECONDS - elapsed
+            if delay > 0:
+                await asyncio.sleep(delay)
+
         async def emit_delta(
             *,
             prepared: PreparedRun,
@@ -1251,11 +1266,8 @@ class BattleOrchestrator:
             enforce_interval: bool,
         ) -> None:
             nonlocal last_delta_emitted_at
-            if enforce_interval and last_delta_emitted_at is not None:
-                elapsed = time.monotonic() - last_delta_emitted_at
-                delay = SYNC_REMAINING_DELTA_MIN_INTERVAL_SECONDS - elapsed
-                if delay > 0:
-                    await asyncio.sleep(delay)
+            if enforce_interval:
+                await wait_for_display_interval()
             await emit(
                 "run.delta",
                 {
@@ -1280,6 +1292,11 @@ class BattleOrchestrator:
                     items.append((side, await state_by_side[side].queue.get()))
 
                 peer_finished = any(item.kind == "done" for _, item in items)
+                emits_active_round = any(
+                    item.kind == "delta" and item.text_delta for _, item in items
+                )
+                if not peer_finished and emits_active_round:
+                    await wait_for_display_interval()
                 for side, item in items:
                     prepared = state_by_side[side].prepared
                     if item.kind == "delta" and item.text_delta:
