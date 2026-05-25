@@ -42,7 +42,13 @@ from app.models.model_registry import Model
 from app.models.rating import ModelRating
 from app.models.task import Task
 from app.models.vote import Vote
-from app.schemas.battles import BattleCreate, BattlePublic, RunPublic
+from app.schemas.battles import (
+    BattleCreate,
+    BattlePublic,
+    BattleRevealPublic,
+    ModelRevealPublic,
+    RunPublic,
+)
 from app.services.battle_orchestrator import BattleOrchestrator, get_battle_orchestrator
 from app.services.sampling import CandidateModel, SamplingPolicy, select_battle_pair
 from app.utils.client_ip import get_client_ip
@@ -122,6 +128,8 @@ def create_battle(
     db.refresh(battle)
     db.refresh(run_a)
     db.refresh(run_b)
+    model_a = db.get(Model, run_a.model_id) if _is_admin_principal(principal) else None
+    model_b = db.get(Model, run_b.model_id) if _is_admin_principal(principal) else None
 
     return _to_battle_public(
         battle=battle,
@@ -131,6 +139,8 @@ def create_battle(
         principal=principal,
         run_a=run_a,
         run_b=run_b,
+        model_a=model_a,
+        model_b=model_b,
     )
 
 
@@ -172,6 +182,13 @@ def get_battle(
         .all()
     )
     run_map = {run.side: run for run in runs}
+    model_a = None
+    model_b = None
+    if _is_admin_principal(principal):
+        run_a = run_map.get("A")
+        run_b = run_map.get("B")
+        model_a = db.get(Model, run_a.model_id) if run_a is not None else None
+        model_b = db.get(Model, run_b.model_id) if run_b is not None else None
 
     has_vote = (
         db.execute(
@@ -188,6 +205,8 @@ def get_battle(
         principal=principal,
         run_a=run_map.get("A"),
         run_b=run_map.get("B"),
+        model_a=model_a,
+        model_b=model_b,
         has_vote=has_vote,
         include_stats=has_vote,
     )
@@ -438,6 +457,33 @@ def _to_run_public(run: Run | None, *, include_stats: bool = False) -> RunPublic
     )
 
 
+def _to_admin_reveal_public(
+    *,
+    principal: Principal,
+    run_a: Run | None,
+    run_b: Run | None,
+    model_a: Model | None = None,
+    model_b: Model | None = None,
+) -> BattleRevealPublic | None:
+    if not _is_admin_principal(principal):
+        return None
+    if run_a is None or run_b is None:
+        return None
+    if model_a is None or model_b is None:
+        return None
+
+    return BattleRevealPublic(
+        A=ModelRevealPublic(
+            model_id=str(run_a.model_id),
+            display_name=model_a.display_name,
+        ),
+        B=ModelRevealPublic(
+            model_id=str(run_b.model_id),
+            display_name=model_b.display_name,
+        ),
+    )
+
+
 def _to_battle_public(
     *,
     battle: Battle,
@@ -447,6 +493,8 @@ def _to_battle_public(
     principal: Principal,
     run_a: Run | None,
     run_b: Run | None,
+    model_a: Model | None = None,
+    model_b: Model | None = None,
     has_vote: bool = False,
     include_stats: bool = False,
 ) -> BattlePublic:
@@ -465,6 +513,13 @@ def _to_battle_public(
         ),
         run_a=_to_run_public(run_a, include_stats=include_stats),
         run_b=_to_run_public(run_b, include_stats=include_stats),
+        admin_reveal=_to_admin_reveal_public(
+            principal=principal,
+            run_a=run_a,
+            run_b=run_b,
+            model_a=model_a,
+            model_b=model_b,
+        ),
     )
 
 

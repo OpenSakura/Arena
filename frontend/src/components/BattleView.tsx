@@ -32,7 +32,6 @@ export function BattleView({ battleId }: { battleId: string }) {
     canVote,
     canRetry,
     voteSubmitted,
-    statusLabel,
     handleVoteSubmit,
     handleRetry,
     handleStartAnotherBattle,
@@ -52,6 +51,8 @@ export function BattleView({ battleId }: { battleId: string }) {
     comment,
     submittingVote,
     reveal,
+    adminRevealData,
+    adminRevealed,
   } = state;
 
 
@@ -102,15 +103,7 @@ export function BattleView({ battleId }: { battleId: string }) {
                 <span className="lang-badge-jp">{jpSourceLang}</span>
               </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground mr-2">
-              <span className={`inline-block h-2 w-2 rounded-full ${
-                status === 'done' ? 'bg-emerald-500' :
-                status === 'error' || status === 'failed' ? 'bg-red-500' :
-                'bg-primary animate-pulse'
-              }`} />
-              <span className="text-xs font-medium">{statusLabel}</span>
-              {resolvedBattleId && <span className="opacity-30 text-xs font-mono">| {resolvedBattleId.substring(0, 8)}</span>}
-            </div>
+            {resolvedBattleId && <span className="mr-2 text-xs font-mono text-muted-foreground/30">{resolvedBattleId.substring(0, 8)}</span>}
           </div>
           <div className="flex-grow p-5">
             <pre className="m-0 whitespace-pre-wrap text-foreground leading-relaxed text-lg font-inherit">
@@ -120,8 +113,28 @@ export function BattleView({ battleId }: { battleId: string }) {
         </section>
 
         {/* Translation panels */}
-        <Panel side="A" title="Model A" text={outA} reveal={reveal?.A} isStreaming={status === "streaming"} langBadge={targetLang} />
-        <Panel side="B" title="Model B" text={outB} reveal={reveal?.B} isStreaming={status === "streaming"} langBadge={targetLang} />
+        <Panel
+          side="A"
+          title="Model A"
+          text={outA}
+          reveal={reveal?.A}
+          adminReveal={adminRevealData?.A}
+          adminRevealed={adminRevealed.A}
+          onAdminReveal={() => dispatch({ type: "ADMIN_REVEAL_SIDE", side: "A" })}
+          isStreaming={status === "streaming"}
+          langBadge={targetLang}
+        />
+        <Panel
+          side="B"
+          title="Model B"
+          text={outB}
+          reveal={reveal?.B}
+          adminReveal={adminRevealData?.B}
+          adminRevealed={adminRevealed.B}
+          onAdminReveal={() => dispatch({ type: "ADMIN_REVEAL_SIDE", side: "B" })}
+          isStreaming={status === "streaming"}
+          langBadge={targetLang}
+        />
       </section>
 
       {/* Voting section */}
@@ -401,6 +414,9 @@ function Panel({
   title,
   text,
   reveal,
+  adminReveal,
+  adminRevealed,
+  onAdminReveal,
   isStreaming = false,
   langBadge = "ZH",
 }: {
@@ -408,6 +424,9 @@ function Panel({
   title: string;
   text: string;
   reveal?: { model_id: string; display_name: string };
+  adminReveal?: { model_id: string; display_name: string };
+  adminRevealed?: boolean;
+  onAdminReveal?: () => void;
   isStreaming?: boolean;
   langBadge?: string;
 }) {
@@ -443,7 +462,26 @@ function Panel({
             </span>
           )}
           {isStreaming && !text && (
-            <span className="text-xs text-muted-foreground/50 animate-pulse">Translating...</span>
+            <span className="thinking-metal text-xs">
+              Thinking...
+            </span>
+          )}
+          {adminReveal && !reveal && (
+            adminRevealed ? (
+              <span className="badge-sakura border-dashed opacity-80">
+                {adminReveal.display_name}
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={onAdminReveal}
+                className="px-1 text-[10px] text-muted-foreground/40 underline-offset-2 hover:text-muted-foreground hover:underline"
+                aria-label={`Reveal ${title} identity`}
+                title={`Reveal ${title} identity`}
+              >
+                Reveal model
+              </button>
+            )
           )}
           {reveal && (
             <motion.span
@@ -461,10 +499,9 @@ function Panel({
           {text || (
             <span className="text-muted-foreground/50 italic text-base flex items-center gap-2">
               {isStreaming ? (
-                <>
-                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
-                  Waiting for output...
-                </>
+                <span className="thinking-metal thinking-metal-lg">
+                  Thinking...
+                </span>
               ) : (
                 "Waiting for output..."
               )}

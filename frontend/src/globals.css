@@ -330,6 +330,40 @@
     animation: text-shimmer 4s linear infinite;
   }
 
+  @keyframes thinking-metal-surface {
+    0% { background-position: 140% 50%; }
+    100% { background-position: -140% 50%; }
+  }
+
+  .thinking-metal {
+    display: inline-flex;
+    align-items: center;
+    width: max-content;
+    background-image: linear-gradient(
+      100deg,
+      hsl(var(--muted-foreground) / 0.46) 0%,
+      hsl(var(--foreground) / 0.82) 24%,
+      hsl(var(--muted-foreground) / 0.55) 38%,
+      hsl(var(--foreground) / 0.98) 50%,
+      hsl(var(--muted-foreground) / 0.52) 62%,
+      hsl(var(--foreground) / 0.78) 100%
+    );
+    background-size: 260% 100%;
+    background-position: 140% 50%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-shadow: 0 0 18px hsl(var(--foreground) / 0.08);
+    animation: thinking-metal-surface 3.2s linear infinite;
+  }
+
+  .thinking-metal-lg {
+    font-size: 1rem;
+    letter-spacing: 0.1em;
+  }
+
   /* Celebration pulse burst (for vote reveal) */
   @keyframes celebration-pulse {
     0% { box-shadow: 0 0 0 0 hsl(var(--primary) / 0.3); }

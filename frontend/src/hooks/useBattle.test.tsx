@@ -98,6 +98,7 @@ function createBattle(overrides: Record<string, unknown> = {}) {
           error_text: null,
         }
       : null,
+    admin_reveal: overrides.admin_reveal ?? undefined,
     ...overrides,
   };
 }
@@ -418,5 +419,32 @@ describe("useBattle", () => {
         "Session expired or authentication failed. Please reload the page.",
       );
     });
+  });
+
+  it("parses admin_reveal from battle payload and manages admin reveal state", async () => {
+    mockedUseArenaAuth.mockReturnValue(createAuthState());
+    const adminRevealData = {
+      A: { model_id: "secret-a", display_name: "Secret A" },
+      B: { model_id: "secret-b", display_name: "Secret B" },
+    };
+    mockedLoadOrCreateBattle.mockResolvedValueOnce(
+      createBattle({
+        id: "battle-admin",
+        admin_reveal: adminRevealData,
+      })
+    );
+
+    const { resultRef } = renderUseBattle({ battleId: "battle-admin" });
+
+    await waitFor(() => {
+      expect(resultRef.current?.state.adminRevealData).toEqual(adminRevealData);
+      expect(resultRef.current?.state.adminRevealed).toEqual({ A: false, B: false });
+    });
+
+    act(() => {
+      resultRef.current?.dispatch({ type: "ADMIN_REVEAL_SIDE", side: "A" });
+    });
+
+    expect(resultRef.current?.state.adminRevealed).toEqual({ A: true, B: false });
   });
 });

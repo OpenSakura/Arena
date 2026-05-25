@@ -668,6 +668,7 @@ def test_get_battle_allows_creator_and_keeps_run_stats_hidden_before_vote() -> N
     assert response.run_a.stats is None
     assert response.run_b is not None
     assert response.run_b.stats is None
+    assert response.admin_reveal is None
 
 
 def test_get_battle_allows_admin_reader() -> None:
@@ -681,10 +682,13 @@ def test_get_battle_allows_admin_reader() -> None:
         status="completed",
         metadata_json={"requester_user_id": str(uuid.uuid4())},
     )
+    model_a = SimpleNamespace(id=uuid.uuid4(), display_name="Model Alpha")
+    model_b = SimpleNamespace(id=uuid.uuid4(), display_name="Model Beta")
     runs = [
         SimpleNamespace(
             id=uuid.uuid4(),
             side="A",
+            model_id=model_a.id,
             output_text="Alpha",
             stats={"request_id": "req-a"},
             error_text=None,
@@ -692,6 +696,7 @@ def test_get_battle_allows_admin_reader() -> None:
         SimpleNamespace(
             id=uuid.uuid4(),
             side="B",
+            model_id=model_b.id,
             output_text="Beta",
             stats={"request_id": "req-b"},
             error_text=None,
@@ -702,6 +707,8 @@ def test_get_battle_allows_admin_reader() -> None:
         get_map={
             (battles.Battle, battle_id): battle,
             (Task, task.id): task,
+            (Model, model_a.id): model_a,
+            (Model, model_b.id): model_b,
         },
     )
 
@@ -733,6 +740,15 @@ def test_get_battle_allows_admin_reader() -> None:
 
     assert response.id == str(battle_id)
     assert response.status == "completed"
+    assert response.run_a is not None
+    assert response.run_a.stats is None
+    assert response.run_b is not None
+    assert response.run_b.stats is None
+    assert response.admin_reveal is not None
+    assert response.admin_reveal.A.model_id == str(model_a.id)
+    assert response.admin_reveal.A.display_name == "Model Alpha"
+    assert response.admin_reveal.B.model_id == str(model_b.id)
+    assert response.admin_reveal.B.display_name == "Model Beta"
 
 
 def test_get_battle_exposes_retry_allowed_for_failed_creator() -> None:
@@ -1151,7 +1167,7 @@ def test_is_battle_creator_returns_false_for_non_creator() -> None:
             "requester_user_id": str(uuid.uuid4()),
         }
     )
-    principal = SimpleNamespace(is_authenticated=True, user_id=str(uuid.uuid4()))
+    principal = _principal(authenticated=True, user_id=str(uuid.uuid4()))
 
     assert not battles._is_battle_creator(
         cast(Battle, battle),
@@ -1209,7 +1225,7 @@ def test_create_battle_records_authenticated_requester_id(
             if isinstance(obj, Battle):
                 obj.id = uuid.uuid4()
 
-    principal = SimpleNamespace(is_authenticated=True, user_id=str(uuid.uuid4()))
+    principal = _principal(authenticated=True, user_id=str(uuid.uuid4()))
     request = _request()
     settings = cast(Settings, _settings())
 
@@ -1225,6 +1241,7 @@ def test_create_battle_records_authenticated_requester_id(
     assert len(battles_added) == 1
     assert battles_added[0].metadata_json["requester_user_id"] == principal.user_id
     assert result.retry_allowed is False
+    assert result.admin_reveal is None
 
 
 @pytest.fixture()

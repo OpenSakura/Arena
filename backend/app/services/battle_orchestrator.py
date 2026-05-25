@@ -54,6 +54,7 @@ logger = logging.getLogger(__name__)
 EmitFn = Callable[[str, object], Awaitable[None]]
 MAX_REPLAY_DELTA_CHARS = 32_000
 MAX_LIVE_HISTORY_BYTES = 512_000
+SYNC_REMAINING_DELTA_MIN_INTERVAL_SECONDS = 0.05
 StreamQueue = asyncio.Queue[bytes | None]
 
 
@@ -1241,6 +1242,30 @@ class BattleOrchestrator:
         state_by_side = {state.prepared.side: state for state in states}
         sides = sorted(state_by_side.keys())
         done: set[str] = set()
+        last_delta_emitted_at: float | None = None
+
+        async def emit_delta(
+            *,
+            prepared: PreparedRun,
+            text_delta: str,
+            enforce_interval: bool,
+        ) -> None:
+            nonlocal last_delta_emitted_at
+            if enforce_interval and last_delta_emitted_at is not None:
+                elapsed = time.monotonic() - last_delta_emitted_at
+                delay = SYNC_REMAINING_DELTA_MIN_INTERVAL_SECONDS - elapsed
+                if delay > 0:
+                    await asyncio.sleep(delay)
+            await emit(
+                "run.delta",
+                {
+                    "battle_id": str(prepared.battle_id),
+                    "run_id": str(prepared.run_id),
+                    "side": prepared.side,
+                    "text_delta": text_delta,
+                },
+            )
+            last_delta_emitted_at = time.monotonic()
 
         while len(done) < len(sides):
             remaining = [side for side in sides if side not in done]
@@ -1254,35 +1279,27 @@ class BattleOrchestrator:
                 for side in remaining:
                     items.append((side, await state_by_side[side].queue.get()))
 
+                peer_finished = any(item.kind == "done" for _, item in items)
                 for side, item in items:
                     prepared = state_by_side[side].prepared
                     if item.kind == "delta" and item.text_delta:
-                        await emit(
-                            "run.delta",
-                            {
-                                "battle_id": str(prepared.battle_id),
-                                "run_id": str(prepared.run_id),
-                                "side": prepared.side,
-                                "text_delta": item.text_delta,
-                            },
+                        await emit_delta(
+                            prepared=prepared,
+                            text_delta=item.text_delta,
+                            enforce_interval=peer_finished,
                         )
                     elif item.kind == "done":
                         done.add(side)
                 continue
 
-            # Single remaining side: stream without synchronization.
             side = remaining[0]
             prepared = state_by_side[side].prepared
             item = await state_by_side[side].queue.get()
             if item.kind == "delta" and item.text_delta:
-                await emit(
-                    "run.delta",
-                    {
-                        "battle_id": str(prepared.battle_id),
-                        "run_id": str(prepared.run_id),
-                        "side": prepared.side,
-                        "text_delta": item.text_delta,
-                    },
+                await emit_delta(
+                    prepared=prepared,
+                    text_delta=item.text_delta,
+                    enforce_interval=True,
                 )
             elif item.kind == "done":
                 done.add(side)

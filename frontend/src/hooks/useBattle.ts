@@ -49,6 +49,7 @@ type BattlePublic = {
   retry_allowed: boolean;
   run_a: RunPublic | null;
   run_b: RunPublic | null;
+  admin_reveal?: RevealData | null;
 };
 
 const redirectedBattleCache = new Map<string, BattlePublic>();
@@ -107,6 +108,8 @@ export type BattleState = {
   submittingVote: boolean;
   voteId: string | null;
   reveal: RevealData | null;
+  adminRevealData: RevealData | null;
+  adminRevealed: { A: boolean; B: boolean };
   retryCount: number;
   retryAllowed: boolean;
 };
@@ -134,6 +137,7 @@ type Action =
   | { type: "VOTE_SUCCESS"; voteId: string }
   | { type: "VOTE_ERROR"; error: string }
   | { type: "REVEAL_SUCCESS"; reveal: RevealData }
+  | { type: "ADMIN_REVEAL_SIDE"; side: Side }
   | { type: "RETRY_ERROR"; error: string; status: Extract<BattleStatus, "failed" | "error"> }
   | { type: "RETRY_BATTLE" };
 
@@ -152,6 +156,8 @@ const INITIAL_STATE: BattleState = {
   submittingVote: false,
   voteId: null,
   reveal: null,
+  adminRevealData: null,
+  adminRevealed: { A: false, B: false },
   retryCount: 0,
   retryAllowed: false,
 };
@@ -186,6 +192,8 @@ function battleReducer(state: BattleState, action: Action): BattleState {
         status: battleStatus,
         errorText: null,
         retryAllowed: action.battle.retry_allowed,
+        adminRevealData: action.battle.admin_reveal ?? null,
+        adminRevealed: { A: false, B: false },
       };
     }
 
@@ -202,6 +210,7 @@ function battleReducer(state: BattleState, action: Action): BattleState {
         outB: action.battle.run_b?.output_text ?? state.outB,
         status: battleStatus,
         retryAllowed: action.battle.retry_allowed,
+        adminRevealData: action.battle.admin_reveal ?? state.adminRevealData,
       };
     }
 
@@ -232,6 +241,7 @@ function battleReducer(state: BattleState, action: Action): BattleState {
         submittingVote: false,
         voteId: null,
         reveal: null,
+        adminRevealed: { A: false, B: false },
         retryAllowed: false,
       };
 
@@ -333,6 +343,15 @@ function battleReducer(state: BattleState, action: Action): BattleState {
     case "REVEAL_SUCCESS":
       return { ...state, reveal: action.reveal };
 
+    case "ADMIN_REVEAL_SIDE":
+      return {
+        ...state,
+        adminRevealed: {
+          ...state.adminRevealed,
+          [action.side]: true,
+        },
+      };
+
     case "RETRY_ERROR":
       return { ...state, status: action.status, errorText: action.error, retryAllowed: state.retryAllowed };
 
@@ -349,6 +368,7 @@ function battleReducer(state: BattleState, action: Action): BattleState {
         submittingVote: false,
         voteId: null,
         reveal: null,
+        adminRevealed: { A: false, B: false },
         retryCount: state.retryCount + 1,
         retryAllowed: false,
       };
@@ -396,7 +416,8 @@ function isBattlePublic(value: unknown): value is BattlePublic {
     typeof value.retry_allowed === "boolean" &&
     BATTLE_PUBLIC_STATUSES.includes(value.status as BattlePublicStatus) &&
     (value.run_a === null || isRunPublic(value.run_a)) &&
-    (value.run_b === null || isRunPublic(value.run_b))
+    (value.run_b === null || isRunPublic(value.run_b)) &&
+    (value.admin_reveal === undefined || value.admin_reveal === null || isRevealData(value.admin_reveal))
   );
 }
 
@@ -865,7 +886,7 @@ export function useBattle(battleId: string) {
     state.status === "done"
       ? "Complete"
       : state.status === "streaming"
-        ? "Translating..."
+        ? "Thinking..."
         : state.status === "reconnecting"
           ? "Reconnecting..."
           : state.status === "failed"

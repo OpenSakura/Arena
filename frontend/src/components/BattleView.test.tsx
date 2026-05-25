@@ -43,6 +43,8 @@ function createUseBattleState(overrides: Record<string, unknown> = {}) {
       submittingVote: false,
       voteId: null,
       reveal: null,
+      adminRevealData: null,
+      adminRevealed: { A: false, B: false },
       ...stateOverrides,
     },
     dispatch: vi.fn(),
@@ -140,6 +142,27 @@ describe("BattleView", () => {
     expect(comparisonPanels).toContain(modelBPanel);
   });
 
+  it("renders metallic Thinking text while model output is pending", async () => {
+    useBattleMock.mockReturnValue(
+      createUseBattleState({
+        state: {
+          status: "streaming",
+          outA: "",
+          outB: "",
+        },
+        statusLabel: "Thinking...",
+      }),
+    );
+
+    renderBattleView();
+
+    const thinkingNodes = await screen.findAllByText("Thinking...");
+    expect(thinkingNodes).toHaveLength(4);
+    expect(thinkingNodes.every((node) => node.classList.contains("thinking-metal"))).toBe(true);
+    expect(screen.getByText("Source Text").closest("section")?.textContent).not.toContain("Thinking...");
+    expect(screen.queryByText("Translating...")).toBeNull();
+  });
+
   it("shows login error when unauthenticated and loading battle fails", async () => {
     useBattleMock.mockReturnValue(
       createUseBattleState({
@@ -220,5 +243,72 @@ describe("BattleView", () => {
       expect(screen.getAllByText("Model A").length).toBeGreaterThanOrEqual(1);
     });
     expect(screen.getAllByText("Model B").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("keeps admin model identities hidden until the reveal control is clicked", async () => {
+    const dispatch = vi.fn();
+    useBattleMock.mockReturnValue(
+      createUseBattleState({
+        state: {
+          status: "done",
+          adminRevealData: {
+            A: { model_id: "secret-a", display_name: "Secret Model A" },
+            B: { model_id: "secret-b", display_name: "Secret Model B" },
+          },
+        },
+        dispatch,
+        statusLabel: "Complete",
+      }),
+    );
+
+    renderBattleView("battle-admin-reveal");
+
+    expect(screen.queryByText("Secret Model A")).toBeNull();
+    expect(screen.queryByText("Secret Model B")).toBeNull();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Reveal Model A identity" }));
+
+    expect(dispatch).toHaveBeenCalledWith({ type: "ADMIN_REVEAL_SIDE", side: "A" });
+  });
+
+  it("renders admin-revealed model names without using the vote reveal section", async () => {
+    useBattleMock.mockReturnValue(
+      createUseBattleState({
+        state: {
+          status: "done",
+          adminRevealData: {
+            A: { model_id: "secret-a", display_name: "Secret Model A" },
+            B: { model_id: "secret-b", display_name: "Secret Model B" },
+          },
+          adminRevealed: { A: true, B: false },
+        },
+        statusLabel: "Complete",
+      }),
+    );
+
+    renderBattleView("battle-admin-revealed");
+
+    expect(screen.getByText("Secret Model A")).toBeDefined();
+    expect(screen.queryByText("Secret Model B")).toBeNull();
+    expect(screen.queryByText("Models Revealed")).toBeNull();
+    expect(screen.getByRole("button", { name: "Reveal Model B identity" })).toBeDefined();
+  });
+
+  it("does not show admin reveal controls when admin reveal data is absent", async () => {
+    useBattleMock.mockReturnValue(
+      createUseBattleState({
+        state: {
+          status: "done",
+          outA: "Alpha",
+          outB: "Beta",
+        },
+        statusLabel: "Complete",
+      }),
+    );
+
+    renderBattleView("battle-no-admin-reveal");
+
+    expect(screen.queryByRole("button", { name: /Reveal Model [AB] identity/ })).toBeNull();
   });
 });

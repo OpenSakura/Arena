@@ -38,6 +38,16 @@ class RunPublic(BaseModel):
     error_text: str | None = None
 
 
+class ModelRevealPublic(BaseModel):
+    model_id: str
+    display_name: str
+
+
+class BattleRevealPublic(BaseModel):
+    A: ModelRevealPublic
+    B: ModelRevealPublic
+
+
 class BattlePublic(BaseModel):
     id: str
     task_id: str
@@ -50,3 +60,4 @@ class BattlePublic(BaseModel):
     # Keep model identities hidden until after vote.
     run_a: RunPublic | None = None
     run_b: RunPublic | None = None
+    admin_reveal: BattleRevealPublic | None = None

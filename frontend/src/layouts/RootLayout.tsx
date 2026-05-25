@@ -8,12 +8,13 @@ export function RootLayout() {
   const location = useLocation();
 
   const isAdmin = location.pathname.startsWith("/admin");
+  const isBattle = location.pathname.startsWith("/battle");
 
   return (
     <Providers>
       <div className="antialiased min-h-screen flex flex-col noise-overlay">
         <Header />
-        <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+        <main className={`flex-1 w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 ${isBattle ? "max-w-none lg:max-w-[80vw]" : "max-w-7xl"}`}>
           {isAdmin ? (
             <Outlet />
           ) : (

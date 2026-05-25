@@ -38,4 +38,25 @@ describe("RootLayout", () => {
     expect(main.className).toContain("max-w-7xl");
     expect(main.className).toContain("mx-auto");
   });
+
+  it("renders wider main wrapper for /battle routes", async () => {
+    const memRouter = createMemoryRouter(
+      [
+        {
+          path: "/",
+          element: <RootLayout />,
+          children: [{ path: "battle/new", element: <div>Battle Content</div> }],
+        },
+      ],
+      { initialEntries: ["/battle/new"], future: routerFutureConfig },
+    );
+
+    render(<RouterProvider router={memRouter} future={{ v7_startTransition: true }} />);
+    
+    const main = screen.getByRole("main");
+    expect(main.className).toContain("max-w-none");
+    expect(main.className).toContain("lg:max-w-[80vw]");
+    expect(main.className).not.toContain("max-w-7xl");
+    expect(main.className).toContain("mx-auto");
+  });
 });
