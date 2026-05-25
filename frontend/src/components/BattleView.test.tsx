@@ -104,6 +104,42 @@ describe("BattleView", () => {
     expect(handleVoteSubmit).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps source text and both model outputs in one responsive comparison grid", async () => {
+    useBattleMock.mockReturnValue(
+      createUseBattleState({
+        state: {
+          outA: "Alpha",
+          outB: "Beta",
+          status: "done",
+        },
+        statusLabel: "Complete",
+      }),
+    );
+
+    renderBattleView();
+
+    await screen.findByText("JP source");
+    await screen.findByText("Alpha");
+    await screen.findByText("Beta");
+
+    const comparisonGrid = screen.getByRole("region", { name: "Battle comparison" });
+    expect(comparisonGrid.classList.contains("grid")).toBe(true);
+    expect(comparisonGrid.classList.contains("grid-cols-1")).toBe(true);
+    expect(comparisonGrid.classList.contains("lg:grid-cols-3")).toBe(true);
+
+    const sourcePanel = screen.getByText("Source Text").closest("section");
+    const modelAPanel = screen.getByText("Model A").closest("section");
+    const modelBPanel = screen.getByText("Model B").closest("section");
+    const comparisonPanels = Array.from(comparisonGrid.children);
+
+    expect(sourcePanel).toBeDefined();
+    expect(modelAPanel).toBeDefined();
+    expect(modelBPanel).toBeDefined();
+    expect(comparisonPanels).toContain(sourcePanel);
+    expect(comparisonPanels).toContain(modelAPanel);
+    expect(comparisonPanels).toContain(modelBPanel);
+  });
+
   it("shows login error when unauthenticated and loading battle fails", async () => {
     useBattleMock.mockReturnValue(
       createUseBattleState({

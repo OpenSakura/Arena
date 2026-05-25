@@ -85,42 +85,44 @@ export function BattleView({ battleId }: { battleId: string }) {
     <div
         className="grid gap-6"
       >
-      {/* Source text panel */}
-      <div className="glass-panel-accent p-6">
-        <div className="flex items-center justify-between gap-3 mb-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-primary/15 bg-primary/[0.08]">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-primary/80" aria-hidden>
-                <path d="M4 7V4h16v3" />
-                <path d="M9 20h6" />
-                <path d="M12 4v16" />
-              </svg>
+      <section aria-label="Battle comparison" className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        {/* Source text panel */}
+        <section className="flex h-full flex-col glass-panel-accent relative overflow-hidden">
+          <div className="flex items-center justify-between border-b border-foreground/[0.06] p-5">
+            <div className="flex items-center gap-3">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-primary/15 bg-primary/[0.08]">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-primary/80" aria-hidden>
+                  <path d="M4 7V4h16v3" />
+                  <path d="M9 20h6" />
+                  <path d="M12 4v16" />
+                </svg>
+              </div>
+              <div className="flex items-center gap-2.5">
+                <h2 className="text-xl font-bold heading-gradient">Source Text</h2>
+                <span className="lang-badge-jp">{jpSourceLang}</span>
+              </div>
             </div>
-            <div className="flex items-center gap-2.5">
-              <h2 className="text-xl font-bold heading-gradient">Source Text</h2>
-              <span className="lang-badge-jp">{jpSourceLang}</span>
+            <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground mr-2">
+              <span className={`inline-block h-2 w-2 rounded-full ${
+                status === 'done' ? 'bg-emerald-500' :
+                status === 'error' || status === 'failed' ? 'bg-red-500' :
+                'bg-primary animate-pulse'
+              }`} />
+              <span className="text-xs font-medium">{statusLabel}</span>
+              {resolvedBattleId && <span className="opacity-30 text-xs font-mono">| {resolvedBattleId.substring(0, 8)}</span>}
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground mr-2">
-            <span className={`inline-block h-2 w-2 rounded-full ${
-              status === 'done' ? 'bg-emerald-500' :
-              status === 'error' || status === 'failed' ? 'bg-red-500' :
-              'bg-primary animate-pulse'
-            }`} />
-            <span className="text-xs font-medium">{statusLabel}</span>
-            {resolvedBattleId && <span className="opacity-30 text-xs font-mono">| {resolvedBattleId.substring(0, 8)}</span>}
+          <div className="flex-grow p-5">
+            <pre className="m-0 whitespace-pre-wrap text-foreground leading-relaxed text-lg font-inherit">
+              {jpSource || <span className="text-muted-foreground shimmer inline-block w-full h-6 rounded" />}
+            </pre>
           </div>
-        </div>
-        <pre className="m-0 whitespace-pre-wrap text-foreground leading-relaxed text-lg font-inherit">
-          {jpSource || <span className="text-muted-foreground shimmer inline-block w-full h-6 rounded" />}
-        </pre>
-      </div>
+        </section>
 
-      {/* Translation panels */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Translation panels */}
         <Panel side="A" title="Model A" text={outA} reveal={reveal?.A} isStreaming={status === "streaming"} langBadge={targetLang} />
         <Panel side="B" title="Model B" text={outB} reveal={reveal?.B} isStreaming={status === "streaming"} langBadge={targetLang} />
-      </div>
+      </section>
 
       {/* Voting section */}
       {(status === "done" || status === "failed" || status === "error") && (
