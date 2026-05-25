@@ -44,6 +44,9 @@ backend/tests/e2e/test.env
 # Third-party cloned repos
 3rdparty/
 
+# Local import workspaces
+/var/arena_import/
+
 # Scratch / debug files
 /notes.md
 /admin-network.txt

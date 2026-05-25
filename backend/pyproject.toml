@@ -27,6 +27,8 @@ dependencies = [
   "python-multipart>=0.0.9",
   "cryptography>=42.0",
   "pyjwt[crypto]>=2.8",
+  "datasets>=4.8.5",
+  "transformers>=5.9.0",
 ]
 
 [dependency-groups]
