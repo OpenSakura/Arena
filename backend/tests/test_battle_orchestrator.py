@@ -615,6 +615,84 @@ def test_execute_run_emits_deltas_and_persists_stats(
     assert completed["latency_ms"] >= 0
 
 
+@pytest.mark.parametrize(
+    ("source_text", "upstream_parts", "expected_output"),
+    [
+        (
+            "JP text",
+            ["\ntranslated", "\n\nbody\n"],
+            "translated\n\nbody\n",
+        ),
+        (
+            "\nJP text",
+            ["translated", "\n\nbody\n"],
+            "\ntranslated\n\nbody\n",
+        ),
+        (
+            "\n\nJP text",
+            ["\ntranslated", "\n\nbody\n"],
+            "\n\ntranslated\n\nbody\n",
+        ),
+    ],
+)
+def test_execute_run_preserves_source_leading_newline_count_in_output(
+    monkeypatch: pytest.MonkeyPatch,
+    source_text: str,
+    upstream_parts: list[str],
+    expected_output: str,
+) -> None:
+    orchestrator = BattleOrchestrator()
+    prepared = PreparedRun(
+        battle_id=uuid.uuid4(),
+        run_id=uuid.uuid4(),
+        side="A",
+        model_id=uuid.uuid4(),
+        base_url="https://gateway.example/v1",
+        model_name="gpt-test",
+        api_key="secret",
+        messages=[{"role": "user", "content": source_text}],
+        params={},
+        request_id="arena-req-newlines",
+        source_leading_newline_count=len(source_text) - len(source_text.lstrip("\n")),
+    )
+
+    class _StreamingClient:
+        async def stream_chat_completion(self, **kwargs: object):
+            _ = kwargs
+            for part in upstream_parts:
+                yield LLMStreamChunk(text_delta=part)
+            yield LLMStreamChunk(finish_reason="stop")
+
+    persist_calls: list[dict[str, object]] = []
+
+    def fake_persist(**kwargs: object) -> None:
+        persist_calls.append(dict(kwargs))
+
+    emitted: list[tuple[str, object]] = []
+
+    async def emit(event: str, data: object) -> None:
+        emitted.append((event, data))
+
+    orchestrator._llm_client = _StreamingClient()  # type: ignore[assignment]
+    monkeypatch.setattr(orchestrator, "_persist_run_result", fake_persist)
+
+    ok = asyncio.run(orchestrator._execute_run(prepared=prepared, emit=emit))
+
+    assert ok is True
+    persisted = persist_calls[0]
+    upstream_output = "".join(upstream_parts)
+    assert persisted["output_text"] == expected_output
+    assert persisted["output_text_raw"] == upstream_output
+
+    deltas = [
+        cast(dict, payload)["text_delta"]
+        for event, payload in emitted
+        if event == "run.delta"
+    ]
+    assert "".join(deltas) == expected_output
+    assert expected_output.lstrip("\n") == upstream_output.lstrip("\n")
+
+
 def test_execute_run_emits_error_and_returns_false_on_http_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -763,6 +841,112 @@ def test_execute_runs_synced_emits_deltas_in_lockstep(
     outputs_by_run = {call["run_id"]: call["output_text"] for call in persisted}
     assert outputs_by_run[run_a_id] == "A1A2"
     assert outputs_by_run[run_b_id] == "B1B2"
+
+
+def test_execute_runs_synced_preserves_source_leading_newline_count_in_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = BattleOrchestrator()
+    battle_id = uuid.uuid4()
+    run_a_id = uuid.uuid4()
+    run_b_id = uuid.uuid4()
+    source_a = "JP text"
+    source_b = "\n\nJP text"
+
+    prepared_a = PreparedRun(
+        battle_id=battle_id,
+        run_id=run_a_id,
+        side="A",
+        model_id=uuid.uuid4(),
+        base_url="https://gateway.example/v1",
+        model_name="model-a",
+        api_key=None,
+        messages=[{"role": "user", "content": source_a}],
+        params={},
+        request_id="arena-req-sync-newlines",
+        source_leading_newline_count=len(source_a) - len(source_a.lstrip("\n")),
+    )
+    prepared_b = PreparedRun(
+        battle_id=battle_id,
+        run_id=run_b_id,
+        side="B",
+        model_id=uuid.uuid4(),
+        base_url="https://gateway.example/v1",
+        model_name="model-b",
+        api_key=None,
+        messages=[{"role": "user", "content": source_b}],
+        params={},
+        request_id="arena-req-sync-newlines",
+        source_leading_newline_count=len(source_b) - len(source_b.lstrip("\n")),
+    )
+
+    upstream_by_model = {
+        "model-a": ["\nA", "\n\nbody\n"],
+        "model-b": ["\nB", "\n\nbody\n"],
+    }
+
+    class _StreamingClient:
+        async def stream_chat_completion(self, *, model: str, **kwargs: object):
+            _ = kwargs
+            for part in upstream_by_model[model]:
+                yield LLMStreamChunk(text_delta=part)
+            yield LLMStreamChunk(finish_reason="stop")
+
+    orchestrator._llm_client = _StreamingClient()  # type: ignore[assignment]
+
+    persisted: list[dict[str, object]] = []
+
+    def fake_persist(**kwargs: object) -> None:
+        persisted.append(dict(kwargs))
+
+    monkeypatch.setattr(orchestrator, "_persist_run_result", fake_persist)
+
+    emitted: list[tuple[str, object]] = []
+
+    async def emit(event: str, data: object) -> None:
+        emitted.append((event, data))
+
+    results = asyncio.run(
+        orchestrator._execute_runs_synced(
+            prepared_runs=[prepared_a, prepared_b],
+            emit=emit,
+        )
+    )
+
+    assert results == [True, True]
+
+    expected_by_run = {
+        run_a_id: "A\n\nbody\n",
+        run_b_id: "\n\nB\n\nbody\n",
+    }
+    upstream_by_run = {
+        run_a_id: "".join(upstream_by_model["model-a"]),
+        run_b_id: "".join(upstream_by_model["model-b"]),
+    }
+    persisted_by_run = {call["run_id"]: call for call in persisted}
+
+    assert persisted_by_run[run_a_id]["output_text"] == expected_by_run[run_a_id]
+    assert persisted_by_run[run_b_id]["output_text"] == expected_by_run[run_b_id]
+    assert persisted_by_run[run_a_id]["output_text_raw"] == upstream_by_run[run_a_id]
+    assert persisted_by_run[run_b_id]["output_text_raw"] == upstream_by_run[run_b_id]
+
+    deltas_by_run = {run_a_id: [], run_b_id: []}
+    for event, payload in emitted:
+        if event != "run.delta":
+            continue
+        delta = cast(dict, payload)
+        deltas_by_run[uuid.UUID(cast(str, delta["run_id"]))].append(
+            cast(str, delta["text_delta"])
+        )
+
+    assert "".join(deltas_by_run[run_a_id]) == expected_by_run[run_a_id]
+    assert "".join(deltas_by_run[run_b_id]) == expected_by_run[run_b_id]
+    assert expected_by_run[run_a_id].lstrip("\n") == upstream_by_run[run_a_id].lstrip(
+        "\n"
+    )
+    assert expected_by_run[run_b_id].lstrip("\n") == upstream_by_run[run_b_id].lstrip(
+        "\n"
+    )
 
 
 def test_build_system_prompt_uses_default_prompt() -> None:

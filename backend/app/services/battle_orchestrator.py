@@ -121,6 +121,27 @@ def _iter_text_chunks(text: str, chunk_chars: int) -> Iterator[str]:
         yield text[start : start + chunk_chars]
 
 
+def _leading_newline_count(text: str) -> int:
+    return len(text) - len(text.lstrip("\n"))
+
+
+@dataclass(slots=True)
+class _LeadingNewlineNormalizer:
+    target_count: int
+    is_initial_run: bool = True
+
+    def normalize_delta(self, text_delta: str) -> str:
+        if not self.is_initial_run:
+            return text_delta
+
+        newline_count = _leading_newline_count(text_delta)
+        if newline_count == len(text_delta):
+            return ""
+
+        self.is_initial_run = False
+        return "\n" * self.target_count + text_delta[newline_count:]
+
+
 @dataclass(slots=True)
 class PreparedRun:
     battle_id: uuid.UUID
@@ -135,6 +156,7 @@ class PreparedRun:
     request_id: str | None
     request_json: dict[str, object] | None = None
     prompt_rendered: dict[str, object] | None = None
+    source_leading_newline_count: int = 0
 
 
 @dataclass(slots=True)
@@ -790,6 +812,7 @@ class BattleOrchestrator:
                 db=db,
                 battle=battle,
             )
+            source_leading_newline_count = _leading_newline_count(source_text)
 
             prepared: list[PreparedRun] = []
             for run in runs:
@@ -850,6 +873,7 @@ class BattleOrchestrator:
                         request_id=request_id,
                         request_json=request_json,
                         prompt_rendered=prompt_rendered,
+                        source_leading_newline_count=source_leading_newline_count,
                     )
                 )
 
@@ -938,6 +962,9 @@ class BattleOrchestrator:
         request_id: str | None = None
         finish_reason: str | None = None
         error_text: str | None = None
+        newline_normalizer = _LeadingNewlineNormalizer(
+            target_count=prepared.source_leading_newline_count
+        )
 
         try:
             upstream_headers: dict[str, str] = {
@@ -963,14 +990,17 @@ class BattleOrchestrator:
                     finish_reason = chunk.finish_reason
                 if chunk.text_delta:
                     raw_parts.append(chunk.text_delta)
-                    text_parts.append(chunk.text_delta)
+                    text_delta = newline_normalizer.normalize_delta(chunk.text_delta)
+                    if not text_delta:
+                        continue
+                    text_parts.append(text_delta)
                     await emit(
                         "run.delta",
                         {
                             "battle_id": str(prepared.battle_id),
                             "run_id": str(prepared.run_id),
                             "side": prepared.side,
-                            "text_delta": chunk.text_delta,
+                            "text_delta": text_delta,
                         },
                     )
         except httpx.HTTPError as exc:
@@ -1114,6 +1144,9 @@ class BattleOrchestrator:
 
         prepared = state.prepared
         started = time.monotonic()
+        newline_normalizer = _LeadingNewlineNormalizer(
+            target_count=prepared.source_leading_newline_count
+        )
 
         try:
             upstream_headers: dict[str, str] = {
@@ -1141,10 +1174,11 @@ class BattleOrchestrator:
                 if not chunk.text_delta:
                     continue
                 state.raw_parts.append(chunk.text_delta)
-                state.text_parts.append(chunk.text_delta)
-                await state.queue.put(
-                    _RunStreamItem(kind="delta", text_delta=chunk.text_delta)
-                )
+                text_delta = newline_normalizer.normalize_delta(chunk.text_delta)
+                if not text_delta:
+                    continue
+                state.text_parts.append(text_delta)
+                await state.queue.put(_RunStreamItem(kind="delta", text_delta=text_delta))
 
         except httpx.HTTPError as exc:
             state.error_text = f"LLM HTTP error: {exc}"
