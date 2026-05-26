@@ -206,6 +206,27 @@ describe("streamSSE", () => {
     ).rejects.toBe(abortError);
   });
 
+  it("aborts pending retry backoff without reconnecting", async () => {
+    const controller = new AbortController();
+    const abortError = new DOMException("Aborted", "AbortError");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new SSEHttpError(503));
+    const iterator = streamSSE("http://example.test/sse", {
+      maxRetries: 3,
+      signal: controller.signal,
+    });
+
+    await expect(iterator.next()).resolves.toEqual({
+      done: false,
+      value: { event: "sse.retry", data: { attempt: 1 } },
+    });
+
+    const reconnectAttempt = iterator.next();
+    controller.abort(abortError);
+
+    await expect(reconnectAttempt).rejects.toBe(abortError);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("drops oversized events and keeps parsing later events", async () => {
     const oversized = "x".repeat(140_000);
     vi.spyOn(globalThis, "fetch").mockResolvedValue(

@@ -34,11 +34,28 @@ from app.utils.process_guard import (
     release_battle_process_lock,
 )
 from app.utils.redis import close_all_redis_clients
+from app.utils.llm_queue import stop_llm_request_queue
+from app.utils.tracing import init_tracing, shutdown_tracing
 
 
 logger = logging.getLogger(__name__)
+startup_logger = logging.getLogger("app.startup")
 
 _NON_PRODUCTION_ENVS = {"dev", "development", "test", "testing", "local"}
+_ROLLOUT_LOG_DEFAULTS: dict[str, object] = {
+    "llm_client_mode": "legacy",
+    "max_concurrent_llm_requests": 40,
+    "max_llm_requests": 120,
+    "llm_queue_wait_timeout_seconds": 30.0,
+    "llm_queue_shutdown_timeout_seconds": 10.0,
+    "openai_connect_timeout_seconds": 10.0,
+    "openai_model_timeout_seconds": 120.0,
+    "otel_service_name": "opensakura-arena-backend",
+}
+
+
+def _rollout_log_value(settings: Settings, name: str) -> object:
+    return getattr(settings, name, _ROLLOUT_LOG_DEFAULTS[name])
 
 
 def _emit_startup_warnings(settings: Settings) -> None:
@@ -61,6 +78,30 @@ def _emit_startup_warnings(settings: Settings) -> None:
         )
 
 
+def _emit_startup_rollout_settings(settings: Settings, *, otlp_enabled: bool) -> None:
+    startup_logger.info(
+        "Startup rollout settings: "
+        "llm_client_mode=%s "
+        "max_concurrent_llm_requests=%s "
+        "max_llm_requests=%s "
+        "llm_queue_wait_timeout_seconds=%s "
+        "llm_queue_shutdown_timeout_seconds=%s "
+        "openai_connect_timeout_seconds=%s "
+        "openai_model_timeout_seconds=%s "
+        "otlp_enabled=%s "
+        "otel_service_name=%s",
+        _rollout_log_value(settings, "llm_client_mode"),
+        _rollout_log_value(settings, "max_concurrent_llm_requests"),
+        _rollout_log_value(settings, "max_llm_requests"),
+        _rollout_log_value(settings, "llm_queue_wait_timeout_seconds"),
+        _rollout_log_value(settings, "llm_queue_shutdown_timeout_seconds"),
+        _rollout_log_value(settings, "openai_connect_timeout_seconds"),
+        _rollout_log_value(settings, "openai_model_timeout_seconds"),
+        otlp_enabled,
+        _rollout_log_value(settings, "otel_service_name"),
+    )
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(settings)
@@ -72,6 +113,15 @@ def create_app() -> FastAPI:
         _emit_startup_warnings(settings)
         await asyncio.to_thread(bootstrap_schema)
         await asyncio.to_thread(acquire_battle_process_lock)
+        otlp_enabled = False
+        try:
+            otlp_enabled = init_tracing(settings=settings)
+        except Exception as exc:
+            logger.warning(
+                "Tracing initialization failed; continuing without tracing",
+                extra={"error_type": type(exc).__name__},
+            )
+        _emit_startup_rollout_settings(settings, otlp_enabled=otlp_enabled)
 
         stop_event = asyncio.Event()
         refresh_task: asyncio.Task[None] | None = None
@@ -101,6 +151,21 @@ def create_app() -> FastAPI:
                 with suppress(asyncio.CancelledError):
                     await refresh_task
 
+            try:
+                llm_shutdown_timeout = getattr(
+                    settings,
+                    "llm_queue_shutdown_timeout_seconds",
+                    None,
+                )
+                await stop_llm_request_queue(timeout_seconds=llm_shutdown_timeout)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "LLM request queue shutdown failed",
+                    extra={"timeout_layer": "llm_queue_shutdown"},
+                )
+
             # Close long-lived HTTP clients to release pooled connections.
             with suppress(Exception):
                 oidc = get_oidc_confidential_client()
@@ -121,6 +186,14 @@ def create_app() -> FastAPI:
 
             with suppress(Exception):
                 await asyncio.to_thread(release_battle_process_lock)
+
+            try:
+                shutdown_tracing()
+            except Exception as exc:
+                logger.warning(
+                    "Tracing shutdown failed; continuing",
+                    extra={"error_type": type(exc).__name__},
+                )
 
     app = FastAPI(
         title=settings.app_name,

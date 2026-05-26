@@ -14,8 +14,10 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.api.routes import admin_models
+from app.core.config import Settings
 from app.models.model_registry import Model
 from app.schemas.models import ModelCreate, ModelUpdate
+from app.utils.llm_queue import LLMQueueFullError, LLMQueueWaitTimeoutError
 
 
 class _LookupDB:
@@ -102,6 +104,15 @@ def _model_stub(**overrides: object) -> SimpleNamespace:
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+def _settings(**overrides: object) -> Settings:
+    values: dict[str, object] = {
+        "app_env": "test",
+        "admin_model_test_timeout_seconds": 20.0,
+    }
+    values.update(overrides)
+    return Settings.model_construct(**values)
 
 
 def test_parse_uuid_rejects_invalid_values() -> None:
@@ -225,7 +236,9 @@ def test_test_model_raises_404_when_model_is_missing() -> None:
     db = _LookupDB(None)
 
     with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(admin_models.test_model(str(uuid.uuid4()), db=db))  # type: ignore[arg-type]
+        asyncio.run(
+            admin_models.test_model(str(uuid.uuid4()), db=db, settings=_settings())
+        )
 
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail == "Model not found"
@@ -256,7 +269,9 @@ def test_test_model_returns_error_when_api_key_decryption_fails(
         admin_models, "get_battle_orchestrator", lambda: _FakeOrchestrator()
     )
 
-    response = asyncio.run(admin_models.test_model(str(model.id), db=db))  # type: ignore[arg-type]
+    response = asyncio.run(
+        admin_models.test_model(str(model.id), db=db, settings=_settings())
+    )
 
     assert response["ok"] is False
     assert response["model_id"] == str(model.id)
@@ -296,7 +311,9 @@ def test_test_model_merges_parameters_and_returns_preview(
         admin_models, "get_battle_orchestrator", lambda: _FakeOrchestrator()
     )
 
-    response = asyncio.run(admin_models.test_model(str(model.id), db=db))  # type: ignore[arg-type]
+    response = asyncio.run(
+        admin_models.test_model(str(model.id), db=db, settings=_settings())
+    )
 
     assert response["ok"] is True
     assert response["request_id"] == "req-42"
@@ -308,6 +325,7 @@ def test_test_model_merges_parameters_and_returns_preview(
         "frequency_penalty": 0.5,
         "top_p": 0.9,
     }
+    assert captured["timeout_seconds"] == 20.0
 
 
 def test_test_model_returns_failure_payload_on_client_errors(
@@ -329,7 +347,9 @@ def test_test_model_returns_failure_payload_on_client_errors(
         admin_models, "get_battle_orchestrator", lambda: _FakeOrchestrator()
     )
 
-    response = asyncio.run(admin_models.test_model(str(model.id), db=db))  # type: ignore[arg-type]
+    response = asyncio.run(
+        admin_models.test_model(str(model.id), db=db, settings=_settings())
+    )
 
     assert response == {
         "ok": False,
@@ -337,6 +357,118 @@ def test_test_model_returns_failure_payload_on_client_errors(
         "model_id": str(model.id),
         "has_api_key": False,
     }
+
+
+def test_test_model_timeout_failure_uses_safe_layer_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _model_stub(encrypted_api_key=None)
+    db = _LookupDB(model)
+
+    class _FailingClient:
+        async def chat_completion(self, **_kwargs: object) -> dict[str, object]:
+            exc = TimeoutError("private prompt sk-private completion")
+            exc.timeout_layer = "llm_read"
+            raise exc
+
+    class _FakeOrchestrator:
+        @property
+        def llm_client(self):
+            return _FailingClient()
+
+    monkeypatch.setattr(
+        admin_models, "get_battle_orchestrator", lambda: _FakeOrchestrator()
+    )
+
+    response = asyncio.run(
+        admin_models.test_model(str(model.id), db=db, settings=_settings())
+    )
+
+    assert response == {
+        "ok": False,
+        "note": "Connectivity test failed: TimeoutError: timeout_layer=llm_read",
+        "model_id": str(model.id),
+        "has_api_key": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_note"),
+    [
+        (
+            LLMQueueFullError(capacity=1),
+            "Connectivity test failed: LLM backpressure",
+        ),
+        (
+            LLMQueueWaitTimeoutError(timeout_seconds=0.01),
+            "Connectivity test failed: LLM backpressure: timeout_layer=llm_queue_wait",
+        ),
+    ],
+)
+def test_test_model_queue_backpressure_uses_safe_failure_note(
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    expected_note: str,
+) -> None:
+    model = _model_stub(encrypted_api_key=None)
+    db = _LookupDB(model)
+
+    class _FailingClient:
+        async def chat_completion(self, **_kwargs: object) -> dict[str, object]:
+            raise error
+
+    class _FakeOrchestrator:
+        @property
+        def llm_client(self):
+            return _FailingClient()
+
+    monkeypatch.setattr(
+        admin_models, "get_battle_orchestrator", lambda: _FakeOrchestrator()
+    )
+
+    response = asyncio.run(
+        admin_models.test_model(str(model.id), db=db, settings=_settings())
+    )
+
+    assert response == {
+        "ok": False,
+        "note": expected_note,
+        "model_id": str(model.id),
+        "has_api_key": False,
+    }
+
+
+def test_test_model_timeout_setting_can_be_explicitly_overridden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _model_stub(encrypted_api_key=None)
+    db = _LookupDB(model)
+    captured: dict[str, object] = {}
+
+    class _FakeClient:
+        async def chat_completion(self, **kwargs: object) -> dict[str, object]:
+            captured.update(kwargs)
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    class _FakeOrchestrator:
+        @property
+        def llm_client(self):
+            return _FakeClient()
+
+    monkeypatch.setattr(
+        admin_models, "get_battle_orchestrator", lambda: _FakeOrchestrator()
+    )
+
+    response = asyncio.run(
+        admin_models.test_model(
+            str(model.id),
+            db=db,
+            settings=_settings(admin_model_test_timeout_seconds=3.5),
+        )
+    )
+
+    assert response["ok"] is True
+    assert captured["timeout_seconds"] == 3.5
 
 
 def test_create_model_encrypts_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -474,7 +606,9 @@ def test_test_model_uses_shared_client(monkeypatch: pytest.MonkeyPatch) -> None:
         admin_models, "get_battle_orchestrator", lambda: _FakeOrchestrator()
     )
 
-    response = asyncio.run(admin_models.test_model(str(model.id), db=db))  # type: ignore[arg-type]
+    response = asyncio.run(
+        admin_models.test_model(str(model.id), db=db, settings=_settings())
+    )
 
     assert response["ok"] is True
     assert shared.call_count == 1

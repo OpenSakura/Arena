@@ -468,6 +468,43 @@ def test_human_battle_stream_route_closes_db_dependencies_before_streaming() -> 
     assert principal_db_dependency.scope == "function"
 
 
+def test_human_battle_stream_pre_execution_queue_full_returns_backpressure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    principal, battle = _creator_principal_and_battle(status="pending")
+    db = _QueueDB([], get_map={(battles.Battle, battle.id): battle})
+
+    class _Queue:
+        def stats(self) -> dict[str, int | bool]:
+            return {
+                "queued": 1,
+                "capacity": 1,
+                "in_flight": 1,
+                "max_concurrent": 1,
+                "rejected": 0,
+                "stopped": False,
+            }
+
+    monkeypatch.setattr(battles, "get_llm_request_queue", lambda: _Queue())
+    monkeypatch.setattr(battles, "_enforce_auth_battle_stream_rate_limit", lambda **_: None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            battles.stream_battle(
+                str(battle.id),
+                request=_request(),
+                db=db,  # type: ignore[arg-type]
+                orchestrator=object(),  # type: ignore[arg-type]
+                principal=principal,
+                settings=cast(Settings, _settings()),
+            )
+        )
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "LLM backpressure, please retry"
+    assert exc_info.value.headers == {"Retry-After": "1"}
+
+
 def test_enforce_daily_vote_cap_allows_when_disabled() -> None:
     """Cap <= 0 means disabled — should not raise."""
     battles._enforce_daily_vote_cap(
@@ -1477,6 +1514,50 @@ def test_bot_create_and_wait_timeout_returns_202_without_partial_outputs(
         .all()
     )
     assert [run.output_text for run in runs] == [None, None]
+
+
+def test_bot_create_and_wait_pre_execution_queue_full_returns_backpressure(
+    bot_battle_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _seed_bot_battle_context(bot_battle_db, suffix="queue-full")
+    _patch_bot_battle_selection(monkeypatch, context)
+    orchestrator = _BotRouteOrchestrator(bot_battle_db, outcome="completed")
+
+    class _Queue:
+        def stats(self) -> dict[str, int | bool]:
+            return {
+                "queued": 1,
+                "capacity": 1,
+                "in_flight": 1,
+                "max_concurrent": 1,
+                "rejected": 0,
+                "stopped": False,
+            }
+
+    monkeypatch.setattr(bot_battles, "get_llm_request_queue", lambda: _Queue())
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            bot_battles.create_and_wait_battle(
+                payload=BotBattleCreateAndWaitRequest(
+                    task_id=str(context.task.id),
+                    timeout_seconds=1,
+                ),
+                request=_request(),
+                response=Response(),
+                idempotency_key="task-7-queue-full",
+                db=bot_battle_db,
+                principal=_bot_battle_principal(context),
+                settings=cast(Settings, _settings()),
+                orchestrator=cast(bot_battles.BattleOrchestrator, orchestrator),
+            )
+        )
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "LLM backpressure, please retry"
+    assert exc_info.value.headers == {"Retry-After": "1"}
+    assert orchestrator.calls == []
 
 
 def test_bot_create_and_wait_timeout_suppresses_concurrent_completed_result(

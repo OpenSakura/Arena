@@ -11,6 +11,7 @@ const PLAYWRIGHT_AUTHENTIK_PORT = 29000;
 const E2E_OIDC_CLIENT_ID = "arena-e2e-client";
 const E2E_OIDC_CLIENT_CREDENTIAL = "arena-e2e-confidential-client-secret";
 const E2E_AUTH_SESSION_HASH_CREDENTIAL = "arena-e2e-auth-session-hash-secret";
+const E2E_MOCK_LLM_CREDENTIAL = "playwright-local-mock-credential";
 
 const REPO_ROOT = path.resolve(process.cwd(), "..");
 const BACKEND_DIR = path.join(REPO_ROOT, "backend");
@@ -39,6 +40,13 @@ const PLAYWRIGHT_LIVE_STACK_PORT_ENV = {
   ARENA_REDIS_HOST_PORT: String(PLAYWRIGHT_REDIS_PORT),
   ARENA_AUTHENTIK_HOST_PORT: String(PLAYWRIGHT_AUTHENTIK_PORT),
 };
+
+const seedMockLlmCredential =
+  `uv run python -c "from app.core.crypto import encrypt_secret; ` +
+  `from app.db.session import get_sessionmaker; from app.models.model_registry import Model; ` +
+  `session = get_sessionmaker()(); token = encrypt_secret('${E2E_MOCK_LLM_CREDENTIAL}'); ` +
+  `[setattr(model, 'encrypted_api_key', token) for model in session.query(Model).all()]; ` +
+  `session.commit(); session.close()"`;
 
 const frontendServer = {
   command: `npx vite --host 0.0.0.0 --strictPort --port ${FRONTEND_PORT}`,
@@ -97,6 +105,7 @@ const liveStackServers = [
       `docker compose -f tests/e2e/docker-compose.yaml -p arena-frontend-e2e up -d --wait && ` +
       `uv run python -m app.db.bootstrap && ` +
       `uv run python tests/e2e/seed_frontend_playwright.py && ` +
+      `${seedMockLlmCredential} && ` +
       `uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port ${BACKEND_PORT} --no-access-log`,
     cwd: BACKEND_DIR,
     url: `${BACKEND_BASE_URL}/readyz`,

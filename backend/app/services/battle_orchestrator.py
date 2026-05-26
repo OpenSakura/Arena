@@ -40,7 +40,9 @@ from app.services.prompting import (
     normalize_optional_prompt_text,
     render_prompt_template,
 )
+from app.utils.llm_queue import LLMQueueFullError, LLMQueueWaitTimeoutError
 from app.utils.sse import sse_event
+from app.utils.tracing import add_span_event, set_span_attributes, traced_span
 
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -121,6 +123,42 @@ def _iter_text_chunks(text: str, chunk_chars: int) -> Iterator[str]:
     chunk_chars = max(int(chunk_chars), 1)
     for start in range(0, len(text), chunk_chars):
         yield text[start : start + chunk_chars]
+
+
+def _llm_queue_error_text(exc: LLMQueueFullError | LLMQueueWaitTimeoutError) -> str:
+    if isinstance(exc, LLMQueueWaitTimeoutError):
+        return "LLM queue backpressure: timeout_layer=llm_queue_wait"
+    return "LLM queue backpressure: queue_full"
+
+
+def _battle_trace_attributes(
+    *,
+    operation: str,
+    battle_id: uuid.UUID,
+    request_id: str | None = None,
+    status: str | None = None,
+) -> dict[str, object]:
+    attributes: dict[str, object] = {
+        "battle.operation": operation,
+        "battle.id": str(battle_id),
+    }
+    if request_id:
+        attributes["request_id"] = request_id
+    if status:
+        attributes["battle.status"] = status
+    return attributes
+
+
+def _run_trace_attributes(*, prepared: PreparedRun) -> dict[str, object]:
+    attributes: dict[str, object] = {
+        "run.id": str(prepared.run_id),
+        "run.side": prepared.side,
+        "battle.id": str(prepared.battle_id),
+        "llm.model": prepared.model_name,
+    }
+    if prepared.request_id:
+        attributes["request_id"] = prepared.request_id
+    return attributes
 
 
 def _leading_newline_count(text: str) -> int:
@@ -402,74 +440,109 @@ class BattleOrchestrator:
                 data=data,
             )
 
-        try:
-            while True:
-                try:
-                    await asyncio.wait_for(
-                        self._execute_owned_battle(
-                            battle_id=battle_id,
-                            emit=emit,
-                            request_id=request_id,
-                        ),
-                        timeout=float(self._battle_running_wait_timeout_seconds),
-                    )
-                    return
-                except asyncio.TimeoutError:
-                    logger.error(
-                        "Battle owner task timed out for battle_id=%s after %ss",
-                        battle_id,
-                        self._battle_running_wait_timeout_seconds,
-                    )
-                    retry_scheduled = await asyncio.to_thread(
-                        lambda: self._schedule_automatic_retry_if_available(
-                            battle_id=battle_id
-                        )
-                    )
-                    if retry_scheduled:
-                        continue
-
-                    with suppress(Exception):
-                        await self._fail_battle_for_timeout(
-                            battle_id=battle_id,
-                            emit=emit,
-                            detail="runtime_timeout",
-                            error_text=(
-                                "Battle runtime exceeded timeout of "
-                                f"{self._battle_running_wait_timeout_seconds}s"
+        with traced_span(
+            "battle.owner",
+            _battle_trace_attributes(
+                operation="owner",
+                battle_id=battle_id,
+                request_id=request_id,
+            ),
+        ):
+            try:
+                while True:
+                    try:
+                        await asyncio.wait_for(
+                            self._execute_owned_battle(
+                                battle_id=battle_id,
+                                emit=emit,
+                                request_id=request_id,
                             ),
+                            timeout=float(self._battle_running_wait_timeout_seconds),
                         )
-                    return
-                except Exception as exc:  # noqa: BLE001
-                    error_text = str(exc)
-                    logger.exception(
-                        "Battle owner task failed for battle_id=%s", battle_id
-                    )
-                    with suppress(Exception):
-                        await asyncio.to_thread(
-                            lambda: self._mark_battle_status(
-                                battle_id=battle_id,
-                                status="failed",
-                            )
-                        )
-                    with suppress(Exception):
-                        await asyncio.to_thread(
-                            lambda: self._persist_battle_run_errors(
-                                battle_id=battle_id,
-                                error_text=error_text,
-                            )
-                        )
-                    with suppress(Exception):
-                        await emit(
-                            "battle.failed",
+                        set_span_attributes({"status": "ok"})
+                        return
+                    except asyncio.TimeoutError:
+                        set_span_attributes(
                             {
-                                "battle_id": str(battle_id),
-                                "detail": "owner_task_failed",
+                                "status": "timeout",
+                                "timeout_layer": "battle_owner",
+                                "timeout_seconds": self._battle_running_wait_timeout_seconds,
+                            }
+                        )
+                        add_span_event(
+                            "battle.timeout",
+                            {
+                                "battle.id": str(battle_id),
+                                "timeout_layer": "battle_owner",
+                                "timeout_seconds": self._battle_running_wait_timeout_seconds,
                             },
                         )
-                    return
-        finally:
-            await self._close_live_battle(battle_id=battle_id)
+                        logger.error(
+                            "Battle owner task timed out",
+                            extra={
+                                "battle_id": str(battle_id),
+                                "timeout_layer": "battle_owner",
+                                "timeout_seconds": self._battle_running_wait_timeout_seconds,
+                            },
+                        )
+                        retry_scheduled = await asyncio.to_thread(
+                            lambda: self._schedule_automatic_retry_if_available(
+                                battle_id=battle_id
+                            )
+                        )
+                        if retry_scheduled:
+                            add_span_event(
+                                "battle.retry_scheduled",
+                                {"battle.id": str(battle_id), "retry.attempt": 1},
+                            )
+                            continue
 
+                        with suppress(Exception):
+                            await self._fail_battle_for_timeout(
+                                battle_id=battle_id,
+                                emit=emit,
+                                detail="runtime_timeout",
+                                error_text=(
+                                    "Battle timeout layer=battle_owner exceeded after "
+                                    f"{self._battle_running_wait_timeout_seconds}s"
+                                ),
+                            )
+                        return
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        set_span_attributes(
+                            {"status": "error", "error.type": type(exc).__name__}
+                        )
+                        error_text = f"battle_owner_failure: {type(exc).__name__}"
+                        logger.exception(
+                            "Battle owner task failed for battle_id=%s", battle_id
+                        )
+                        with suppress(Exception):
+                            await asyncio.to_thread(
+                                lambda: self._mark_battle_status(
+                                    battle_id=battle_id,
+                                    status="failed",
+                                )
+                            )
+                        with suppress(Exception):
+                            await asyncio.to_thread(
+                                lambda: self._persist_battle_run_errors(
+                                    battle_id=battle_id,
+                                    error_text=error_text,
+                                )
+                            )
+                        with suppress(Exception):
+                            await emit(
+                                "battle.failed",
+                                {
+                                    "battle_id": str(battle_id),
+                                    "detail": "owner_task_failed",
+                                },
+                            )
+                        return
+            finally:
+                await self._close_live_battle(battle_id=battle_id)
     async def _fail_battle_for_timeout(
         self,
         *,
@@ -499,6 +572,27 @@ class BattleOrchestrator:
         )
 
     async def _execute_owned_battle(
+        self,
+        *,
+        battle_id: uuid.UUID,
+        emit: EmitFn,
+        request_id: str | None,
+    ) -> None:
+        with traced_span(
+            "battle.execute",
+            _battle_trace_attributes(
+                operation="execute",
+                battle_id=battle_id,
+                request_id=request_id,
+            ),
+        ):
+            await self._execute_owned_battle_inner(
+                battle_id=battle_id,
+                emit=emit,
+                request_id=request_id,
+            )
+
+    async def _execute_owned_battle_inner(
         self,
         *,
         battle_id: uuid.UUID,
@@ -549,6 +643,7 @@ class BattleOrchestrator:
         await asyncio.to_thread(
             lambda: self._mark_battle_status(battle_id=battle_id, status="running")
         )
+        set_span_attributes({"battle.status": "running"})
         await emit("battle.started", {"battle_id": str(battle_id)})
 
         try:
@@ -563,8 +658,11 @@ class BattleOrchestrator:
                 prepared_runs=prepared_runs,
                 emit=emit,
             )
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:  # noqa: BLE001
-            error_text = str(exc)
+            set_span_attributes({"status": "error", "error.type": type(exc).__name__})
+            error_text = f"battle_execution_failure: {type(exc).__name__}"
             logger.exception("Battle execution failed for battle_id=%s", battle_id)
             await asyncio.to_thread(
                 lambda: self._mark_battle_status(battle_id=battle_id, status="failed")
@@ -602,6 +700,7 @@ class BattleOrchestrator:
                     status="completed",
                 )
             )
+            set_span_attributes({"status": "ok", "battle.status": "completed"})
             await emit("battle.completed", {"battle_id": str(battle_id)})
             return
 
@@ -609,6 +708,10 @@ class BattleOrchestrator:
             lambda: self._schedule_automatic_retry_if_available(battle_id=battle_id)
         )
         if retry_scheduled:
+            add_span_event(
+                "battle.retry_scheduled",
+                {"battle.id": str(battle_id), "retry.attempt": 1},
+            )
             await self._execute_owned_battle(
                 battle_id=battle_id,
                 emit=emit,
@@ -625,6 +728,7 @@ class BattleOrchestrator:
         await emit(
             "battle.failed", {"battle_id": str(battle_id), "detail": "run_failed"}
         )
+        set_span_attributes({"status": "error", "battle.status": "failed"})
 
     async def _broadcast_live_battle_event(
         self,
@@ -956,6 +1060,15 @@ class BattleOrchestrator:
         prepared: PreparedRun,
         emit: EmitFn,
     ) -> bool:
+        with traced_span("run.execute", _run_trace_attributes(prepared=prepared)):
+            return await self._execute_run_inner(prepared=prepared, emit=emit)
+
+    async def _execute_run_inner(
+        self,
+        *,
+        prepared: PreparedRun,
+        emit: EmitFn,
+    ) -> bool:
         started = time.monotonic()
 
         text_parts: list[str] = []
@@ -1005,10 +1118,39 @@ class BattleOrchestrator:
                             "text_delta": text_delta,
                         },
                     )
+        except asyncio.CancelledError:
+            raise
         except httpx.HTTPError as exc:
-            error_text = f"LLM HTTP error: {exc}"
+            set_span_attributes({"status": "error", "error.type": type(exc).__name__})
+            timeout_layer = getattr(exc, "timeout_layer", None)
+            if timeout_layer is None:
+                error_text = f"LLM HTTP error: {exc}"
+            else:
+                set_span_attributes({"timeout_layer": timeout_layer})
+                error_text = f"LLM HTTP error: timeout_layer={timeout_layer}"
+        except (LLMQueueFullError, LLMQueueWaitTimeoutError) as exc:
+            status = "timeout" if isinstance(exc, LLMQueueWaitTimeoutError) else "queue_full"
+            set_span_attributes(
+                {
+                    "status": status,
+                    "error.type": type(exc).__name__,
+                    "timeout_layer": getattr(exc, "timeout_layer", "none"),
+                }
+            )
+            add_span_event(
+                "run.queue_backpressure",
+                {
+                    "run.id": str(prepared.run_id),
+                    "battle.id": str(prepared.battle_id),
+                    "status": status,
+                    "error.type": type(exc).__name__,
+                    "timeout_layer": getattr(exc, "timeout_layer", "none"),
+                },
+            )
+            error_text = _llm_queue_error_text(exc)
         except Exception as exc:  # noqa: BLE001
-            error_text = f"LLM stream error: {exc}"
+            set_span_attributes({"status": "error", "error.type": type(exc).__name__})
+            error_text = f"LLM stream error: {type(exc).__name__}"
 
         latency_ms = int((time.monotonic() - started) * 1000)
         output_text = "".join(text_parts) if text_parts else None
@@ -1041,6 +1183,7 @@ class BattleOrchestrator:
         )
 
         if error_text is not None:
+            set_span_attributes({"status": "error", "run.latency_ms": latency_ms})
             await emit(
                 "run.error",
                 {
@@ -1052,6 +1195,7 @@ class BattleOrchestrator:
             )
             return False
 
+        set_span_attributes({"status": "ok", "run.latency_ms": latency_ms})
         await emit(
             "run.completed",
             {
@@ -1062,6 +1206,12 @@ class BattleOrchestrator:
             },
         )
         return True
+
+    @staticmethod
+    def _raise_cancelled_result(results: Sequence[bool | BaseException]) -> None:
+        for result in results:
+            if isinstance(result, asyncio.CancelledError):
+                raise result
 
     async def _execute_runs_synced(
         self,
@@ -1085,13 +1235,15 @@ class BattleOrchestrator:
         sides = {run.side for run in prepared_sorted}
         if len(prepared_runs) != 2 or sides != {"A", "B"}:
             # Fallback: keep behavior for any future non-A/B modes.
-            return await asyncio.gather(
+            results = await asyncio.gather(
                 *[
                     self._execute_run(prepared=prepared, emit=emit)
                     for prepared in prepared_runs
                 ],
                 return_exceptions=True,
             )
+            self._raise_cancelled_result(results)
+            return list(results)
 
         states: list[_RunStreamState] = []
         for prepared in prepared_sorted:
@@ -1130,6 +1282,7 @@ class BattleOrchestrator:
             with suppress(asyncio.CancelledError):
                 await drainer
 
+        self._raise_cancelled_result(results)
         results_by_side = {
             state.prepared.side: result for state, result in zip(states, results)
         }
@@ -1144,6 +1297,16 @@ class BattleOrchestrator:
     ) -> bool:
         """Stream a single run into an internal queue and persist result."""
 
+        prepared = state.prepared
+        with traced_span("run.execute", _run_trace_attributes(prepared=prepared)):
+            return await self._execute_run_buffered_inner(state=state, emit=emit)
+
+    async def _execute_run_buffered_inner(
+        self,
+        *,
+        state: _RunStreamState,
+        emit: EmitFn,
+    ) -> bool:
         prepared = state.prepared
         started = time.monotonic()
         newline_normalizer = _LeadingNewlineNormalizer(
@@ -1188,10 +1351,39 @@ class BattleOrchestrator:
                         _RunStreamItem(kind="delta", text_delta=display_delta)
                     )
 
+        except asyncio.CancelledError:
+            raise
         except httpx.HTTPError as exc:
-            state.error_text = f"LLM HTTP error: {exc}"
+            set_span_attributes({"status": "error", "error.type": type(exc).__name__})
+            timeout_layer = getattr(exc, "timeout_layer", None)
+            if timeout_layer is None:
+                state.error_text = f"LLM HTTP error: {exc}"
+            else:
+                set_span_attributes({"timeout_layer": timeout_layer})
+                state.error_text = f"LLM HTTP error: timeout_layer={timeout_layer}"
+        except (LLMQueueFullError, LLMQueueWaitTimeoutError) as exc:
+            status = "timeout" if isinstance(exc, LLMQueueWaitTimeoutError) else "queue_full"
+            set_span_attributes(
+                {
+                    "status": status,
+                    "error.type": type(exc).__name__,
+                    "timeout_layer": getattr(exc, "timeout_layer", "none"),
+                }
+            )
+            add_span_event(
+                "run.queue_backpressure",
+                {
+                    "run.id": str(prepared.run_id),
+                    "battle.id": str(prepared.battle_id),
+                    "status": status,
+                    "error.type": type(exc).__name__,
+                    "timeout_layer": getattr(exc, "timeout_layer", "none"),
+                },
+            )
+            state.error_text = _llm_queue_error_text(exc)
         except Exception as exc:  # noqa: BLE001
-            state.error_text = f"LLM stream error: {exc}"
+            set_span_attributes({"status": "error", "error.type": type(exc).__name__})
+            state.error_text = f"LLM stream error: {type(exc).__name__}"
         finally:
             await state.queue.put(_RunStreamItem(kind="done"))
 
@@ -1225,6 +1417,7 @@ class BattleOrchestrator:
         )
 
         if state.error_text is not None:
+            set_span_attributes({"status": "error", "run.latency_ms": state.latency_ms})
             await emit(
                 "run.error",
                 {
@@ -1236,6 +1429,7 @@ class BattleOrchestrator:
             )
             return False
 
+        set_span_attributes({"status": "ok", "run.latency_ms": state.latency_ms})
         return True
 
     async def _drain_synced_deltas(

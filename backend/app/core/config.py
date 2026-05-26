@@ -9,7 +9,7 @@ Notes:
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from functools import lru_cache
 import json
 import logging
@@ -34,6 +34,26 @@ class Settings(BaseSettings):
     log_level: str = ""
     log_json: bool = False
     access_log_enabled: bool = False
+
+    # OTLP tracing is a no-op until an endpoint is configured by a later task.
+    otlp_disabled: bool = False
+    otlp_endpoint: str = ""
+    otel_exporter_otlp_traces_endpoint: str = ""
+    otel_exporter_otlp_endpoint: str = ""
+    otlp_auth_header: str = ""
+    otlp_project_name: str = ""
+    otel_service_name: str = "opensakura-arena-backend"
+    otel_resource_attributes: str = ""
+    otlp_exporter_timeout_seconds: float = 30.0
+    otlp_batch_export_timeout_millis: int = 10000
+    openinference_hide_inputs: bool = True
+    openinference_hide_outputs: bool = True
+    openinference_hide_input_messages: bool = True
+    openinference_hide_output_messages: bool = True
+    openinference_hide_input_text: bool = True
+    openinference_hide_output_text: bool = True
+    openinference_hide_llm_invocation_parameters: bool = True
+    otel_instrumentation_genai_capture_message_content: bool = False
 
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/arena"
 
@@ -101,6 +121,16 @@ class Settings(BaseSettings):
     arena_master_key_old: str = ""
 
     service_token_hash_secret: str = ""
+
+    # LLM client rollout and outbound OpenAI-compatible request controls.
+    llm_client_mode: Literal["legacy", "async_openai"] = "legacy"
+    openai_connect_timeout_seconds: float = 10.0
+    openai_model_timeout_seconds: float = 120.0
+    max_concurrent_llm_requests: int = 40
+    max_llm_requests: int = 120
+    llm_queue_wait_timeout_seconds: float = 30.0
+    llm_queue_shutdown_timeout_seconds: float = 10.0
+    admin_model_test_timeout_seconds: float = 20.0
 
     # FastChat-inspired model pairing controls (model_name keyed).
     battle_sampling_weights: dict[str, float] = Field(default_factory=dict)

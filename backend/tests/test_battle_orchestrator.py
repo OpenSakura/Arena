@@ -21,6 +21,7 @@ from app.services.battle_orchestrator import (
 )
 from app.models.battle import Run
 from app.services.llm_client import LLMStreamChunk
+from app.utils.llm_queue import LLMQueueFullError, LLMQueueWaitTimeoutError
 from app.utils.sse import sse_event
 
 
@@ -760,6 +761,117 @@ def test_execute_run_emits_error_and_returns_false_on_http_error(
     }
 
 
+def test_execute_run_queue_full_uses_safe_backpressure_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = BattleOrchestrator()
+    prepared = PreparedRun(
+        battle_id=uuid.uuid4(),
+        run_id=uuid.uuid4(),
+        side="A",
+        model_id=uuid.uuid4(),
+        base_url="https://gateway.example/v1",
+        model_name="gpt-test",
+        api_key=None,
+        messages=[{"role": "user", "content": "Translate this"}],
+        params={},
+        request_id="arena-req-queue-full",
+    )
+
+    class _QueueFullClient:
+        async def stream_chat_completion(self, **kwargs: object):
+            _ = kwargs
+            if False:
+                yield LLMStreamChunk(text_delta="never")
+            raise LLMQueueFullError(capacity=1)
+
+    persist_calls: list[dict[str, object]] = []
+    emitted: list[tuple[str, object]] = []
+
+    orchestrator._llm_client = _QueueFullClient()  # type: ignore[assignment]
+    monkeypatch.setattr(
+        orchestrator,
+        "_persist_run_result",
+        lambda **kwargs: persist_calls.append(dict(kwargs)),
+    )
+
+    async def emit(event: str, data: object) -> None:
+        emitted.append((event, data))
+
+    ok = asyncio.run(orchestrator._execute_run(prepared=prepared, emit=emit))
+
+    assert ok is False
+    assert persist_calls[0]["error_text"] == "LLM queue backpressure: queue_full"
+    assert emitted == [
+        (
+            "run.error",
+            {
+                "battle_id": str(prepared.battle_id),
+                "run_id": str(prepared.run_id),
+                "side": "A",
+                "error": "LLM queue backpressure: queue_full",
+            },
+        )
+    ]
+
+
+def test_execute_run_buffered_queue_wait_timeout_preserves_taxonomy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = BattleOrchestrator()
+    prepared = PreparedRun(
+        battle_id=uuid.uuid4(),
+        run_id=uuid.uuid4(),
+        side="B",
+        model_id=uuid.uuid4(),
+        base_url="https://gateway.example/v1",
+        model_name="gpt-test",
+        api_key=None,
+        messages=[{"role": "user", "content": "Translate this"}],
+        params={},
+        request_id="arena-req-queue-timeout",
+    )
+    state = orchestrator_module._RunStreamState(
+        prepared=prepared,
+        queue=asyncio.Queue(maxsize=1),
+        text_parts=[],
+        raw_parts=[],
+        usage=None,
+        request_id=None,
+        finish_reason=None,
+        error_text=None,
+        latency_ms=None,
+    )
+
+    class _QueueTimeoutClient:
+        async def stream_chat_completion(self, **kwargs: object):
+            _ = kwargs
+            if False:
+                yield LLMStreamChunk(text_delta="never")
+            raise LLMQueueWaitTimeoutError(timeout_seconds=0.01)
+
+    persist_calls: list[dict[str, object]] = []
+    emitted: list[tuple[str, object]] = []
+
+    orchestrator._llm_client = _QueueTimeoutClient()  # type: ignore[assignment]
+    monkeypatch.setattr(
+        orchestrator,
+        "_persist_run_result",
+        lambda **kwargs: persist_calls.append(dict(kwargs)),
+    )
+
+    async def emit(event: str, data: object) -> None:
+        emitted.append((event, data))
+
+    ok = asyncio.run(orchestrator._execute_run_buffered(state=state, emit=emit))
+
+    assert ok is False
+    assert state.error_text == "LLM queue backpressure: timeout_layer=llm_queue_wait"
+    assert persist_calls[0]["error_text"] == state.error_text
+    assert emitted[0][0] == "run.error"
+    assert cast(dict[str, object], emitted[0][1])["error"] == state.error_text
+
+
 def test_execute_runs_synced_emits_deltas_in_lockstep(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1162,6 +1274,230 @@ def test_execute_runs_synced_preserves_source_leading_newline_count_in_output(
     assert expected_by_run[run_b_id].lstrip("\n") == upstream_by_run[run_b_id].lstrip(
         "\n"
     )
+
+
+def test_execute_runs_synced_cancelled_error_propagates_without_side_effects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = BattleOrchestrator()
+    battle_id = uuid.uuid4()
+    prepared_runs = [
+        PreparedRun(
+            battle_id=battle_id,
+            run_id=uuid.uuid4(),
+            side="A",
+            model_id=uuid.uuid4(),
+            base_url="https://gateway.example/v1",
+            model_name="model-a",
+            api_key=None,
+            messages=[{"role": "user", "content": "Translate this"}],
+            params={},
+            request_id="arena-req-cancel",
+        ),
+        PreparedRun(
+            battle_id=battle_id,
+            run_id=uuid.uuid4(),
+            side="B",
+            model_id=uuid.uuid4(),
+            base_url="https://gateway.example/v1",
+            model_name="model-b",
+            api_key=None,
+            messages=[{"role": "user", "content": "Translate this"}],
+            params={},
+            request_id="arena-req-cancel",
+        ),
+    ]
+
+    class _CancellingClient:
+        async def stream_chat_completion(self, **kwargs: object):
+            _ = kwargs
+            if False:
+                yield LLMStreamChunk(text_delta="never")
+            raise asyncio.CancelledError
+
+    persist_calls: list[dict[str, object]] = []
+    mark_calls: list[dict[str, object]] = []
+    emitted: list[tuple[str, object]] = []
+
+    orchestrator._llm_client = _CancellingClient()  # type: ignore[assignment]
+    monkeypatch.setattr(
+        orchestrator,
+        "_persist_run_result",
+        lambda **kwargs: persist_calls.append(dict(kwargs)),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_mark_battle_status",
+        lambda **kwargs: mark_calls.append(dict(kwargs)),
+    )
+
+    async def emit(event: str, data: object) -> None:
+        emitted.append((event, data))
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            orchestrator._execute_runs_synced(
+                prepared_runs=prepared_runs,
+                emit=emit,
+            )
+        )
+
+    assert persist_calls == []
+    assert mark_calls == []
+    assert [event for event, _ in emitted if event in {"run.error", "battle.failed"}] == []
+
+
+def test_execute_runs_synced_fallback_cancelled_error_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = BattleOrchestrator()
+    prepared = PreparedRun(
+        battle_id=uuid.uuid4(),
+        run_id=uuid.uuid4(),
+        side="solo",
+        model_id=uuid.uuid4(),
+        base_url="https://gateway.example/v1",
+        model_name="model-solo",
+        api_key=None,
+        messages=[{"role": "user", "content": "Translate this"}],
+        params={},
+        request_id="arena-req-fallback-cancel",
+    )
+
+    class _CancellingClient:
+        async def stream_chat_completion(self, **kwargs: object):
+            _ = kwargs
+            if False:
+                yield LLMStreamChunk(text_delta="never")
+            raise asyncio.CancelledError
+
+    persist_calls: list[dict[str, object]] = []
+    emitted: list[tuple[str, object]] = []
+
+    orchestrator._llm_client = _CancellingClient()  # type: ignore[assignment]
+    monkeypatch.setattr(
+        orchestrator,
+        "_persist_run_result",
+        lambda **kwargs: persist_calls.append(dict(kwargs)),
+    )
+
+    async def emit(event: str, data: object) -> None:
+        emitted.append((event, data))
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            orchestrator._execute_runs_synced(
+                prepared_runs=[prepared],
+                emit=emit,
+            )
+        )
+
+    assert persist_calls == []
+    assert emitted == []
+
+
+def test_execute_owned_battle_synced_cancelled_error_skips_generic_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = BattleOrchestrator()
+    battle_id = uuid.uuid4()
+    prepared_runs = [
+        PreparedRun(
+            battle_id=battle_id,
+            run_id=uuid.uuid4(),
+            side="A",
+            model_id=uuid.uuid4(),
+            base_url="https://gateway.example/v1",
+            model_name="model-a",
+            api_key=None,
+            messages=[],
+            params={},
+            request_id="arena-req-owned-cancel",
+        ),
+        PreparedRun(
+            battle_id=battle_id,
+            run_id=uuid.uuid4(),
+            side="B",
+            model_id=uuid.uuid4(),
+            base_url="https://gateway.example/v1",
+            model_name="model-b",
+            api_key=None,
+            messages=[],
+            params={},
+            request_id="arena-req-owned-cancel",
+        ),
+    ]
+
+    class _CancellingClient:
+        async def stream_chat_completion(self, **kwargs: object):
+            _ = kwargs
+            if False:
+                yield LLMStreamChunk(text_delta="never")
+            raise asyncio.CancelledError
+
+    mark_calls: list[dict[str, object]] = []
+    persist_run_calls: list[dict[str, object]] = []
+    persist_battle_error_calls: list[dict[str, object]] = []
+    retry_calls: list[uuid.UUID] = []
+    emitted: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "_load_battle_and_runs",
+        lambda _battle_id: (
+            SimpleNamespace(
+                status="pending",
+                id=battle_id,
+                task_id=uuid.uuid4(),
+                metadata_json=None,
+            ),
+            [SimpleNamespace(side="A"), SimpleNamespace(side="B")],
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_prepare_runs_for_execution",
+        lambda **_: prepared_runs,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_mark_battle_status",
+        lambda **kwargs: mark_calls.append(dict(kwargs)),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_persist_run_result",
+        lambda **kwargs: persist_run_calls.append(dict(kwargs)),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_persist_battle_run_errors",
+        lambda **kwargs: persist_battle_error_calls.append(dict(kwargs)),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_schedule_automatic_retry_if_available",
+        lambda *, battle_id: retry_calls.append(battle_id) or False,
+    )
+    orchestrator._llm_client = _CancellingClient()  # type: ignore[assignment]
+
+    async def emit(event: str, data: object) -> None:
+        emitted.append((event, data))
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            orchestrator._execute_owned_battle(
+                battle_id=battle_id,
+                emit=emit,
+                request_id="arena-req-owned-cancel",
+            )
+        )
+
+    assert mark_calls == [{"battle_id": battle_id, "status": "running"}]
+    assert persist_run_calls == []
+    assert persist_battle_error_calls == []
+    assert retry_calls == []
+    assert [event for event, _ in emitted] == ["battle.started"]
 
 
 def test_build_system_prompt_uses_default_prompt() -> None:
@@ -1710,6 +2046,47 @@ def test_run_owned_battle_retries_owner_timeout_once_before_succeeding(
     assert closed_battle_ids == [battle_id]
 
 
+def test_run_owned_battle_cancelled_error_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = BattleOrchestrator()
+    battle_id = uuid.uuid4()
+    retry_attempts: list[uuid.UUID] = []
+    fail_calls: list[dict[str, object]] = []
+
+    async def fake_execute_owned_battle(**_kwargs: object) -> None:
+        raise asyncio.CancelledError
+
+    async def fake_close_live_battle(**_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        orchestrator, "_execute_owned_battle", fake_execute_owned_battle
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_schedule_automatic_retry_if_available",
+        lambda *, battle_id: retry_attempts.append(battle_id) or False,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_fail_battle_for_timeout",
+        lambda **kwargs: fail_calls.append(dict(kwargs)) or None,
+    )
+    monkeypatch.setattr(orchestrator, "_close_live_battle", fake_close_live_battle)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            orchestrator._run_owned_battle(
+                battle_id=battle_id,
+                request_id="req-cancel",
+            )
+        )
+
+    assert retry_attempts == []
+    assert fail_calls == []
+
+
 def test_schedule_automatic_retry_clears_persisted_run_artifacts() -> None:
     orchestrator = BattleOrchestrator()
     battle_id = uuid.uuid4()
@@ -1871,3 +2248,105 @@ def test_retry_reset_battle_gets_fresh_owned_execution(
         assert "battle.completed" in event_text
 
     asyncio.run(exercise())
+
+
+def test_stream_queue_full_after_owner_start_persists_failure_and_closes_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = BattleOrchestrator()
+    battle_id = uuid.uuid4()
+    run_a_id = uuid.uuid4()
+    run_b_id = uuid.uuid4()
+    mark_calls: list[dict[str, object]] = []
+    persist_calls: list[dict[str, object]] = []
+    retry_calls: list[uuid.UUID] = []
+
+    prepared_runs = [
+        PreparedRun(
+            battle_id=battle_id,
+            run_id=run_a_id,
+            side="A",
+            model_id=uuid.uuid4(),
+            base_url="https://gateway.example/v1",
+            model_name="model-a",
+            api_key=None,
+            messages=[],
+            params={},
+            request_id="queue-full-stream",
+        ),
+        PreparedRun(
+            battle_id=battle_id,
+            run_id=run_b_id,
+            side="B",
+            model_id=uuid.uuid4(),
+            base_url="https://gateway.example/v1",
+            model_name="model-b",
+            api_key=None,
+            messages=[],
+            params={},
+            request_id="queue-full-stream",
+        ),
+    ]
+
+    monkeypatch.setattr(
+        orchestrator,
+        "_load_battle_and_runs",
+        lambda _battle_id: (
+            SimpleNamespace(
+                status="pending",
+                id=battle_id,
+                task_id=uuid.uuid4(),
+                metadata_json={"automatic_retry_count": 1},
+            ),
+            [SimpleNamespace(side="A"), SimpleNamespace(side="B")],
+        ),
+    )
+    monkeypatch.setattr(orchestrator, "_prepare_runs_for_execution", lambda **_: prepared_runs)
+    monkeypatch.setattr(
+        orchestrator,
+        "_mark_battle_status",
+        lambda **kwargs: mark_calls.append(dict(kwargs)),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_persist_run_result",
+        lambda **kwargs: persist_calls.append(dict(kwargs)),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_schedule_automatic_retry_if_available",
+        lambda *, battle_id: retry_calls.append(battle_id) or False,
+    )
+
+    class _QueueFullClient:
+        async def stream_chat_completion(self, **kwargs: object):
+            _ = kwargs
+            if False:
+                yield LLMStreamChunk(text_delta="never")
+            raise LLMQueueFullError(capacity=1)
+
+    orchestrator._llm_client = _QueueFullClient()  # type: ignore[assignment]
+
+    async def exercise() -> str:
+        chunks: list[bytes] = []
+        async for payload in orchestrator.stream_battle(battle_id):
+            chunks.append(payload)
+        return b"".join(chunks).decode()
+
+    event_text = asyncio.run(exercise())
+
+    assert "event: battle.started" in event_text
+    assert "event: run.error" in event_text
+    assert "LLM queue backpressure: queue_full" in event_text
+    assert "event: battle.failed" in event_text
+    assert "run_failed" in event_text
+    assert mark_calls == [
+        {"battle_id": battle_id, "status": "running"},
+        {"battle_id": battle_id, "status": "failed"},
+    ]
+    assert retry_calls == [battle_id]
+    assert [call["error_text"] for call in persist_calls] == [
+        "LLM queue backpressure: queue_full",
+        "LLM queue backpressure: queue_full",
+    ]
+    assert orchestrator._live_battles == {}

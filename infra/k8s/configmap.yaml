@@ -24,6 +24,26 @@ data:
   LOG_LEVEL: ""
   LOG_JSON: "true"
   ACCESS_LOG_ENABLED: "false"
+  # OTLP tracing placeholders. Leave endpoints empty to keep tracing disabled.
+  OTLP_DISABLED: "false"
+  OTLP_ENDPOINT: ""
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ""
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""
+  # OTLP_AUTH_HEADER should come from a Secret when needed.
+  OTLP_AUTH_HEADER: ""
+  OTLP_PROJECT_NAME: ""
+  OTEL_SERVICE_NAME: "opensakura-arena-backend"
+  OTEL_RESOURCE_ATTRIBUTES: ""
+  OTLP_EXPORTER_TIMEOUT_SECONDS: "30.0"
+  OTLP_BATCH_EXPORT_TIMEOUT_MILLIS: "10000"
+  OPENINFERENCE_HIDE_INPUTS: "true"
+  OPENINFERENCE_HIDE_OUTPUTS: "true"
+  OPENINFERENCE_HIDE_INPUT_MESSAGES: "true"
+  OPENINFERENCE_HIDE_OUTPUT_MESSAGES: "true"
+  OPENINFERENCE_HIDE_INPUT_TEXT: "true"
+  OPENINFERENCE_HIDE_OUTPUT_TEXT: "true"
+  OPENINFERENCE_HIDE_LLM_INVOCATION_PARAMETERS: "true"
+  OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: "false"
 
   # Database connection should come from a Secret in production.
   DATABASE_URL: "postgresql+psycopg://postgres:postgres@postgres:5432/arena"
@@ -80,6 +100,16 @@ data:
   # Encryption keys should come from Secrets in production.
   ARENA_MASTER_KEY: ""
   ARENA_MASTER_KEY_OLD: ""
+
+  # LLM client rollout and in-process queue controls.
+  LLM_CLIENT_MODE: "legacy"
+  OPENAI_CONNECT_TIMEOUT_SECONDS: "10.0"
+  OPENAI_MODEL_TIMEOUT_SECONDS: "120.0"
+  MAX_CONCURRENT_LLM_REQUESTS: "40"
+  MAX_LLM_REQUESTS: "120"
+  LLM_QUEUE_WAIT_TIMEOUT_SECONDS: "30.0"
+  LLM_QUEUE_SHUTDOWN_TIMEOUT_SECONDS: "10.0"
+  ADMIN_MODEL_TEST_TIMEOUT_SECONDS: "20.0"
 
   # Battle sampling
   BATTLE_SAMPLING_WEIGHTS: "{}"

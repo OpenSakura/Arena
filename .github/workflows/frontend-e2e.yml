@@ -34,9 +34,11 @@ jobs:
           - job_name: core-e2e
             playwright_args: ""
             pw_enable_live_stack: "0"
+            llm_client_mode: "legacy"
           - job_name: live-contract
             playwright_args: "e2e/live-contract.spec.ts"
             pw_enable_live_stack: "1"
+            llm_client_mode: "async_openai"
 
     steps:
       - name: Checkout repository
@@ -77,6 +79,7 @@ jobs:
         env:
           PLAYWRIGHT_ARGS: ${{ matrix.playwright_args }}
           PW_ENABLE_LIVE_STACK: ${{ matrix.pw_enable_live_stack }}
+          LLM_CLIENT_MODE: ${{ matrix.llm_client_mode }}
           PW_BACKEND_PORT: "28000"
           PW_MOCK_LLM_PORT: "18080"
         run: |

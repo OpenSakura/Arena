@@ -5,13 +5,18 @@ Run from ``backend/`` so that ``.env`` (ARENA_MASTER_KEY, DATABASE_URL) is loade
 
     .venv/bin/python scripts/seed_model_registry.py
 
+Set ``OPENSAKURA_LLM_GATEWAY_API_KEY`` in the process environment if new rows
+should include an encrypted gateway token. Leave it unset to seed model metadata
+only and add tokens later through the admin surface.
+
 Models that already exist (matched by ``model_name``) are skipped.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+import os
 import sys
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -22,12 +27,13 @@ from app.db.session import get_sessionmaker
 from app.models.model_registry import Model
 
 
-BASE_URL = "https://llm.opensakura.com/v1"
-API_KEY = "sk-OqaNzvRdsMMeVkAxlVH4r04RmqTXMTDOBMmDzBpZl7rmU0HI"
+BASE_URL_ENV = "OPENSAKURA_LLM_GATEWAY_BASE_URL"
+API_KEY_ENV = "OPENSAKURA_LLM_GATEWAY_API_KEY"
+DEFAULT_BASE_URL = "https://llm.opensakura.com/v1"
 TEMPERATURE = 0.6
 
 
-# Main OpenAI reasoning models — the gateway encodes reasoning effort via a
+# Main OpenAI reasoning models. The gateway encodes reasoning effort via a
 # ``-<effort>`` suffix on the model name.  Mini/nano variants are kept as a
 # single entry per the seeding spec.
 GPT_REASONING_EFFORTS: dict[str, list[str]] = {
@@ -159,8 +165,14 @@ def expand(
     ]
 
 
+def _env_value(name: str) -> str:
+    return os.environ.get(name, "").strip()
+
+
 def main() -> None:
-    encrypted_key = encrypt_secret(API_KEY)
+    api_key = _env_value(API_KEY_ENV)
+    encrypted_key = encrypt_secret(api_key) if api_key else None
+    base_url = _env_value(BASE_URL_ENV) or DEFAULT_BASE_URL
     SessionLocal = get_sessionmaker()
     session = SessionLocal()
     inserted = 0
@@ -179,7 +191,7 @@ def main() -> None:
                         Model(
                             display_name=display_name,
                             model_name=model_name,
-                            base_url=BASE_URL,
+                            base_url=base_url,
                             enabled=True,
                             visibility="public",
                             temperature=TEMPERATURE,
@@ -190,7 +202,7 @@ def main() -> None:
                     inserted += 1
                     continue
 
-                # Only sync ``params`` for reasoning variants — leave any
+                # Only sync ``params`` for reasoning variants. Leave any
                 # admin-set params on other models untouched.
                 if params is not None and existing.params != params:
                     existing.params = params
@@ -205,6 +217,8 @@ def main() -> None:
         f"Inserted {inserted}, updated {updated}, "
         f"skipped {skipped} (already correct or non-reasoning)"
     )
+    if encrypted_key is None:
+        print(f"{API_KEY_ENV} was not set; inserted models have no API key")
 
 
 if __name__ == "__main__":

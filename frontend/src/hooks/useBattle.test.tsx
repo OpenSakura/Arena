@@ -368,6 +368,50 @@ describe("useBattle", () => {
     expect(mockedLoadOrCreateBattle).toHaveBeenNthCalledWith(2, "battle-failed");
   });
 
+  it("treats battle.error as a terminal stream event", async () => {
+    mockedUseArenaAuth.mockReturnValue(createAuthState());
+    mockedLoadOrCreateBattle.mockResolvedValueOnce(
+      createBattle({ id: "battle-error", status: "pending", run_a: null, run_b: null }),
+    );
+    mockedStreamSSE.mockImplementationOnce(async function* () {
+      yield {
+        event: "run.delta",
+        data: { side: "A", text_delta: "Partial output" },
+      };
+      yield { event: "battle.error", data: { detail: "gateway_unavailable" } };
+    });
+
+    const { resultRef } = renderUseBattle({ battleId: "battle-error" });
+
+    await waitFor(() => {
+      expect(resultRef.current?.state.status).toBe("error");
+      expect(resultRef.current?.state.errorText).toBe("gateway_unavailable");
+    });
+
+    expect(resultRef.current?.state.outA).toBe("Partial output");
+  });
+
+  it("marks streams that end without terminal events as errors", async () => {
+    mockedUseArenaAuth.mockReturnValue(createAuthState());
+    mockedLoadOrCreateBattle.mockResolvedValueOnce(
+      createBattle({ id: "battle-early-end", status: "pending", run_a: null, run_b: null }),
+    );
+    mockedStreamSSE.mockImplementationOnce(async function* () {
+      yield {
+        event: "run.delta",
+        data: { side: "B", text_delta: "Partial before disconnect" },
+      };
+    });
+
+    const { resultRef } = renderUseBattle({ battleId: "battle-early-end" });
+
+    await waitFor(() => {
+      expect(resultRef.current?.state.status).toBe("error");
+    });
+
+    expect(resultRef.current?.state.outB).toBe("Partial before disconnect");
+  });
+
   it("attempts reveal immediately after a successful vote submit", async () => {
     mockedUseArenaAuth.mockReturnValue(createAuthState());
     mockedLoadOrCreateBattle.mockResolvedValueOnce(createBattle());

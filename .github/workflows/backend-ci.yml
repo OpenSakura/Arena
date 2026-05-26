@@ -65,3 +65,17 @@ jobs:
           AUTH_CSRF_HEADER_NAME: X-CSRF-Token
         run: uv run pytest
         working-directory: backend
+
+      - name: Assert no Alembic version files
+        run: |
+          uv run python - <<'PY'
+          from pathlib import Path
+
+          versions = Path("alembic/versions")
+          assert not versions.exists() or not list(versions.glob("*.py"))
+          PY
+        working-directory: backend
+
+      - name: Rollback mode regression
+        run: LLM_CLIENT_MODE=legacy OTLP_DISABLED=true uv run pytest tests/test_llm_client.py tests/test_battle_orchestrator.py -k 'stream or retry or timeout'
+        working-directory: backend

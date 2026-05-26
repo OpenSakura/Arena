@@ -124,6 +124,20 @@ def test_bot_create_contract_declares_timeout_and_idempotency_header(
     assert _schema_contains(idempotency_header["schema"], "maxLength", 128)
 
 
+def test_bot_timeout_response_contract_shape_remains_stable() -> None:
+    battle_id = uuid.uuid4()
+    battle = SimpleNamespace(id=battle_id, status="running")
+
+    response = bot_battles._to_bot_timeout_response(battle=battle)  # type: ignore[arg-type]
+
+    assert response.model_dump() == {
+        "battle_id": str(battle_id),
+        "status": "timeout",
+        "status_url": f"/api/v1/bot/battles/{battle_id}",
+        "result": None,
+    }
+
+
 def test_service_account_list_contract_omits_plaintext_token_fields(
     client: TestClient,
 ) -> None:

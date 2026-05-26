@@ -20,11 +20,13 @@ from sqlalchemy.orm import Session
 from app.core.csrf import require_csrf_for_session
 from app.core.crypto import decrypt_secret, encrypt_secret
 from app.core.security import require_admin
+from app.core.config import Settings, get_settings
 from app.db.session import get_db
 from app.models.model_registry import Model
 from app.schemas.models import ModelAdmin, ModelCreate, ModelUpdate
 from app.services.battle_orchestrator import get_battle_orchestrator
 from app.utils.id import parse_uuid_or_422
+from app.utils.llm_queue import LLMQueueFullError, LLMQueueWaitTimeoutError
 
 router = APIRouter(
     prefix="/admin/models",
@@ -175,7 +177,11 @@ def delete_model(model_id: str, db: Session = Depends(get_db)) -> Response:
 
 
 @router.post("/{model_id}/test")
-async def test_model(model_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
+async def test_model(
+    model_id: str,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
     # db.get() is synchronous but acceptable here: admin-only PK lookup (~us).
     model = db.get(Model, parse_uuid_or_422(model_id, "model_id"))
     if model is None:
@@ -231,7 +237,7 @@ async def test_model(model_id: str, db: Session = Depends(get_db)) -> dict[str, 
                 {"role": "user", "content": "ping"},
             ],
             params=params,
-            timeout_seconds=20.0,
+            timeout_seconds=float(settings.admin_model_test_timeout_seconds),
         )
         latency_ms = int((time.monotonic() - started) * 1000)
 
@@ -258,6 +264,28 @@ async def test_model(model_id: str, db: Session = Depends(get_db)) -> dict[str, 
             "latency_ms": latency_ms,
             "request_id": request_id_str,
             "output_preview": preview,
+        }
+    except TimeoutError as exc:
+        timeout_layer = getattr(exc, "timeout_layer", "admin_model_test")
+        return {
+            "ok": False,
+            "note": (
+                "Connectivity test failed: "
+                f"{type(exc).__name__}: timeout_layer={timeout_layer}"
+            ),
+            "model_id": str(model.id),
+            "has_api_key": has_api_key,
+        }
+    except (LLMQueueFullError, LLMQueueWaitTimeoutError) as exc:
+        timeout_layer = getattr(exc, "timeout_layer", None)
+        note = "Connectivity test failed: LLM backpressure"
+        if isinstance(timeout_layer, str):
+            note = f"{note}: timeout_layer={timeout_layer}"
+        return {
+            "ok": False,
+            "note": note,
+            "model_id": str(model.id),
+            "has_api_key": has_api_key,
         }
     except Exception as exc:  # noqa: BLE001
         return {

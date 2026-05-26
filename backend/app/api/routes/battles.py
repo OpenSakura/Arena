@@ -58,6 +58,7 @@ from app.utils.rate_limit import (
     build_auth_rate_limit_key,
 )
 from app.utils.redis import get_rate_limit_redis_client
+from app.utils.llm_queue import get_llm_request_queue
 
 router = APIRouter(prefix="/battles", tags=["battles"])
 
@@ -245,6 +246,9 @@ async def stream_battle(
             principal=principal,
             settings=settings,
         )
+
+    if battle.status == "pending":
+        _raise_llm_backpressure_if_saturated()
 
     # The cached orchestrator owns live execution inside this API process.
     # Additional consumers for the same battle attach as read-only observers.
@@ -696,6 +700,27 @@ def _enforce_auth_battle_stream_rate_limit(
                     settings.auth_battle_stream_rate_limit_window_seconds
                 )
             },
+        )
+
+
+def _raise_llm_backpressure_if_saturated() -> None:
+    stats = get_llm_request_queue().stats()
+    queued = stats.get("queued", 0)
+    capacity = stats.get("capacity", 1)
+    in_flight = stats.get("in_flight", 0)
+    max_concurrent = stats.get("max_concurrent", 1)
+    if (
+        isinstance(queued, int)
+        and isinstance(capacity, int)
+        and isinstance(in_flight, int)
+        and isinstance(max_concurrent, int)
+        and queued >= capacity
+        and in_flight >= max_concurrent
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="LLM backpressure, please retry",
+            headers={"Retry-After": "1"},
         )
 
 

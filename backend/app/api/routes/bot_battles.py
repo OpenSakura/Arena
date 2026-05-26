@@ -25,6 +25,7 @@ from app.schemas.bot import (
 )
 from app.services.battle_orchestrator import BattleOrchestrator, get_battle_orchestrator
 from app.utils.id import parse_uuid_or_422
+from app.utils.llm_queue import get_llm_request_queue
 from app.api.routes import battles as human_battles
 
 
@@ -89,6 +90,9 @@ async def create_and_wait_battle(
             idempotency_key=idempotency_key,
             settings=settings,
         )
+
+    if battle.status == "pending":
+        _raise_llm_backpressure_if_saturated()
 
     request_id = getattr(request.state, "request_id", None)
     wait_status = await orchestrator.execute_battle_and_wait(
@@ -273,6 +277,27 @@ def _load_battle_runs(*, db: Session, battle_id: uuid.UUID) -> list[Run]:
 
 def _status_url(battle_id: uuid.UUID) -> str:
     return f"/api/v1/bot/battles/{battle_id}"
+
+
+def _raise_llm_backpressure_if_saturated() -> None:
+    stats = get_llm_request_queue().stats()
+    queued = stats.get("queued", 0)
+    capacity = stats.get("capacity", 1)
+    in_flight = stats.get("in_flight", 0)
+    max_concurrent = stats.get("max_concurrent", 1)
+    if (
+        isinstance(queued, int)
+        and isinstance(capacity, int)
+        and isinstance(in_flight, int)
+        and isinstance(max_concurrent, int)
+        and queued >= capacity
+        and in_flight >= max_concurrent
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="LLM backpressure, please retry",
+            headers={"Retry-After": "1"},
+        )
 
 
 def _to_bot_run_public(run: Run | None) -> BotRunPublic | None:
