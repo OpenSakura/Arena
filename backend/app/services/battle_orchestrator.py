@@ -17,11 +17,13 @@ import asyncio
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from copy import deepcopy
 from functools import lru_cache
+import json
 import logging
 import time
+from typing import Any
 import uuid
 
 import httpx
@@ -81,6 +83,11 @@ MAX_REPLAY_DELTA_CHARS = 32_000
 MAX_LIVE_HISTORY_BYTES = 512_000
 SYNC_DISPLAY_DELTA_CHARS = 4
 SYNC_REMAINING_DELTA_MIN_INTERVAL_SECONDS = 0.05
+MAX_RESPONSE_FULL_CHUNKS = 512
+MAX_RESPONSE_FULL_CHUNK_BYTES = 64_000
+MAX_RESPONSE_FULL_TOTAL_BYTES = 1_000_000
+MAX_RESPONSE_FULL_DEPTH = 16
+_RESPONSE_FULL_TRUNCATED_VALUE = "[TRUNCATED]"
 StreamQueue = asyncio.Queue[bytes | None]
 
 
@@ -120,6 +127,8 @@ class _RunStreamState:
     finish_reason: str | None
     error_text: str | None
     latency_ms: int | None
+    provider_payloads: list[dict[str, Any]] = field(default_factory=list)
+    truncated_provider_payload_count: int = 0
 
 
 def _task_payload_from_battle_metadata(metadata: object) -> tuple[str, str, str] | None:
@@ -152,6 +161,105 @@ def _llm_queue_error_text(exc: LLMQueueFullError | LLMQueueWaitTimeoutError) -> 
     if isinstance(exc, LLMQueueWaitTimeoutError):
         return "LLM queue backpressure: timeout_layer=llm_queue_wait"
     return "LLM queue backpressure: queue_full"
+
+
+def _provider_stream_response_full(
+    chunks: list[dict[str, Any]],
+    *,
+    truncated_chunk_count: int,
+) -> dict[str, object] | None:
+    if not chunks and truncated_chunk_count == 0:
+        return None
+    return {
+        "provider": "openai_compatible",
+        "response_type": "chat.completion.chunk_stream",
+        "stream": True,
+        "chunks": chunks,
+        "truncated_chunk_count": truncated_chunk_count,
+    }
+
+
+def _append_provider_payload(
+    chunks: list[dict[str, Any]],
+    payload: dict[str, Any],
+    *,
+    truncated_chunk_count: int,
+) -> int:
+    if len(chunks) >= MAX_RESPONSE_FULL_CHUNKS:
+        return truncated_chunk_count + 1
+
+    bounded_payload, was_truncated = _bound_provider_payload(payload)
+    projected_chunks = [*chunks, bounded_payload]
+    if _json_size_bytes(projected_chunks) > MAX_RESPONSE_FULL_TOTAL_BYTES:
+        return truncated_chunk_count + 1
+
+    chunks.append(bounded_payload)
+    return truncated_chunk_count + int(was_truncated)
+
+
+def _bound_provider_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    bounded, was_truncated = _bound_provider_value(payload, depth=0)
+    if not isinstance(bounded, dict):
+        return {"value": _RESPONSE_FULL_TRUNCATED_VALUE}, True
+
+    if _json_size_bytes(bounded) <= MAX_RESPONSE_FULL_CHUNK_BYTES:
+        return bounded, was_truncated
+
+    compact = {
+        "truncated": True,
+        "original_keys": sorted(str(key) for key in bounded.keys()),
+    }
+    return compact, True
+
+
+def _bound_provider_value(value: Any, *, depth: int) -> tuple[Any, bool]:
+    if depth >= MAX_RESPONSE_FULL_DEPTH:
+        return _RESPONSE_FULL_TRUNCATED_VALUE, True
+
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        truncated = False
+        for key, item in value.items():
+            bounded_item, item_truncated = _bound_provider_value(item, depth=depth + 1)
+            result[str(key)] = bounded_item
+            truncated = truncated or item_truncated
+        return result, truncated
+
+    if isinstance(value, list):
+        result = []
+        truncated = False
+        for item in value:
+            bounded_item, item_truncated = _bound_provider_value(item, depth=depth + 1)
+            result.append(bounded_item)
+            truncated = truncated or item_truncated
+        return result, truncated
+
+    if isinstance(value, tuple):
+        return _bound_provider_value(list(value), depth=depth)
+
+    return value, False
+
+
+def _json_size_bytes(value: object) -> int:
+    return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+
+
+def _append_exception_provider_payload(
+    chunks: list[dict[str, Any]],
+    exc: BaseException,
+    *,
+    truncated_chunk_count: int,
+) -> int:
+    provider_payload = getattr(exc, "provider_payload", None)
+    if not isinstance(provider_payload, dict):
+        return truncated_chunk_count
+    if chunks and chunks[-1] == provider_payload:
+        return truncated_chunk_count
+    return _append_provider_payload(
+        chunks,
+        provider_payload,
+        truncated_chunk_count=truncated_chunk_count,
+    )
 
 
 def _battle_trace_attributes(
@@ -1096,6 +1204,8 @@ class BattleOrchestrator:
 
         text_parts: list[str] = []
         raw_parts: list[str] = []
+        provider_payloads: list[dict[str, Any]] = []
+        truncated_provider_payload_count = 0
         usage: dict[str, object] | None = None
         request_id: str | None = None
         finish_reason: str | None = None
@@ -1120,6 +1230,12 @@ class BattleOrchestrator:
                 params=prepared.params,
                 extra_headers=upstream_headers,
             ):
+                if chunk.provider_payload is not None:
+                    truncated_provider_payload_count = _append_provider_payload(
+                        provider_payloads,
+                        chunk.provider_payload,
+                        truncated_chunk_count=truncated_provider_payload_count,
+                    )
                 if chunk.request_id is not None and request_id is None:
                     request_id = chunk.request_id
                 if chunk.usage is not None:
@@ -1144,6 +1260,11 @@ class BattleOrchestrator:
         except asyncio.CancelledError:
             raise
         except httpx.HTTPError as exc:
+            truncated_provider_payload_count = _append_exception_provider_payload(
+                provider_payloads,
+                exc,
+                truncated_chunk_count=truncated_provider_payload_count,
+            )
             set_span_attributes({"status": "error", "error.type": type(exc).__name__})
             timeout_layer = getattr(exc, "timeout_layer", None)
             if timeout_layer is None:
@@ -1152,6 +1273,11 @@ class BattleOrchestrator:
                 set_span_attributes({"timeout_layer": timeout_layer})
                 error_text = f"LLM HTTP error: timeout_layer={timeout_layer}"
         except (LLMQueueFullError, LLMQueueWaitTimeoutError) as exc:
+            truncated_provider_payload_count = _append_exception_provider_payload(
+                provider_payloads,
+                exc,
+                truncated_chunk_count=truncated_provider_payload_count,
+            )
             status = "timeout" if isinstance(exc, LLMQueueWaitTimeoutError) else "queue_full"
             set_span_attributes(
                 {
@@ -1172,12 +1298,21 @@ class BattleOrchestrator:
             )
             error_text = _llm_queue_error_text(exc)
         except Exception as exc:  # noqa: BLE001
+            truncated_provider_payload_count = _append_exception_provider_payload(
+                provider_payloads,
+                exc,
+                truncated_chunk_count=truncated_provider_payload_count,
+            )
             set_span_attributes({"status": "error", "error.type": type(exc).__name__})
             error_text = f"LLM stream error: {type(exc).__name__}"
 
         latency_ms = int((time.monotonic() - started) * 1000)
         output_text = "".join(text_parts) if text_parts else None
         output_text_raw = "".join(raw_parts) if raw_parts else None
+        response_full = _provider_stream_response_full(
+            provider_payloads,
+            truncated_chunk_count=truncated_provider_payload_count,
+        )
 
         # Treat empty/whitespace-only output as a failure so the battle can't
         # end up `completed` but non-votable.
@@ -1198,6 +1333,7 @@ class BattleOrchestrator:
                 run_id=prepared.run_id,
                 output_text=output_text,
                 output_text_raw=output_text_raw,
+                response_full=response_full,
                 stats=stats,
                 error_text=error_text,
                 request_json=prepared.request_json,
@@ -1276,6 +1412,8 @@ class BattleOrchestrator:
                     queue=asyncio.Queue(maxsize=1),
                     text_parts=[],
                     raw_parts=[],
+                    provider_payloads=[],
+                    truncated_provider_payload_count=0,
                     usage=None,
                     request_id=None,
                     finish_reason=None,
@@ -1352,6 +1490,12 @@ class BattleOrchestrator:
                 params=prepared.params,
                 extra_headers=upstream_headers,
             ):
+                if chunk.provider_payload is not None:
+                    state.truncated_provider_payload_count = _append_provider_payload(
+                        state.provider_payloads,
+                        chunk.provider_payload,
+                        truncated_chunk_count=state.truncated_provider_payload_count,
+                    )
                 if chunk.request_id is not None and state.request_id is None:
                     state.request_id = chunk.request_id
                 if chunk.usage is not None:
@@ -1377,6 +1521,11 @@ class BattleOrchestrator:
         except asyncio.CancelledError:
             raise
         except httpx.HTTPError as exc:
+            state.truncated_provider_payload_count = _append_exception_provider_payload(
+                state.provider_payloads,
+                exc,
+                truncated_chunk_count=state.truncated_provider_payload_count,
+            )
             set_span_attributes({"status": "error", "error.type": type(exc).__name__})
             timeout_layer = getattr(exc, "timeout_layer", None)
             if timeout_layer is None:
@@ -1385,6 +1534,11 @@ class BattleOrchestrator:
                 set_span_attributes({"timeout_layer": timeout_layer})
                 state.error_text = f"LLM HTTP error: timeout_layer={timeout_layer}"
         except (LLMQueueFullError, LLMQueueWaitTimeoutError) as exc:
+            state.truncated_provider_payload_count = _append_exception_provider_payload(
+                state.provider_payloads,
+                exc,
+                truncated_chunk_count=state.truncated_provider_payload_count,
+            )
             status = "timeout" if isinstance(exc, LLMQueueWaitTimeoutError) else "queue_full"
             set_span_attributes(
                 {
@@ -1405,6 +1559,11 @@ class BattleOrchestrator:
             )
             state.error_text = _llm_queue_error_text(exc)
         except Exception as exc:  # noqa: BLE001
+            state.truncated_provider_payload_count = _append_exception_provider_payload(
+                state.provider_payloads,
+                exc,
+                truncated_chunk_count=state.truncated_provider_payload_count,
+            )
             set_span_attributes({"status": "error", "error.type": type(exc).__name__})
             state.error_text = f"LLM stream error: {type(exc).__name__}"
         finally:
@@ -1413,6 +1572,10 @@ class BattleOrchestrator:
         state.latency_ms = int((time.monotonic() - started) * 1000)
         output_text = "".join(state.text_parts) if state.text_parts else None
         output_text_raw = "".join(state.raw_parts) if state.raw_parts else None
+        response_full = _provider_stream_response_full(
+            state.provider_payloads,
+            truncated_chunk_count=state.truncated_provider_payload_count,
+        )
 
         if state.error_text is None and (
             output_text is None or not output_text.strip()
@@ -1432,6 +1595,7 @@ class BattleOrchestrator:
                 run_id=prepared.run_id,
                 output_text=output_text,
                 output_text_raw=output_text_raw,
+                response_full=response_full,
                 stats=stats,
                 error_text=state.error_text,
                 request_json=prepared.request_json,
@@ -1544,6 +1708,7 @@ class BattleOrchestrator:
         run_id: uuid.UUID,
         output_text: str | None,
         output_text_raw: str | None,
+        response_full: dict[str, object] | None,
         stats: dict[str, object],
         error_text: str | None,
         request_json: dict[str, object] | None = None,
@@ -1568,6 +1733,7 @@ class BattleOrchestrator:
 
             run.output_text = output_text
             run.output_text_raw = output_text_raw
+            run.response_full = response_full
             run.stats = stats
             if request_json is not None:
                 run.request_json = request_json
@@ -1607,6 +1773,7 @@ class BattleOrchestrator:
             for run in runs:
                 run.output_text = None
                 run.output_text_raw = None
+                run.response_full = None
                 run.error_text = None
                 run.stats = None
                 run.request_json = None

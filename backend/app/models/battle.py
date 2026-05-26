@@ -112,6 +112,7 @@ class Run(Base):
     # Raw upstream output (kept for audit/export). The UI should render
     # `output_text`; raw output remains available for audit/export consumers.
     output_text_raw: Mapped[str | None] = mapped_column(Text, nullable=True)
+    response_full: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     stats: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 

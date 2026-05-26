@@ -274,9 +274,9 @@ def retry_battle(
     """Reset a failed, unvoted battle to pending so it can be re-executed.
 
     Clears all persisted run artifacts (output, error, stats, request_json,
-    prompt_rendered) and sets battle status back to ``pending``.  The next
-    SSE stream connection will re-execute both runs from scratch under the
-    single-owner execution model.
+    prompt_rendered, and full provider responses) and sets battle status back
+    to ``pending``. The next SSE stream connection will re-execute both runs
+    from scratch under the single-owner execution model.
 
     Allowed for the authenticated battle creator and admins.
     """
@@ -328,6 +328,7 @@ def retry_battle(
     for run in runs:
         run.output_text = None
         run.output_text_raw = None
+        run.response_full = None
         run.error_text = None
         run.stats = None
         run.request_json = None

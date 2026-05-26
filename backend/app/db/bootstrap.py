@@ -23,6 +23,7 @@ def bootstrap_schema() -> None:
                 {"lock_key": _SCHEMA_BOOTSTRAP_LOCK_KEY},
             )
             _upgrade_legacy_model_registry_schema(connection)
+            _ensure_runs_response_full_column(connection)
             Base.metadata.create_all(bind=connection, checkfirst=True)
         return
 
@@ -44,6 +45,14 @@ def _upgrade_legacy_model_registry_schema(connection: Connection) -> None:
 
     if _postgres_column_exists(connection, "models", "provider_type"):
         connection.execute(text("ALTER TABLE models DROP COLUMN provider_type"))
+
+
+def _ensure_runs_response_full_column(connection: Connection) -> None:
+    if not _postgres_table_exists(connection, "runs"):
+        return
+    if _postgres_column_exists(connection, "runs", "response_full"):
+        return
+    connection.execute(text("ALTER TABLE runs ADD COLUMN response_full JSONB"))
 
 
 def _postgres_table_exists(connection: Connection, table_name: str) -> bool:

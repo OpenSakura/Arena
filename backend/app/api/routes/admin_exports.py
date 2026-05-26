@@ -78,6 +78,7 @@ def export_runs(db: Session = Depends(get_db, scope="function")) -> StreamingRes
                 "prompt_rendered": run.prompt_rendered,
                 "output_text": run.output_text,
                 "output_text_raw": run.output_text_raw,
+                "response_full": run.response_full,
                 "stats": run.stats,
                 "error_text": run.error_text,
                 "created_at": run.created_at,

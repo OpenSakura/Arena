@@ -39,6 +39,22 @@ _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 _MAX_RETRIES = 2
 _RETRY_BASE_DELAY = 1.0
 _RETRY_MAX_DELAY = 5.0
+_REDACTED_PROVIDER_VALUE = "[REDACTED]"
+_SENSITIVE_PROVIDER_KEYS = {
+    "authorization",
+    "api_key",
+    "apikey",
+    "cookie",
+    "set_cookie",
+    "client_secret",
+    "secret",
+    "password",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "provider_token",
+    "x_provider_token",
+}
 
 
 class StreamTotalTimeoutError(TimeoutError):
@@ -209,6 +225,7 @@ class LLMStreamChunk:
     usage: dict[str, Any] | None = None
     finish_reason: str | None = None
     request_id: str | None = None
+    provider_payload: dict[str, Any] | None = None
 
 
 class LLMClient:
@@ -402,8 +419,16 @@ class LLMClient:
                 ),
             )
             async for sdk_chunk in stream:
+                chunk_payload = _sdk_object_to_dict(sdk_chunk)
+                provider_payload = (
+                    _sanitize_provider_payload(chunk_payload)
+                    if isinstance(chunk_payload, dict)
+                    else None
+                )
                 if time.monotonic() > wall_clock_deadline:
                     exc = StreamTotalTimeoutError(timeout_seconds=total_timeout_seconds)
+                    if provider_payload is not None:
+                        setattr(exc, "provider_payload", provider_payload)
                     _record_llm_error(
                         attributes=_llm_trace_attributes(
                             operation="stream",
@@ -417,7 +442,6 @@ class LLMClient:
                     )
                     raise exc
 
-                chunk_payload = _sdk_object_to_dict(sdk_chunk)
                 if not isinstance(chunk_payload, dict):
                     continue
                 upstream_error = _extract_upstream_error(chunk_payload)
@@ -426,6 +450,8 @@ class LLMClient:
                         f"Upstream error: "
                         f"{_redact_sensitive_text(upstream_error, api_key, messages)}"
                     )
+                    if provider_payload is not None:
+                        setattr(exc, "provider_payload", provider_payload)
                     _record_llm_error(
                         attributes=_llm_trace_attributes(
                             operation="stream",
@@ -434,6 +460,11 @@ class LLMClient:
                             base_url=self._openai_base_url(base_url),
                         ),
                         exc=exc,
+                    )
+                    yielded_to_caller = True
+                    yield LLMStreamChunk(
+                        request_id=_extract_sdk_request_id(sdk_chunk),
+                        provider_payload=provider_payload,
                     )
                     raise exc
 
@@ -445,16 +476,22 @@ class LLMClient:
                 usage = normalize_usage(usage)
 
                 delta_text, finish_reason = _extract_choice_delta(chunk_payload)
+                request_id = _extract_sdk_request_id(sdk_chunk)
                 if delta_text is None and usage is None and finish_reason is None:
+                    yielded_to_caller = True
+                    yield LLMStreamChunk(
+                        request_id=request_id,
+                        provider_payload=provider_payload,
+                    )
                     continue
 
-                request_id = _extract_sdk_request_id(sdk_chunk)
                 yielded_to_caller = True
                 yield LLMStreamChunk(
                     text_delta=delta_text,
                     usage=usage,
                     finish_reason=finish_reason,
                     request_id=request_id,
+                    provider_payload=provider_payload,
                 )
 
         for attempt in range(_MAX_RETRIES + 1):
@@ -621,11 +658,45 @@ def _sdk_object_to_dict(value: Any) -> Any:
         return value
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):
-        return model_dump()
+        try:
+            return model_dump(mode="json")
+        except TypeError:
+            return model_dump()
     to_dict = getattr(value, "to_dict", None)
     if callable(to_dict):
         return to_dict()
     return value
+
+
+def _sanitize_provider_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): (
+                _REDACTED_PROVIDER_VALUE
+                if _is_sensitive_provider_key(str(key))
+                else _sanitize_provider_payload(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_provider_payload(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_provider_payload(item) for item in value]
+    if isinstance(value, str):
+        return _redact_sensitive_text(value, api_key=None, messages=None)
+    return value
+
+
+def _is_sensitive_provider_key(key: str) -> bool:
+    normalized = key.lower().replace("-", "_").replace(".", "_")
+    return (
+        normalized in _SENSITIVE_PROVIDER_KEYS
+        or normalized.endswith("_secret")
+        or normalized == "token"
+        or normalized.endswith("_token")
+        or normalized.endswith("_api_key")
+        or normalized.endswith("_apikey")
+    )
 
 
 def _extract_sdk_request_id(value: Any) -> str | None:
@@ -664,7 +735,11 @@ def _sanitize_exception(
     text = _redact_sensitive_text(str(exc), api_key, messages)
     if text == str(exc):
         return exc
-    return RuntimeError(f"{type(exc).__name__}: {text}")
+    sanitized = RuntimeError(f"{type(exc).__name__}: {text}")
+    provider_payload = getattr(exc, "provider_payload", None)
+    if isinstance(provider_payload, dict):
+        setattr(sanitized, "provider_payload", provider_payload)
+    return sanitized
 
 
 def _redact_sensitive_text(
@@ -684,34 +759,44 @@ def _redact_sensitive_text(
     for value in sensitive_values:
         redacted = redacted.replace(value, "[REDACTED]")
     redacted = re.sub(
-        r"(?i)(authorization\s*[:=]\s*)bearer\s+[^\s,;}]+",
-        r"\1Bearer [REDACTED]",
+        r"(?i)(authorization\s*[:=]\s*)(?:bearer|basic)\s+[^\s,;}]+",
+        _redact_authorization_match,
         redacted,
     )
     redacted = re.sub(r"(?i)bearer\s+[^\s,;}]+", "Bearer [REDACTED]", redacted)
+    redacted = re.sub(r"(?i)basic\s+[^\s,;}]+", "Basic [REDACTED]", redacted)
+    redacted = re.sub(r"(?i)\bsk-[A-Za-z0-9_-]+", "[REDACTED]", redacted)
     redacted = re.sub(
-        r"(?i)(api[_-]?key\s*[:=]\s*)[^\s,;}]+",
+        r"(?i)(authorization\s*[:=]\s*)(?!(?:bearer|basic)\s+\[REDACTED\])[^\s,;}]+",
         r"\1[REDACTED]",
         redacted,
     )
-    redacted = re.sub(
-        r"(?i)(cookie\s*[:=]\s*)[^\s,;}]+",
-        r"\1[REDACTED]",
-        redacted,
-    )
-    redacted = re.sub(
-        r"(?i)((?:x-)?provider[_-]?token\s*[:=]\s*)[^\s,;}]+",
-        r"\1[REDACTED]",
-        redacted,
-    )
-    for header in ("cookie", "x-provider-token", "provider-token", "provider_token"):
-        header_pattern = re.escape(header)
-        redacted = re.sub(
-            rf"(?i)(['\"]{header_pattern}['\"]\s*:\s*['\"])[^'\"]*(['\"])",
-            r"\1[REDACTED]\2",
-            redacted,
-        )
+
+    for key in _SENSITIVE_PROVIDER_KEYS:
+        if key == "authorization":
+            continue
+        redacted = _redact_key_value_text(redacted, key)
+    redacted = _redact_key_value_text(redacted, "token")
+    redacted = _redact_key_value_text(redacted, "x-api-key")
+    redacted = _redact_key_value_text(redacted, "x_api_key")
+    redacted = _redact_key_value_text(redacted, "secret_key")
     return redacted
+
+
+def _redact_authorization_match(match: re.Match[str]) -> str:
+    prefix = match.group(1)
+    scheme = "Basic" if "basic" in match.group(0).lower() else "Bearer"
+    return f"{prefix}{scheme} [REDACTED]"
+
+
+def _redact_key_value_text(text: str, key: str) -> str:
+    key_parts = key.lower().replace("-", "_").split("_")
+    key_pattern = "[_-]".join(re.escape(part) for part in key_parts)
+    unquoted = rf"(?i)(\b{key_pattern}\s*[:=]\s*)[^\s,;}}]+"
+    text = re.sub(unquoted, r"\1[REDACTED]", text)
+
+    quoted = rf"(?i)(['\"]{key_pattern}['\"]\s*:\s*['\"])[^'\"]*(['\"])"
+    return re.sub(quoted, r"\1[REDACTED]\2", text)
 
 
 def _extract_message_text_values(content: Any) -> list[str]:

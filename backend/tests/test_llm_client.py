@@ -12,6 +12,8 @@ from app.services.llm_client import (
     StreamTotalTimeoutError,
     _extract_upstream_error,
     _redact_sensitive_text,
+    _sanitize_provider_payload,
+    _sdk_object_to_dict,
 )
 
 
@@ -88,11 +90,32 @@ class _FakeAsyncOpenAI:
 class _SdkObject:
     def __init__(self, payload: dict[str, object], request_id: str | None = None) -> None:
         self._payload = payload
+        self.dump_modes: list[str | None] = []
         self._request_id = request_id
         if "usage" in payload:
             self.usage = payload["usage"]
 
+    def model_dump(self, mode: str | None = None) -> dict[str, object]:
+        self.dump_modes.append(mode)
+        return self._payload
+
+
+class _LegacySdkObject:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self._payload = payload
+
     def model_dump(self) -> dict[str, object]:
+        return self._payload
+
+
+class _JsonModeSdkObject:
+    def __init__(self, payload: dict[str, object], json_payload: dict[str, object]) -> None:
+        self._payload = payload
+        self._json_payload = json_payload
+
+    def model_dump(self, mode: str | None = None) -> dict[str, object]:
+        if mode == "json":
+            return self._json_payload
         return self._payload
 
 
@@ -220,6 +243,14 @@ def test_openai_base_url_normalization_variants() -> None:
 
     for raw, expected in cases.items():
         assert LLMClient._openai_base_url(raw) == expected
+
+
+def test_sdk_object_to_dict_falls_back_to_legacy_model_dump_signature() -> None:
+    class _LegacySdkObject:
+        def model_dump(self) -> dict[str, object]:
+            return {"legacy": True}
+
+    assert _sdk_object_to_dict(_LegacySdkObject()) == {"legacy": True}
 
 
 def test_queue_wraps_async_openai_non_streaming_provider_call(
@@ -414,39 +445,177 @@ def test_async_openai_stream_yields_chunks_usage_and_request_id(
 ) -> None:
     _enable_async_openai(monkeypatch)
 
+    first_payload = {
+        "id": "chunk-1",
+        "choices": [
+            {
+                "delta": {"content": "tok"},
+                "finish_reason": None,
+            }
+        ],
+    }
+    usage_payload = {
+        "id": "chunk-usage",
+        "choices": [],
+        "usage": {
+            "prompt_tokens": 4,
+            "completion_tokens": 5,
+            "total_tokens": 9,
+        },
+    }
+    finish_payload = {
+        "id": "chunk-finish",
+        "choices": [{"delta": {}, "finish_reason": "stop"}],
+    }
+
+    async def _run() -> list[object]:
+        client = LLMClient()
+        sdk_chunks = [
+            _SdkObject(first_payload, request_id="req-stream-1"),
+            _LegacySdkObject(usage_payload),
+            _SdkObject(finish_payload, request_id="req-stream-1"),
+        ]
+        _FakeAsyncOpenAI.responses.append(_AsyncChunkStream(sdk_chunks))
+        chunks = []
+        async for chunk in client.stream_chat_completion(**_BASE_KWARGS):
+            chunks.append(chunk)
+        return chunks, sdk_chunks
+
+    chunks, sdk_chunks = asyncio.run(_run())
+
+    assert [chunk.text_delta for chunk in chunks] == ["tok", None, None]
+    assert chunks[0].request_id == "req-stream-1"
+    assert [chunk.provider_payload for chunk in chunks] == [
+        first_payload,
+        usage_payload,
+        finish_payload,
+    ]
+    sdk_chunks_with_modes = [
+        sdk_chunk for sdk_chunk in sdk_chunks if isinstance(sdk_chunk, _SdkObject)
+    ]
+    assert all(sdk_chunk.dump_modes for sdk_chunk in sdk_chunks_with_modes)
+    assert all(
+        mode == "json"
+        for sdk_chunk in sdk_chunks_with_modes
+        for mode in sdk_chunk.dump_modes
+    )
+    assert chunks[1].usage is not None
+    assert chunks[1].usage["prompt_tokens"] == 4
+    assert chunks[1].usage["completion_tokens"] == 5
+    assert chunks[1].usage["total_tokens"] == 9
+    assert chunks[2].finish_reason == "stop"
+
+
+def test_async_openai_stream_yields_error_payload_before_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_async_openai(monkeypatch)
+    provider_payload = {
+        "error": {
+            "message": "bad request with Bearer sk-secret",
+            "type": "upstream",
+            "authorization": "Bearer sk-secret",
+        }
+    }
+
+    async def _run() -> list[object]:
+        client = LLMClient()
+        _FakeAsyncOpenAI.responses.append(_AsyncChunkStream([_SdkObject(provider_payload)]))
+        chunks = []
+        with pytest.raises(RuntimeError, match="Upstream error"):
+            async for chunk in client.stream_chat_completion(**_BASE_KWARGS):
+                chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(_run())
+
+    assert len(chunks) == 1
+    assert chunks[0].provider_payload == {
+        "error": {
+            "message": "bad request with Bearer [REDACTED]",
+            "type": "upstream",
+            "authorization": "[REDACTED]",
+        }
+    }
+
+
+def test_sanitize_provider_payload_recurses_over_sensitive_keys_and_strings() -> None:
+    payload = {
+        "id": "chunk-1",
+        "authorization": "Bearer sk-top-secret",
+        "nested": {
+            "api_key": "sk-nested",
+            "message": (
+                "failed with bearer sk-message and api_key=sk-inline "
+                'authorization: Basic abc123 "access_token":"bad" '
+                '"x-api-key":"sk-json"'
+            ),
+        },
+        "items": [
+            {"set-cookie": "session=secret"},
+            {"token": "plain-token-secret"},
+            {"session_token": "session-token-secret"},
+            {"x-api-key": "sk-header-key"},
+            "token=abc bearer sk-list",
+        ],
+    }
+
+    assert _sanitize_provider_payload(payload) == {
+        "id": "chunk-1",
+        "authorization": "[REDACTED]",
+        "nested": {
+            "api_key": "[REDACTED]",
+            "message": (
+                "failed with Bearer [REDACTED] and api_key=[REDACTED] "
+                'authorization: Basic [REDACTED] "access_token":"[REDACTED]" '
+                '"x-api-key":"[REDACTED]"'
+            ),
+        },
+        "items": [
+            {"set-cookie": "[REDACTED]"},
+            {"token": "[REDACTED]"},
+            {"session_token": "[REDACTED]"},
+            {"x-api-key": "[REDACTED]"},
+            "token=[REDACTED] Bearer [REDACTED]",
+        ],
+    }
+
+
+def test_redact_sensitive_text_handles_json_style_secret_strings() -> None:
+    raw = (
+        '"access_token":"access-secret" '
+        "'api_key': 'sk-json-secret' "
+        "authorization: Basic basic-secret "
+        "total_tokens=42 prompt_tokens=10 completion_tokens=32"
+    )
+
+    redacted = _redact_sensitive_text(raw, api_key=None, messages=None)
+
+    assert "access-secret" not in redacted
+    assert "sk-json-secret" not in redacted
+    assert "basic-secret" not in redacted
+    assert "total_tokens=42" in redacted
+    assert "prompt_tokens=10" in redacted
+    assert "completion_tokens=32" in redacted
+
+
+def test_sdk_object_to_dict_prefers_json_mode_model_dump(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_async_openai(monkeypatch)
+    default_payload = {
+        "choices": [{"delta": {"content": "default"}, "finish_reason": None}],
+        "not_json": object(),
+    }
+    json_payload = {
+        "choices": [{"delta": {"content": "json"}, "finish_reason": None}],
+        "json_safe": True,
+    }
+
     async def _run() -> list[object]:
         client = LLMClient()
         _FakeAsyncOpenAI.responses.append(
-            _AsyncChunkStream(
-                [
-                    _SdkObject(
-                        {
-                            "choices": [
-                                {
-                                    "delta": {"content": "tok"},
-                                    "finish_reason": None,
-                                }
-                            ]
-                        },
-                        request_id="req-stream-1",
-                    ),
-                    _SdkObject(
-                        {
-                            "choices": [],
-                            "usage": {
-                                "prompt_tokens": 4,
-                                "completion_tokens": 5,
-                                "total_tokens": 9,
-                            },
-                        },
-                        request_id="req-stream-1",
-                    ),
-                    _SdkObject(
-                        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
-                        request_id="req-stream-1",
-                    ),
-                ]
-            )
+            _AsyncChunkStream([_JsonModeSdkObject(default_payload, json_payload)])
         )
         chunks = []
         async for chunk in client.stream_chat_completion(**_BASE_KWARGS):
@@ -455,13 +624,8 @@ def test_async_openai_stream_yields_chunks_usage_and_request_id(
 
     chunks = asyncio.run(_run())
 
-    assert [chunk.text_delta for chunk in chunks] == ["tok", None, None]
-    assert chunks[0].request_id == "req-stream-1"
-    assert chunks[1].usage is not None
-    assert chunks[1].usage["prompt_tokens"] == 4
-    assert chunks[1].usage["completion_tokens"] == 5
-    assert chunks[1].usage["total_tokens"] == 9
-    assert chunks[2].finish_reason == "stop"
+    assert chunks[0].text_delta == "json"
+    assert chunks[0].provider_payload == json_payload
 
 
 def test_async_openai_stream_retries_before_first_chunk(

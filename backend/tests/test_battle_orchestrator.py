@@ -15,9 +15,13 @@ from app.services.battle_orchestrator import (
     BattleSnapshot,
     BattleOrchestrator,
     DEFAULT_SYSTEM_PROMPT,
+    MAX_RESPONSE_FULL_CHUNK_BYTES,
+    MAX_RESPONSE_FULL_DEPTH,
     PreparedRun,
     RunSnapshot,
+    _append_provider_payload,
     _iter_text_chunks,
+    _provider_stream_response_full,
     _task_payload_from_battle_metadata,
 )
 from app.models.battle import Run
@@ -52,6 +56,50 @@ def test_iter_text_chunks_splits_text_into_bounded_chunks() -> None:
     chunks = list(_iter_text_chunks(text, 4))
     assert chunks == ["abcd", "efgh", "ij"]
     assert list(_iter_text_chunks("abc", 0)) == ["a", "b", "c"]
+
+
+def test_provider_stream_response_full_records_truncation_metadata() -> None:
+    response = _provider_stream_response_full(
+        [{"id": "chunk-1"}],
+        truncated_chunk_count=3,
+    )
+
+    assert response == {
+        "provider": "openai_compatible",
+        "response_type": "chat.completion.chunk_stream",
+        "stream": True,
+        "chunks": [{"id": "chunk-1"}],
+        "truncated_chunk_count": 3,
+    }
+
+
+def test_append_provider_payload_truncates_oversized_chunk() -> None:
+    chunks: list[dict[str, object]] = []
+
+    truncated_count = _append_provider_payload(
+        chunks,
+        {"huge": "x" * (MAX_RESPONSE_FULL_CHUNK_BYTES + 1)},
+        truncated_chunk_count=0,
+    )
+
+    assert truncated_count == 1
+    assert chunks == [{"truncated": True, "original_keys": ["huge"]}]
+
+
+def test_append_provider_payload_truncates_deeply_nested_values() -> None:
+    value: object = "leaf"
+    for _ in range(MAX_RESPONSE_FULL_DEPTH + 1):
+        value = {"nested": value}
+    chunks: list[dict[str, object]] = []
+
+    truncated_count = _append_provider_payload(
+        chunks,
+        {"payload": value},
+        truncated_chunk_count=0,
+    )
+
+    assert truncated_count == 1
+    assert "[TRUNCATED]" in str(chunks[0])
 
 
 def test_observe_running_battle_replays_terminal_state_without_mutating_battle(
@@ -543,6 +591,15 @@ def test_execute_run_emits_deltas_and_persists_stats(
                 text_delta="world",
                 usage={"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
                 finish_reason="stop",
+                provider_payload={
+                    "id": "chunk-2",
+                    "choices": [
+                        {
+                            "delta": {"content": "world"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
             )
 
     persist_calls: list[dict[str, object]] = []
@@ -578,6 +635,24 @@ def test_execute_run_emits_deltas_and_persists_stats(
     persisted = persist_calls[0]
     assert persisted["run_id"] == prepared.run_id
     assert persisted["output_text"] == "hello world"
+    assert persisted["output_text_raw"] == "hello world"
+    assert persisted["response_full"] == {
+        "provider": "openai_compatible",
+        "response_type": "chat.completion.chunk_stream",
+        "stream": True,
+        "chunks": [
+            {
+                "id": "chunk-2",
+                "choices": [
+                    {
+                        "delta": {"content": "world"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+        ],
+        "truncated_chunk_count": 0,
+    }
     assert persisted["error_text"] is None
 
     stats = persisted["stats"]
@@ -686,6 +761,7 @@ def test_execute_run_preserves_source_leading_newline_count_in_output(
     upstream_output = "".join(upstream_parts)
     assert persisted["output_text"] == expected_output
     assert persisted["output_text_raw"] == upstream_output
+    assert persisted["response_full"] is None
 
     deltas = [
         cast(dict, payload)["text_delta"]
@@ -740,6 +816,7 @@ def test_execute_run_emits_error_and_returns_false_on_http_error(
     persisted = persist_calls[0]
     assert persisted["run_id"] == prepared.run_id
     assert persisted["output_text"] is None
+    assert persisted["response_full"] is None
     assert isinstance(persisted["error_text"], str)
     assert "LLM HTTP error:" in persisted["error_text"]
 
@@ -760,6 +837,114 @@ def test_execute_run_emits_error_and_returns_false_on_http_error(
         "side": "B",
         "error": persisted["error_text"],
     }
+
+
+def test_execute_run_persists_exception_provider_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = BattleOrchestrator()
+    prepared = PreparedRun(
+        battle_id=uuid.uuid4(),
+        run_id=uuid.uuid4(),
+        side="A",
+        model_id=uuid.uuid4(),
+        base_url="https://gateway.example/v1",
+        model_name="gpt-test",
+        api_key=None,
+        messages=[{"role": "user", "content": "Translate this"}],
+        params={},
+        request_id="arena-req-provider-error",
+    )
+    provider_payload = {
+        "error": {"message": "provider failed", "type": "server_error"}
+    }
+
+    class _FailingClient:
+        async def stream_chat_completion(self, **kwargs: object):
+            _ = kwargs
+            if False:
+                yield LLMStreamChunk(text_delta="never")
+            exc = RuntimeError("provider failed")
+            setattr(exc, "provider_payload", provider_payload)
+            raise exc
+
+    persist_calls: list[dict[str, object]] = []
+
+    async def emit(_event: str, _data: object) -> None:
+        return None
+
+    orchestrator._llm_client = _FailingClient()  # type: ignore[assignment]
+    monkeypatch.setattr(
+        orchestrator,
+        "_persist_run_result",
+        lambda **kwargs: persist_calls.append(dict(kwargs)),
+    )
+
+    ok = asyncio.run(orchestrator._execute_run(prepared=prepared, emit=emit))
+
+    assert ok is False
+    assert persist_calls[0]["response_full"] == {
+        "provider": "openai_compatible",
+        "response_type": "chat.completion.chunk_stream",
+        "stream": True,
+        "chunks": [provider_payload],
+        "truncated_chunk_count": 0,
+    }
+
+
+def test_execute_run_persists_partial_provider_payload_on_later_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = BattleOrchestrator()
+    prepared = PreparedRun(
+        battle_id=uuid.uuid4(),
+        run_id=uuid.uuid4(),
+        side="A",
+        model_id=uuid.uuid4(),
+        base_url="https://gateway.example/v1",
+        model_name="gpt-test",
+        api_key=None,
+        messages=[{"role": "user", "content": "Translate this"}],
+        params={},
+        request_id="arena-req-partial-provider-error",
+    )
+    first_payload = {
+        "id": "chunk-before-error",
+        "choices": [{"delta": {"content": "partial"}, "finish_reason": None}],
+    }
+
+    class _FailingAfterChunkClient:
+        async def stream_chat_completion(self, **kwargs: object):
+            _ = kwargs
+            yield LLMStreamChunk(text_delta="partial", provider_payload=first_payload)
+            raise RuntimeError("stream interrupted")
+
+    persist_calls: list[dict[str, object]] = []
+    emitted: list[tuple[str, object]] = []
+
+    async def emit(event: str, data: object) -> None:
+        emitted.append((event, data))
+
+    orchestrator._llm_client = _FailingAfterChunkClient()  # type: ignore[assignment]
+    monkeypatch.setattr(
+        orchestrator,
+        "_persist_run_result",
+        lambda **kwargs: persist_calls.append(dict(kwargs)),
+    )
+
+    ok = asyncio.run(orchestrator._execute_run(prepared=prepared, emit=emit))
+
+    assert ok is False
+    assert persist_calls[0]["output_text"] == "partial"
+    assert persist_calls[0]["output_text_raw"] == "partial"
+    assert persist_calls[0]["response_full"] == {
+        "provider": "openai_compatible",
+        "response_type": "chat.completion.chunk_stream",
+        "stream": True,
+        "chunks": [first_payload],
+        "truncated_chunk_count": 0,
+    }
+    assert [event for event, _ in emitted] == ["run.delta", "run.error"]
 
 
 def test_execute_run_queue_full_uses_safe_backpressure_error(
@@ -837,6 +1022,7 @@ def test_execute_run_buffered_queue_wait_timeout_preserves_taxonomy(
         queue=asyncio.Queue(maxsize=1),
         text_parts=[],
         raw_parts=[],
+        provider_payloads=[],
         usage=None,
         request_id=None,
         finish_reason=None,
@@ -868,6 +1054,7 @@ def test_execute_run_buffered_queue_wait_timeout_preserves_taxonomy(
 
     assert ok is False
     assert state.error_text == "LLM queue backpressure: timeout_layer=llm_queue_wait"
+    assert persist_calls[0]["response_full"] is None
     assert persist_calls[0]["error_text"] == state.error_text
     assert emitted[0][0] == "run.error"
     assert cast(dict[str, object], emitted[0][1])["error"] == state.error_text
@@ -911,14 +1098,22 @@ def test_execute_runs_synced_emits_deltas_in_lockstep(
         async def stream_chat_completion(self, *, model: str, **kwargs: object):
             _ = kwargs
             if model == "model-a":
-                yield LLMStreamChunk(text_delta="A1A2", finish_reason="stop")
+                yield LLMStreamChunk(
+                    text_delta="A1A2",
+                    finish_reason="stop",
+                    provider_payload={"id": "chunk-a", "model": "model-a"},
+                )
                 return
 
             # Slow side: ensure the fast side has time to run ahead.
             await asyncio.sleep(0.02)
             yield LLMStreamChunk(text_delta="B1")
             await asyncio.sleep(0.02)
-            yield LLMStreamChunk(text_delta="B2", finish_reason="stop")
+            yield LLMStreamChunk(
+                text_delta="B2",
+                finish_reason="stop",
+                provider_payload={"id": "chunk-b", "model": "model-b"},
+            )
 
     orchestrator._llm_client = _StreamingClient()  # type: ignore[assignment]
 
@@ -954,10 +1149,25 @@ def test_execute_runs_synced_emits_deltas_in_lockstep(
     # Both outputs are persisted from the streamed deltas.
     outputs_by_run = {call["run_id"]: call["output_text"] for call in persisted}
     raw_outputs_by_run = {call["run_id"]: call["output_text_raw"] for call in persisted}
+    responses_by_run = {call["run_id"]: call["response_full"] for call in persisted}
     assert outputs_by_run[run_a_id] == "A1A2"
     assert outputs_by_run[run_b_id] == "B1B2"
     assert raw_outputs_by_run[run_a_id] == "A1A2"
     assert raw_outputs_by_run[run_b_id] == "B1B2"
+    assert responses_by_run[run_a_id] == {
+        "provider": "openai_compatible",
+        "response_type": "chat.completion.chunk_stream",
+        "stream": True,
+        "chunks": [{"id": "chunk-a", "model": "model-a"}],
+        "truncated_chunk_count": 0,
+    }
+    assert responses_by_run[run_b_id] == {
+        "provider": "openai_compatible",
+        "response_type": "chat.completion.chunk_stream",
+        "stream": True,
+        "chunks": [{"id": "chunk-b", "model": "model-b"}],
+        "truncated_chunk_count": 0,
+    }
 
 
 def test_execute_runs_synced_paces_active_display_rounds(
@@ -2089,6 +2299,7 @@ def test_schedule_automatic_retry_clears_persisted_run_artifacts() -> None:
         side="A",
         output_text="stale",
         output_text_raw="stale raw",
+        response_full={"provider": "openai_compatible", "chunks": [{"id": "old-a"}]},
         error_text="boom",
         stats={"latency_ms": 1},
         request_json={"stream": True},
@@ -2099,6 +2310,7 @@ def test_schedule_automatic_retry_clears_persisted_run_artifacts() -> None:
         side="B",
         output_text="stale",
         output_text_raw="stale raw",
+        response_full={"provider": "openai_compatible", "chunks": [{"id": "old-b"}]},
         error_text="boom",
         stats={"latency_ms": 2},
         request_json={"stream": True},
@@ -2155,6 +2367,7 @@ def test_schedule_automatic_retry_clears_persisted_run_artifacts() -> None:
     for run in (run_a, run_b):
         assert run.output_text is None
         assert run.output_text_raw is None
+        assert run.response_full is None
         assert run.error_text is None
         assert run.stats is None
         assert run.request_json is None
@@ -2343,4 +2556,5 @@ def test_stream_queue_full_after_owner_start_persists_failure_and_closes_owner(
         "LLM queue backpressure: queue_full",
         "LLM queue backpressure: queue_full",
     ]
+    assert [call["response_full"] for call in persist_calls] == [None, None]
     assert orchestrator._live_battles == {}

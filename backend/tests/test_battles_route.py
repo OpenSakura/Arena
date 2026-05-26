@@ -960,6 +960,7 @@ def _stale_run(*, battle_id: uuid.UUID, side: str) -> SimpleNamespace:
         side=side,
         output_text="stale output",
         output_text_raw="stale raw output",
+        response_full={"provider": "openai_compatible", "chunks": [{"id": "old"}]},
         error_text="stale error",
         stats={"latency_ms": 123, "request_id": "old-req"},
         request_json={"model": "old-model", "messages": []},
@@ -983,6 +984,7 @@ def test_retry_battle_clears_all_run_artifacts() -> None:
     for run in [run_a, run_b]:
         assert run.output_text is None
         assert run.output_text_raw is None
+        assert run.response_full is None
         assert run.error_text is None
         assert run.stats is None
         assert run.request_json is None

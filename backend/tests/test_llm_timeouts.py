@@ -471,6 +471,7 @@ def test_battle_cancelled_error_propagates_from_run_paths(
                     queue=asyncio.Queue(maxsize=1),
                     text_parts=[],
                     raw_parts=[],
+                    provider_payloads=[],
                     usage=None,
                     request_id=None,
                     finish_reason=None,
