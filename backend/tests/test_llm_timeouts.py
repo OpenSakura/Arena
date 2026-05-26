@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from typing import Any, cast
 import uuid
 
-import httpx
 from fastapi import Response
 from fastapi.testclient import TestClient
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult
@@ -31,11 +30,9 @@ class _Settings:
     def __init__(
         self,
         *,
-        llm_client_mode: str = "legacy",
         connect_timeout: float = 1.25,
         model_timeout: float = 7.5,
     ) -> None:
-        self.llm_client_mode = llm_client_mode
         self.openai_connect_timeout_seconds = connect_timeout
         self.openai_model_timeout_seconds = model_timeout
 
@@ -103,132 +100,8 @@ class _LookupDB:
         return self._model if getattr(self._model, "id", None) == key else None
 
 
-class _FakeResponse:
-    def __init__(self, body: bytes = b"data: [DONE]\n\n") -> None:
-        self.status_code = 200
-        self.headers: dict[str, str] = {}
-        self._body = body
-
-    def raise_for_status(self) -> None:
-        return None
-
-    async def aiter_raw(self) -> AsyncIterator[bytes]:
-        yield self._body
-
-    async def __aenter__(self) -> "_FakeResponse":
-        return self
-
-    async def __aexit__(self, *args: object) -> None:
-        return None
-
-
-async def _collect_stream(client: LLMClient, **extra_kwargs: object) -> list[str]:
-    chunks: list[str] = []
-    kwargs = {
-        "base_url": "https://llm.example/v1?api_key=sk-url-secret",
-        "model": "test-model",
-        "api_key": "sk-private-api-key",
-        "messages": [{"role": "user", "content": "private prompt"}],
-        **extra_kwargs,
-    }
-    async for chunk in client.stream_chat_completion(**kwargs):
-        if chunk.text_delta:
-            chunks.append(chunk.text_delta)
-    return chunks
-
-
 def _redacted_text(*values: object) -> str:
     return repr(values)
-
-
-def test_connect_timeout_layer_is_distinct_and_safe(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    call_count = 0
-    captured_timeout: httpx.Timeout | None = None
-    monkeypatch.setattr(
-        "app.services.llm_client.get_settings",
-        lambda: _Settings(connect_timeout=1.25, model_timeout=99.0),
-    )
-
-    async def _run() -> None:
-        nonlocal call_count, captured_timeout
-        client = LLMClient()
-
-        def _fake_stream(method: str, url: str, **kwargs: object) -> _FakeResponse:
-            nonlocal call_count, captured_timeout
-            _ = method
-            call_count += 1
-            captured_timeout = cast(httpx.Timeout, kwargs["timeout"])
-            request = httpx.Request("POST", url)
-            raise httpx.ConnectTimeout(
-                "Authorization: Bearer sk-private-api-key private prompt",
-                request=request,
-            )
-
-        mock_http = SimpleNamespace(is_closed=False, stream=_fake_stream)
-        client._http_client = cast(Any, mock_http)
-        with pytest.raises(httpx.ConnectTimeout) as exc_info:
-            with caplog.at_level("WARNING", logger="app.services.llm_client"):
-                await _collect_stream(client, timeout_seconds=7.5)
-        assert getattr(exc_info.value, "timeout_layer") == "llm_connect"
-        assert getattr(exc_info.value, "timeout_seconds") == 1.25
-        assert str(exc_info.value) == "LLM timeout layer=llm_connect exceeded after 1.25s"
-
-    asyncio.run(_run())
-
-    assert call_count == 3
-    assert isinstance(captured_timeout, httpx.Timeout)
-    assert captured_timeout.connect == 1.25
-    assert captured_timeout.read == 7.5
-    assert captured_timeout.write == 1.25
-    assert captured_timeout.pool == 1.25
-    logged = _redacted_text([record.getMessage() for record in caplog.records])
-    assert "timeout_layer=llm_connect" in logged
-    assert "llm.example" in logged
-    assert "sk-private-api-key" not in logged
-    assert "private prompt" not in logged
-    assert "api_key=sk-url-secret" not in logged
-
-
-def test_read_model_timeout_layer_is_distinct_and_safe(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    call_count = 0
-
-    monkeypatch.setattr(
-        "app.services.llm_client.get_settings",
-        lambda: _Settings(connect_timeout=1.0, model_timeout=120.0),
-    )
-
-    async def _run() -> None:
-        client = LLMClient()
-
-        def _fake_stream(method: str, url: str, **kwargs: object) -> _FakeResponse:
-            nonlocal call_count
-            _ = (method, kwargs)
-            call_count += 1
-            request = httpx.Request("POST", url)
-            raise httpx.ReadTimeout("raw completion provider-token=secret", request=request)
-
-        mock_http = SimpleNamespace(is_closed=False, stream=_fake_stream)
-        client._http_client = cast(Any, mock_http)
-        with pytest.raises(httpx.ReadTimeout) as exc_info:
-            with caplog.at_level("WARNING", logger="app.services.llm_client"):
-                await _collect_stream(client, timeout_seconds=7.5)
-        assert getattr(exc_info.value, "timeout_layer") == "llm_read"
-        assert getattr(exc_info.value, "timeout_seconds") == 7.5
-        assert str(exc_info.value) == "LLM timeout layer=llm_read exceeded after 7.5s"
-
-    asyncio.run(_run())
-
-    assert call_count == 3
-    logged = _redacted_text([record.getMessage() for record in caplog.records])
-    assert "timeout_layer=llm_read" in logged
-    assert "raw completion" not in logged
-    assert "provider-token=secret" not in logged
 
 
 def test_queue_wait_timeout_layer_stays_queue_owned_and_safe() -> None:
@@ -525,49 +398,10 @@ def test_otlp_exporter_timeout_is_configured_and_non_blocking() -> None:
         tracing.shutdown_tracing()
 
 
-def test_legacy_cancelled_error_propagates_from_client_and_queue(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "app.services.llm_client.get_settings",
-        lambda: _Settings(connect_timeout=1.0, model_timeout=10.0),
-    )
-
-    async def _client_cancel() -> None:
-        client = LLMClient()
-
-        def _fake_stream(method: str, url: str, **kwargs: object) -> _FakeResponse:
-            _ = (method, url, kwargs)
-            raise asyncio.CancelledError
-
-        client._http_client = cast(Any, SimpleNamespace(is_closed=False, stream=_fake_stream))
-        with pytest.raises(asyncio.CancelledError):
-            await _collect_stream(client)
-
-    async def _queue_cancel() -> None:
-        queue = LLMRequestQueue(
-            name="cancel_test_queue",
-            max_concurrent=1,
-            capacity=1,
-            wait_timeout_seconds=1.0,
-            shutdown_timeout_seconds=0.1,
-        )
-
-        async def provider() -> None:
-            raise asyncio.CancelledError
-
-        with pytest.raises(asyncio.CancelledError):
-            await queue.submit(provider)
-        await queue.stop()
-
-    asyncio.run(_client_cancel())
-    asyncio.run(_queue_cancel())
-
-
 def test_async_openai_cancelled_error_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "app.services.llm_client.get_settings",
-        lambda: _Settings(llm_client_mode="async_openai"),
+        lambda: _Settings(),
     )
 
     class _FakeCompletions:
@@ -646,58 +480,6 @@ def test_battle_cancelled_error_propagates_from_run_paths(
                 emit=emit,
             )
         )
-
-
-def test_timeout_messages_and_logs_do_not_leak_sensitive_content(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    prompt = "PROMPT_BODY_MUST_NOT_LEAK"
-    completion = "COMPLETION_BODY_MUST_NOT_LEAK"
-    secret = "sk-secret-must-not-leak"
-    encrypted = "encrypted-key-material"
-    cookie = "session-cookie-secret"
-    provider_token = "provider-token-secret"
-
-    monkeypatch.setattr(
-        "app.services.llm_client.get_settings",
-        lambda: _Settings(connect_timeout=1.0, model_timeout=5.0),
-    )
-
-    async def _run() -> str:
-        client = LLMClient()
-
-        def _fake_stream(method: str, url: str, **kwargs: object) -> _FakeResponse:
-            _ = (method, kwargs)
-            request = httpx.Request("POST", url)
-            raise httpx.ReadTimeout(
-                " ".join([prompt, completion, secret, encrypted, cookie, provider_token]),
-                request=request,
-            )
-
-        client._http_client = cast(Any, SimpleNamespace(is_closed=False, stream=_fake_stream))
-        with pytest.raises(httpx.ReadTimeout) as exc_info:
-            with caplog.at_level("WARNING", logger="app.services.llm_client"):
-                await _collect_stream(
-                    client,
-                    api_key=secret,
-                    messages=[
-                        {"role": "user", "content": prompt},
-                        {"role": "assistant", "content": completion},
-                    ],
-                    extra_headers={
-                        "Cookie": cookie,
-                        "X-Provider-Token": provider_token,
-                    },
-                )
-        return str(exc_info.value)
-
-    message = asyncio.run(_run())
-
-    blob = _redacted_text(message, [record.getMessage() for record in caplog.records])
-    assert "timeout_layer=llm_read" in blob
-    for sensitive in (prompt, completion, secret, encrypted, cookie, provider_token):
-        assert sensitive not in blob
 
 
 def test_stream_total_timeout_layer_is_safe() -> None:

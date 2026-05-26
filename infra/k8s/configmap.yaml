@@ -101,8 +101,7 @@ data:
   ARENA_MASTER_KEY: ""
   ARENA_MASTER_KEY_OLD: ""
 
-  # LLM client rollout and in-process queue controls.
-  LLM_CLIENT_MODE: "legacy"
+  # LLM client and in-process queue controls.
   OPENAI_CONNECT_TIMEOUT_SECONDS: "10.0"
   OPENAI_MODEL_TIMEOUT_SECONDS: "120.0"
   MAX_CONCURRENT_LLM_REQUESTS: "40"

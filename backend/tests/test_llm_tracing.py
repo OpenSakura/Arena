@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 from opentelemetry import trace
@@ -33,7 +33,6 @@ class _RecordingExporter:
 
 
 class _LLMSettings:
-    llm_client_mode = "legacy"
     openai_connect_timeout_seconds = 1.0
     openai_model_timeout_seconds = 5.0
 
@@ -118,31 +117,26 @@ def _span_blob(exporter: _RecordingExporter) -> str:
     return repr(_span_payloads(exporter))
 
 
-def _make_sse_body(chunks: list[str]) -> bytes:
-    parts = [f"data: {chunk}\n\n" for chunk in chunks]
-    parts.append("data: [DONE]\n\n")
-    return "".join(parts).encode()
+class _SdkObject:
+    def __init__(self, payload: dict[str, object], request_id: str | None = None) -> None:
+        self._payload = payload
+        self._request_id = request_id
+        if "usage" in payload:
+            self.usage = payload["usage"]
+
+    def model_dump(self) -> dict[str, object]:
+        return self._payload
 
 
-class _FakeResponse:
-    def __init__(self, status_code: int, body: bytes, headers: dict[str, str] | None = None) -> None:
-        self.status_code = status_code
-        self._body = body
-        self.headers = headers or {}
+class _AsyncChunkStream:
+    def __init__(self, items: list[object]) -> None:
+        self.items = items
 
-    def raise_for_status(self) -> None:
-        if self.status_code >= 400:
-            response = MagicMock(status_code=self.status_code)
-            raise httpx.HTTPStatusError("error", request=MagicMock(), response=response)
-
-    async def aiter_raw(self) -> AsyncIterator[bytes]:
-        yield self._body
-
-    async def __aenter__(self) -> "_FakeResponse":
-        return self
-
-    async def __aexit__(self, *_args: object) -> None:
-        return None
+    async def __aiter__(self):
+        for item in self.items:
+            if isinstance(item, BaseException):
+                raise item
+            yield item
 
 
 async def _collect_stream(client: LLMClient, **kwargs: object) -> list[str]:
@@ -212,29 +206,41 @@ def test_provider_call_retry_timeout_layer_privacy_and_traceparent(
     exporter = _start_recording_tracing()
     monkeypatch.setattr("app.services.llm_client.get_settings", lambda: _LLMSettings())
     captured_headers: list[dict[str, str]] = []
-    call_count = 0
+    request = httpx.Request("POST", "https://llm.example/v1/chat/completions")
+
+    class _FakeCompletions:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def create(self, **kwargs: object) -> object:
+            self.calls += 1
+            captured_headers.append(dict(kwargs.get("extra_headers") or {}))
+            if self.calls == 1:
+                timeout_error = __import__("openai").APITimeoutError(request=request)
+                timeout_error.__context__ = httpx.ReadTimeout(
+                    "PROMPT_BODY_MUST_NOT_EXPORT sk-test-secret private completion",
+                    request=request,
+                )
+                raise timeout_error
+            return _AsyncChunkStream(
+                [
+                    _SdkObject(
+                        {"choices": [{"delta": {"content": "ok"}, "finish_reason": None}]}
+                    )
+                ]
+            )
+
+    completions = _FakeCompletions()
+
+    class _FakeOpenAIClient:
+        chat = SimpleNamespace(completions=completions)
+
+    async def fake_get_openai_client(**_kwargs: object) -> _FakeOpenAIClient:
+        return _FakeOpenAIClient()
 
     async def run() -> list[str]:
-        nonlocal call_count
         client = LLMClient()
-        body = _make_sse_body(
-            ['{"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}']
-        )
-
-        def fake_stream(_method: str, _url: str, **kwargs: object) -> _FakeResponse:
-            nonlocal call_count
-            call_count += 1
-            captured_headers.append(dict(kwargs["headers"]))
-            if call_count == 1:
-                raise httpx.ReadTimeout(
-                    "PROMPT_BODY_MUST_NOT_EXPORT sk-test-secret private completion"
-                )
-            return _FakeResponse(200, body)
-
-        mock_http = AsyncMock()
-        mock_http.is_closed = False
-        mock_http.stream = fake_stream
-        client._http_client = mock_http
+        monkeypatch.setattr(client, "_get_openai_client", fake_get_openai_client)
         request_token = app_logging.set_request_id("req-provider-trace")
         try:
             with tracing.create_span("provider_parent"):
@@ -244,7 +250,7 @@ def test_provider_call_retry_timeout_layer_privacy_and_traceparent(
             app_logging.clear_request_id(request_token)
 
     assert asyncio.run(run()) == ["ok"]
-    assert call_count == 2
+    assert completions.calls == 2
     assert all("traceparent" in headers for headers in captured_headers)
 
     blob = _span_blob(exporter)
@@ -261,21 +267,31 @@ def test_stream_upstream_error_span_is_redacted(monkeypatch: pytest.MonkeyPatch)
     exporter = _start_recording_tracing()
     monkeypatch.setattr("app.services.llm_client.get_settings", lambda: _LLMSettings())
 
+    class _FakeCompletions:
+        async def create(self, **_kwargs: object) -> object:
+            return _AsyncChunkStream(
+                [
+                    _SdkObject(
+                        {
+                            "error": {
+                                "message": "PROMPT_BODY_MUST_NOT_EXPORT sk-test-secret",
+                                "type": "upstream",
+                            }
+                        }
+                    )
+                ]
+            )
+
+    class _FakeOpenAIClient:
+        chat = SimpleNamespace(completions=_FakeCompletions())
+
     async def run() -> None:
         client = LLMClient()
-        body = _make_sse_body(
-            [
-                '{"error":{"message":"PROMPT_BODY_MUST_NOT_EXPORT sk-test-secret","type":"upstream"}}'
-            ]
-        )
 
-        def fake_stream(_method: str, _url: str, **_kwargs: object) -> _FakeResponse:
-            return _FakeResponse(200, body)
+        async def fake_get_openai_client(**_kwargs: object) -> _FakeOpenAIClient:
+            return _FakeOpenAIClient()
 
-        mock_http = AsyncMock()
-        mock_http.is_closed = False
-        mock_http.stream = fake_stream
-        client._http_client = mock_http
+        monkeypatch.setattr(client, "_get_openai_client", fake_get_openai_client)
         with pytest.raises(RuntimeError, match="Upstream error"):
             await _collect_stream(client)
 
@@ -287,11 +303,8 @@ def test_stream_upstream_error_span_is_redacted(monkeypatch: pytest.MonkeyPatch)
     assert "sk-test-secret" not in blob
 
 
-def test_queue_full_and_cancellation_spans_preserve_behavior(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_queue_full_and_cancellation_spans_preserve_behavior() -> None:
     exporter = _start_recording_tracing()
-    monkeypatch.setattr("app.services.llm_client.get_settings", lambda: _LLMSettings())
 
     async def queue_full() -> None:
         queue = LLMRequestQueue(
@@ -317,17 +330,20 @@ def test_queue_full_and_cancellation_spans_preserve_behavior(
         await queue.stop()
 
     async def cancellation() -> None:
-        client = LLMClient()
+        queue = LLMRequestQueue(
+            name="cancel_trace_queue",
+            max_concurrent=1,
+            capacity=1,
+            wait_timeout_seconds=1.0,
+            shutdown_timeout_seconds=0.1,
+        )
 
-        def fake_stream(_method: str, _url: str, **_kwargs: object) -> _FakeResponse:
+        async def provider() -> None:
             raise asyncio.CancelledError
 
-        mock_http = AsyncMock()
-        mock_http.is_closed = False
-        mock_http.stream = fake_stream
-        client._http_client = mock_http
         with pytest.raises(asyncio.CancelledError):
-            await _collect_stream(client)
+            await queue.submit(provider)
+        await queue.stop()
 
     asyncio.run(queue_full())
     asyncio.run(cancellation())

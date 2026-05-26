@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-import json
 import logging
 import re
 import time
@@ -37,15 +36,6 @@ _TIMEOUT_LAYER_LLM_STREAM_TOTAL = "llm_stream_total"
 # Transient HTTP status codes that are safe to retry before any response
 # body has been consumed.
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
-_RETRYABLE_CONNECTION_ERRORS = (
-    httpx.ConnectError,
-    httpx.ConnectTimeout,
-    httpx.ReadTimeout,
-    httpx.PoolTimeout,
-    httpx.ReadError,
-    httpx.RemoteProtocolError,
-    httpx.WriteTimeout,
-)
 _MAX_RETRIES = 2
 _RETRY_BASE_DELAY = 1.0
 _RETRY_MAX_DELAY = 5.0
@@ -175,23 +165,6 @@ def _headers_with_trace_context(headers: dict[str, str]) -> dict[str, str]:
     return inject_trace_context(headers)
 
 
-def _annotate_httpx_timeout(
-    exc: BaseException,
-    *,
-    timeout: httpx.Timeout,
-) -> BaseException:
-    timeout_layer = _timeout_layer_for_httpx_exception(exc)
-    if timeout_layer is None:
-        return exc
-    timeout_seconds = _timeout_seconds_for_layer(timeout, timeout_layer)
-    setattr(exc, "timeout_layer", timeout_layer)
-    setattr(exc, "timeout_seconds", timeout_seconds)
-    exc.args = (
-        f"LLM timeout layer={timeout_layer} exceeded after {timeout_seconds:.3g}s",
-    )
-    return exc
-
-
 def _is_openai_timeout_error(exc: BaseException) -> bool:
     try:
         from openai import APITimeoutError
@@ -305,12 +278,6 @@ class LLMClient:
         return f"{normalized}/v1"
 
     @classmethod
-    def _chat_completions_url(cls, base_url: str) -> str:
-        """Return a chat completions URL from a configured base_url."""
-
-        return f"{cls._openai_base_url(base_url)}/chat/completions"
-
-    @classmethod
     def _sanitize_params(cls, params: dict[str, Any] | None) -> dict[str, Any]:
         if not params:
             return {}
@@ -329,24 +296,8 @@ class LLMClient:
         extra_headers: dict[str, str] | None = None,
         timeout_seconds: float = 120.0,
         total_timeout_seconds: float | None = None,
-        max_sse_event_chars: int = 128_000,
-        max_sse_line_bytes: int = 256_000,
     ) -> AsyncIterator[LLMStreamChunk]:
-        if get_settings().llm_client_mode == "async_openai":
-            async for chunk in self._stream_chat_completion_openai(
-                base_url=base_url,
-                model=model,
-                api_key=api_key,
-                messages=messages,
-                params=params,
-                extra_headers=extra_headers,
-                timeout_seconds=timeout_seconds,
-                total_timeout_seconds=total_timeout_seconds,
-            ):
-                yield chunk
-            return
-
-        async for chunk in self._stream_chat_completion_legacy(
+        async for chunk in self._stream_chat_completion_openai(
             base_url=base_url,
             model=model,
             api_key=api_key,
@@ -355,234 +306,8 @@ class LLMClient:
             extra_headers=extra_headers,
             timeout_seconds=timeout_seconds,
             total_timeout_seconds=total_timeout_seconds,
-            max_sse_event_chars=max_sse_event_chars,
-            max_sse_line_bytes=max_sse_line_bytes,
         ):
             yield chunk
-
-    async def _stream_chat_completion_legacy(
-        self,
-        *,
-        base_url: str,
-        model: str,
-        api_key: str | None,
-        messages: list[dict[str, Any]],
-        params: dict[str, Any] | None = None,
-        extra_headers: dict[str, str] | None = None,
-        timeout_seconds: float = 120.0,
-        total_timeout_seconds: float | None = None,
-        max_sse_event_chars: int = 128_000,
-        max_sse_line_bytes: int = 256_000,
-    ) -> AsyncIterator[LLMStreamChunk]:
-        """Yield OpenAI-compatible streaming chunks.
-
-        The caller is responsible for collecting deltas and handling finish states.
-
-        ``total_timeout_seconds`` enforces an overall wall-clock deadline for the
-        entire stream (connect + read + processing).  Defaults to
-        ``timeout_seconds * 3`` when not set explicitly.
-        """
-
-        url = self._chat_completions_url(base_url)
-        safe_url = _safe_url_label(url)
-
-        payload: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "stream": True,
-        }
-        payload.update(self._sanitize_params(params))
-
-        headers = {
-            "Accept": "text/event-stream",
-            "Content-Type": "application/json",
-        }
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        if extra_headers:
-            for key, value in extra_headers.items():
-                if key and value:
-                    headers[key] = value
-
-        timeout = _httpx_timeout(model_timeout_seconds=timeout_seconds)
-
-        if total_timeout_seconds is None:
-            total_timeout_seconds = timeout_seconds * 3
-        wall_clock_deadline = time.monotonic() + total_timeout_seconds
-
-        # Once we have received *any* response bytes from the upstream, we must
-        # not retry.  Retrying a mid-stream request can duplicate text in the UI
-        # and corrupt persisted outputs.  ``response_bytes_received`` is set as
-        # soon as the HTTP response status line arrives (before SSE parsing).
-        response_bytes_received = False
-
-        async def _attempt_stream() -> AsyncIterator[LLMStreamChunk]:
-            nonlocal response_bytes_received
-
-            client = await self._get_http_client()
-            request_headers = _headers_with_trace_context(dict(headers))
-            async with client.stream(
-                "POST",
-                url,
-                json=payload,
-                headers=request_headers,
-                timeout=timeout,
-            ) as response:
-                response.raise_for_status()
-                response_bytes_received = True
-
-                request_id = (
-                    response.headers.get("x-request-id")
-                    or response.headers.get("openai-request-id")
-                    or response.headers.get("x-openai-request-id")
-                )
-
-                async for data in _iter_sse_data_events(
-                    _iter_lines_from_bytes(
-                        response.aiter_raw(),
-                        max_line_bytes=max_sse_line_bytes,
-                    ),
-                    max_event_chars=max_sse_event_chars,
-                ):
-                    if time.monotonic() > wall_clock_deadline:
-                        exc = StreamTotalTimeoutError(
-                            timeout_seconds=total_timeout_seconds
-                        )
-                        _record_llm_error(
-                            attributes=_llm_trace_attributes(
-                                operation="stream",
-                                provider="legacy_httpx",
-                                model=model,
-                                base_url=url,
-                                timeout_layer=exc.timeout_layer,
-                            ),
-                            exc=exc,
-                            status="timeout",
-                        )
-                        raise exc
-
-                    if data.strip() == "[DONE]":
-                        break
-
-                    try:
-                        chunk_payload = json.loads(data)
-                    except json.JSONDecodeError:
-                        logger.warning("Skipping malformed SSE chunk from upstream")
-                        continue
-
-                    if not isinstance(chunk_payload, dict):
-                        continue
-
-                    upstream_error = _extract_upstream_error(chunk_payload)
-                    if upstream_error:
-                        exc = RuntimeError(
-                            f"Upstream error: "
-                            f"{_redact_sensitive_text(upstream_error, api_key, messages)}"
-                        )
-                        _record_llm_error(
-                            attributes=_llm_trace_attributes(
-                                operation="stream",
-                                provider="legacy_httpx",
-                                model=model,
-                                base_url=url,
-                            ),
-                            exc=exc,
-                        )
-                        raise exc
-
-                    usage = chunk_payload.get("usage")
-                    if usage is not None and not isinstance(usage, dict):
-                        usage = None
-                    usage = normalize_usage(usage)
-
-                    delta_text, finish_reason = _extract_choice_delta(chunk_payload)
-                    if delta_text is None and usage is None and finish_reason is None:
-                        continue
-
-                    yield LLMStreamChunk(
-                        text_delta=delta_text,
-                        usage=usage,
-                        finish_reason=finish_reason,
-                        request_id=request_id,
-                    )
-
-        for attempt in range(_MAX_RETRIES + 1):
-            span_attributes = _llm_trace_attributes(
-                operation="stream",
-                provider="legacy_httpx",
-                model=model,
-                base_url=url,
-                attempt=attempt,
-            )
-            try:
-                with traced_span("llm.provider_call", span_attributes):
-                    async for chunk in get_llm_request_queue().stream(
-                        _attempt_stream,
-                        queue_priority=-attempt,
-                    ):
-                        yield chunk
-                    set_span_attributes({"status": "ok"})
-
-                return
-
-            except httpx.HTTPStatusError as exc:
-                if (
-                    exc.response.status_code in _RETRYABLE_STATUS_CODES
-                    and attempt < _MAX_RETRIES
-                    and not response_bytes_received
-                ):
-                    delay = min(
-                        _RETRY_BASE_DELAY * (2**attempt),
-                        _RETRY_MAX_DELAY,
-                    )
-                    logger.warning(
-                        "Retryable HTTP %s from %s (attempt %d/%d), retrying in %.1fs",
-                        exc.response.status_code,
-                        safe_url,
-                        attempt + 1,
-                        _MAX_RETRIES + 1,
-                        delay,
-                    )
-                    _record_retry_attempt(
-                        attributes=span_attributes,
-                        exc=exc,
-                        delay_seconds=delay,
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-                _record_llm_error(attributes=span_attributes, exc=exc)
-                raise
-            except _RETRYABLE_CONNECTION_ERRORS as exc:
-                annotated_exc = _annotate_httpx_timeout(exc, timeout=timeout)
-                if getattr(annotated_exc, "timeout_layer", None):
-                    span_attributes["timeout_layer"] = getattr(
-                        annotated_exc,
-                        "timeout_layer",
-                    )
-                if attempt < _MAX_RETRIES and not response_bytes_received:
-                    delay = min(
-                        _RETRY_BASE_DELAY * (2**attempt),
-                        _RETRY_MAX_DELAY,
-                    )
-                    logger.warning(
-                        "Connection error %s timeout_layer=%s from %s "
-                        "(attempt %d/%d), retrying in %.1fs",
-                        type(annotated_exc).__name__,
-                        getattr(annotated_exc, "timeout_layer", None) or "none",
-                        safe_url,
-                        attempt + 1,
-                        _MAX_RETRIES + 1,
-                        delay,
-                    )
-                    _record_retry_attempt(
-                        attributes=span_attributes,
-                        exc=annotated_exc,
-                        delay_seconds=delay,
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-                _record_llm_error(attributes=span_attributes, exc=annotated_exc)
-                raise annotated_exc
 
     async def chat_completion(
         self,
@@ -595,17 +320,7 @@ class LLMClient:
         extra_headers: dict[str, str] | None = None,
         timeout_seconds: float = 30.0,
     ) -> dict[str, Any]:
-        if get_settings().llm_client_mode == "async_openai":
-            return await self._chat_completion_openai(
-                base_url=base_url,
-                model=model,
-                api_key=api_key,
-                messages=messages,
-                params=params,
-                extra_headers=extra_headers,
-                timeout_seconds=timeout_seconds,
-            )
-        return await self._chat_completion_legacy(
+        return await self._chat_completion_openai(
             base_url=base_url,
             model=model,
             api_key=api_key,
@@ -614,187 +329,6 @@ class LLMClient:
             extra_headers=extra_headers,
             timeout_seconds=timeout_seconds,
         )
-
-    async def _chat_completion_legacy(
-        self,
-        *,
-        base_url: str,
-        model: str,
-        api_key: str | None,
-        messages: list[dict[str, Any]],
-        params: dict[str, Any] | None = None,
-        extra_headers: dict[str, str] | None = None,
-        timeout_seconds: float = 30.0,
-    ) -> dict[str, Any]:
-        """Non-streaming OpenAI-compatible chat completion call.
-
-        This is mainly used for admin connectivity testing.
-        """
-
-        url = self._chat_completions_url(base_url)
-        safe_url = _safe_url_label(url)
-
-        payload: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "stream": False,
-        }
-        payload.update(self._sanitize_params(params))
-
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        if extra_headers:
-            for key, value in extra_headers.items():
-                if key and value:
-                    headers[key] = value
-
-        timeout = _httpx_timeout(model_timeout_seconds=timeout_seconds)
-
-        response: httpx.Response | None = None
-
-        async def _post_once() -> httpx.Response:
-            client = await self._get_http_client()
-            request_headers = _headers_with_trace_context(dict(headers))
-            return await client.post(
-                url,
-                json=payload,
-                headers=request_headers,
-                timeout=timeout,
-            )
-
-        for attempt in range(_MAX_RETRIES + 1):
-            span_attributes = _llm_trace_attributes(
-                operation="chat",
-                provider="legacy_httpx",
-                model=model,
-                base_url=url,
-                attempt=attempt,
-            )
-            try:
-                with traced_span("llm.provider_call", span_attributes):
-                    response = await get_llm_request_queue().submit(
-                        _post_once,
-                        queue_priority=-attempt,
-                    )
-                    response.raise_for_status()
-                    set_span_attributes({"status": "ok"})
-                break  # Success — fall through to response processing.
-            except httpx.HTTPStatusError as exc:
-                if (
-                    exc.response.status_code in _RETRYABLE_STATUS_CODES
-                    and attempt < _MAX_RETRIES
-                ):
-                    delay = min(
-                        _RETRY_BASE_DELAY * (2**attempt),
-                        _RETRY_MAX_DELAY,
-                    )
-                    logger.warning(
-                        "Retryable HTTP %s from %s (attempt %d/%d), retrying in %.1fs",
-                        exc.response.status_code,
-                        safe_url,
-                        attempt + 1,
-                        _MAX_RETRIES + 1,
-                        delay,
-                    )
-                    _record_retry_attempt(
-                        attributes=span_attributes,
-                        exc=exc,
-                        delay_seconds=delay,
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-                _record_llm_error(attributes=span_attributes, exc=exc)
-                raise
-            except _RETRYABLE_CONNECTION_ERRORS as exc:
-                annotated_exc = _annotate_httpx_timeout(exc, timeout=timeout)
-                if getattr(annotated_exc, "timeout_layer", None):
-                    span_attributes["timeout_layer"] = getattr(
-                        annotated_exc,
-                        "timeout_layer",
-                    )
-                if attempt < _MAX_RETRIES:
-                    delay = min(
-                        _RETRY_BASE_DELAY * (2**attempt),
-                        _RETRY_MAX_DELAY,
-                    )
-                    logger.warning(
-                        "Connection error %s timeout_layer=%s from %s "
-                        "(attempt %d/%d), retrying in %.1fs",
-                        type(annotated_exc).__name__,
-                        getattr(annotated_exc, "timeout_layer", None) or "none",
-                        safe_url,
-                        attempt + 1,
-                        _MAX_RETRIES + 1,
-                        delay,
-                    )
-                    _record_retry_attempt(
-                        attributes=span_attributes,
-                        exc=annotated_exc,
-                        delay_seconds=delay,
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-                _record_llm_error(attributes=span_attributes, exc=annotated_exc)
-                raise annotated_exc
-
-        # The loop always either breaks on success or raises on final failure,
-        # so response is guaranteed to be set here.
-        if response is None:
-            # Unreachable: the retry loop always either assigns response (on
-            # a successful break) or raises (on the final attempt).  Guard
-            # against future refactors that might introduce a new code path
-            # that exits the loop without either.
-            raise RuntimeError(
-                "chat_completion: response is None after retry loop; "
-                "this is a programming error"
-            )
-        body = response.json()
-
-        if not isinstance(body, dict):
-            exc = RuntimeError("Chat completion response was not a JSON object")
-            _record_llm_error(
-                attributes=_llm_trace_attributes(
-                    operation="chat",
-                    provider="legacy_httpx",
-                    model=model,
-                    base_url=url,
-                ),
-                exc=exc,
-            )
-            raise exc
-
-        upstream_error = _extract_upstream_error(body)
-        if upstream_error:
-            exc = RuntimeError(
-                f"Upstream error: "
-                f"{_redact_sensitive_text(upstream_error, api_key, messages)}"
-            )
-            _record_llm_error(
-                attributes=_llm_trace_attributes(
-                    operation="chat",
-                    provider="legacy_httpx",
-                    model=model,
-                    base_url=url,
-                ),
-                exc=exc,
-            )
-            raise exc
-
-        usage = body.get("usage")
-        if isinstance(usage, dict):
-            body["usage"] = normalize_usage(usage)
-
-        request_id = (
-            response.headers.get("x-request-id")
-            or response.headers.get("openai-request-id")
-            or response.headers.get("x-openai-request-id")
-        )
-        body.setdefault("request_id", request_id)
-        return body
 
     async def _get_openai_client(
         self,
@@ -1078,146 +612,6 @@ class LLMClient:
                 raise _sanitize_exception(annotated_exc, api_key, messages) from exc
 
         raise RuntimeError("chat_completion: exhausted retry loop")
-
-
-async def _iter_lines_from_bytes(
-    chunks: AsyncIterator[bytes], *, max_line_bytes: int
-) -> AsyncIterator[str]:
-    """Split a byte stream into lines with a safety cap.
-
-    We prefer parsing the raw response bytes (instead of relying on
-    ``httpx.Response.aiter_lines()``) so we can guard against pathological
-    upstream lines and avoid unbounded buffering.
-    """
-
-    max_line_bytes = max(int(max_line_bytes), 1)
-    buffer = b""
-    skipping = False
-
-    async for chunk in chunks:
-        if not chunk:
-            continue
-
-        if skipping:
-            consumed = _skip_to_line_break(chunk)
-            if consumed is None:
-                continue
-            chunk = chunk[consumed:]
-            skipping = False
-
-        buffer += chunk
-
-        while True:
-            line_info = _read_complete_line_bytes(buffer)
-            if line_info is None:
-                break
-
-            line_bytes, next_index = line_info
-            buffer = buffer[next_index:]
-
-            if len(line_bytes) > max_line_bytes:
-                # Drop only this oversized line and continue with any
-                # additional data already buffered after its newline.
-                continue
-
-            yield line_bytes.decode("utf-8", errors="replace")
-
-        if not skipping and len(buffer) > max_line_bytes:
-            buffer = b""
-            skipping = True
-
-    if not skipping and buffer:
-        # Best-effort flush of trailing data without a final newline.
-        yield buffer.decode("utf-8", errors="replace")
-
-
-def _skip_to_line_break(data: bytes) -> int | None:
-    """Return index after the next line break, or None if absent."""
-
-    idx_n = data.find(b"\n")
-    idx_r = data.find(b"\r")
-
-    if idx_n < 0 and idx_r < 0:
-        return None
-
-    if idx_r >= 0 and (idx_n < 0 or idx_r < idx_n):
-        # CRLF counts as one separator.
-        if idx_r + 1 < len(data) and data[idx_r + 1 : idx_r + 2] == b"\n":
-            return idx_r + 2
-        return idx_r + 1
-
-    # LF separator.
-    return idx_n + 1
-
-
-def _read_complete_line_bytes(buffer: bytes) -> tuple[bytes, int] | None:
-    """Return (line_bytes, next_index) when a full line is available."""
-
-    idx_n = buffer.find(b"\n")
-    idx_r = buffer.find(b"\r")
-
-    if idx_n < 0 and idx_r < 0:
-        return None
-
-    if idx_r >= 0 and (idx_n < 0 or idx_r < idx_n):
-        if idx_r + 1 >= len(buffer):
-            return None
-        if buffer[idx_r + 1 : idx_r + 2] == b"\n":
-            return buffer[:idx_r], idx_r + 2
-        return buffer[:idx_r], idx_r + 1
-
-    return buffer[:idx_n], idx_n + 1
-
-
-async def _iter_sse_data_events(
-    lines: AsyncIterator[str], *, max_event_chars: int
-) -> AsyncIterator[str]:
-    """Yield complete SSE ``data:`` payloads from a stream of lines.
-
-    Supports multi-line SSE data events and drops oversized events to avoid
-    unbounded memory growth on malformed upstream streams.
-    """
-
-    max_event_chars = max(int(max_event_chars), 1)
-    data_lines: list[str] = []
-    event_char_count = 0
-    dropping_event = False
-
-    async for raw_line in lines:
-        line = raw_line.rstrip("\r")
-
-        if line == "":
-            if not dropping_event and data_lines:
-                yield "\n".join(data_lines)
-
-            data_lines = []
-            event_char_count = 0
-            dropping_event = False
-            continue
-
-        if line.startswith(":"):
-            continue
-
-        if not line.startswith("data:"):
-            continue
-
-        data = line[5:]
-        if data.startswith(" "):
-            data = data[1:]
-
-        if dropping_event:
-            continue
-
-        event_char_count += len(data)
-        if event_char_count > max_event_chars:
-            data_lines = []
-            dropping_event = True
-            continue
-
-        data_lines.append(data)
-
-    if not dropping_event and data_lines:
-        yield "\n".join(data_lines)
 
 
 def _sdk_object_to_dict(value: Any) -> Any:

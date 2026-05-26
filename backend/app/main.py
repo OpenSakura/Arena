@@ -43,7 +43,6 @@ startup_logger = logging.getLogger("app.startup")
 
 _NON_PRODUCTION_ENVS = {"dev", "development", "test", "testing", "local"}
 _ROLLOUT_LOG_DEFAULTS: dict[str, object] = {
-    "llm_client_mode": "legacy",
     "max_concurrent_llm_requests": 40,
     "max_llm_requests": 120,
     "llm_queue_wait_timeout_seconds": 30.0,
@@ -81,7 +80,6 @@ def _emit_startup_warnings(settings: Settings) -> None:
 def _emit_startup_rollout_settings(settings: Settings, *, otlp_enabled: bool) -> None:
     startup_logger.info(
         "Startup rollout settings: "
-        "llm_client_mode=%s "
         "max_concurrent_llm_requests=%s "
         "max_llm_requests=%s "
         "llm_queue_wait_timeout_seconds=%s "
@@ -90,7 +88,6 @@ def _emit_startup_rollout_settings(settings: Settings, *, otlp_enabled: bool) ->
         "openai_model_timeout_seconds=%s "
         "otlp_enabled=%s "
         "otel_service_name=%s",
-        _rollout_log_value(settings, "llm_client_mode"),
         _rollout_log_value(settings, "max_concurrent_llm_requests"),
         _rollout_log_value(settings, "max_llm_requests"),
         _rollout_log_value(settings, "llm_queue_wait_timeout_seconds"),

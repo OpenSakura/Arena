@@ -9,7 +9,7 @@ Notes:
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 from functools import lru_cache
 import json
 import logging
@@ -122,8 +122,7 @@ class Settings(BaseSettings):
 
     service_token_hash_secret: str = ""
 
-    # LLM client rollout and outbound OpenAI-compatible request controls.
-    llm_client_mode: Literal["legacy", "async_openai"] = "legacy"
+    # LLM client and outbound OpenAI-compatible request controls.
     openai_connect_timeout_seconds: float = 10.0
     openai_model_timeout_seconds: float = 120.0
     max_concurrent_llm_requests: int = 40

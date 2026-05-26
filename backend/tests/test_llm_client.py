@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -12,49 +12,7 @@ from app.services.llm_client import (
     StreamTotalTimeoutError,
     _extract_upstream_error,
     _redact_sensitive_text,
-    _iter_lines_from_bytes,
-    _iter_sse_data_events,
 )
-
-
-@pytest.fixture(autouse=True)
-def _default_llm_client_mode_legacy(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "app.services.llm_client.get_settings",
-        lambda: _Settings(llm_client_mode="legacy"),
-    )
-
-
-async def _collect_sse_events(
-    lines: list[str], *, max_event_chars: int = 128_000
-) -> list[str]:
-    async def line_iter():
-        for line in lines:
-            yield line
-
-    collected: list[str] = []
-    async for payload in _iter_sse_data_events(
-        line_iter(),
-        max_event_chars=max_event_chars,
-    ):
-        collected.append(payload)
-    return collected
-
-
-async def _collect_lines_from_chunks(
-    chunks: list[bytes], *, max_line_bytes: int = 256_000
-) -> list[str]:
-    async def chunk_iter():
-        for chunk in chunks:
-            yield chunk
-
-    collected: list[str] = []
-    async for line in _iter_lines_from_bytes(
-        chunk_iter(),
-        max_line_bytes=max_line_bytes,
-    ):
-        collected.append(line)
-    return collected
 
 
 def test_extract_upstream_error_from_openai_error_object() -> None:
@@ -89,84 +47,6 @@ def test_extract_upstream_error_returns_none_without_error_fields() -> None:
     assert _extract_upstream_error(payload) is None
 
 
-def test_iter_sse_data_events_supports_multiline_payloads() -> None:
-    events = asyncio.run(
-        _collect_sse_events(
-            [
-                ": keepalive",
-                "event: ignored",
-                'data: {"delta":',
-                'data: "ok"}',
-                "",
-            ]
-        )
-    )
-
-    assert events == ['{"delta":\n"ok"}']
-
-
-def test_iter_sse_data_events_drops_oversized_events_and_recovers() -> None:
-    events = asyncio.run(
-        _collect_sse_events(
-            [
-                "data: this-is-way-too-large",
-                "",
-                'data: {"ok":true}',
-                "",
-            ],
-            max_event_chars=16,
-        )
-    )
-
-    assert events == ['{"ok":true}']
-
-
-def test_iter_sse_data_events_flushes_final_unterminated_event() -> None:
-    events = asyncio.run(_collect_sse_events(["data: final"]))
-    assert events == ["final"]
-
-
-def test_iter_lines_from_bytes_splits_crlf_and_flushes_tail() -> None:
-    lines = asyncio.run(
-        _collect_lines_from_chunks(
-            [
-                b"data: one\r\n",
-                b"data: two\npartial",
-            ]
-        )
-    )
-
-    assert lines == ["data: one", "data: two", "partial"]
-
-
-def test_iter_lines_from_bytes_drops_oversized_line() -> None:
-    lines = asyncio.run(
-        _collect_lines_from_chunks(
-            [
-                b"x" * 32,
-                b"\n",
-                b"data: ok\n",
-            ],
-            max_line_bytes=8,
-        )
-    )
-
-    assert lines == ["data: ok"]
-
-
-def test_iter_lines_from_bytes_preserves_same_chunk_data_after_oversized_line() -> None:
-    lines = asyncio.run(
-        _collect_lines_from_chunks(
-            [
-                b"x" * 32 + b"\ndata: ok\n",
-            ],
-            max_line_bytes=8,
-        )
-    )
-
-    assert lines == ["data: ok"]
-
-
 _BASE_KWARGS = dict(
     base_url="https://llm.example",
     model="test-model",
@@ -175,442 +55,15 @@ _BASE_KWARGS = dict(
 )
 
 
-def _make_sse_body(chunks: list[str]) -> bytes:
-    parts: list[str] = []
-    for c in chunks:
-        parts.append(f"data: {c}\n\n")
-    parts.append("data: [DONE]\n\n")
-    return "".join(parts).encode()
-
-
-class _FakeResponse:
-    def __init__(self, status_code: int, body: bytes, headers: dict | None = None):
-        self.status_code = status_code
-        self._body = body
-        self.headers = headers or {}
-        self._raised = False
-
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            resp = MagicMock(status_code=self.status_code)
-            raise httpx.HTTPStatusError(
-                "error",
-                request=MagicMock(),
-                response=resp,
-            )
-
-    async def aiter_raw(self):
-        yield self._body
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        pass
-
-
-async def _collect_stream(client: LLMClient, **extra_kwargs) -> list[str]:
-    chunks: list[str] = []
-    kwargs = {**_BASE_KWARGS, **extra_kwargs}
-    async for chunk in client.stream_chat_completion(**kwargs):
-        if chunk.text_delta:
-            chunks.append(chunk.text_delta)
-    return chunks
-
-
-def test_readtimeout_is_retried_pre_stream() -> None:
-    call_count = 0
-
-    async def _run():
-        nonlocal call_count
-        client = LLMClient()
-        body = _make_sse_body(
-            ['{"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}']
-        )
-
-        def _fake_stream(method, url, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count <= 1:
-                raise httpx.ReadTimeout("timed out")
-            return _FakeResponse(200, body)
-
-        mock_http = AsyncMock()
-        mock_http.is_closed = False
-        mock_http.stream = _fake_stream
-        client._http_client = mock_http
-
-        with patch("app.services.llm_client.asyncio.sleep", new_callable=AsyncMock):
-            result = await _collect_stream(client, timeout_seconds=5.0)
-        return result
-
-    result = asyncio.run(_run())
-    assert result == ["ok"]
-    assert call_count == 2
-
-
-def test_pooltimeout_is_retried_pre_stream() -> None:
-    call_count = 0
-
-    async def _run():
-        nonlocal call_count
-        client = LLMClient()
-        body = _make_sse_body(
-            ['{"choices":[{"delta":{"content":"pool-ok"},"finish_reason":null}]}']
-        )
-
-        def _fake_stream(method, url, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count <= 1:
-                raise httpx.PoolTimeout("pool full")
-            return _FakeResponse(200, body)
-
-        mock_http = AsyncMock()
-        mock_http.is_closed = False
-        mock_http.stream = _fake_stream
-        client._http_client = mock_http
-
-        with patch("app.services.llm_client.asyncio.sleep", new_callable=AsyncMock):
-            result = await _collect_stream(client, timeout_seconds=5.0)
-        return result
-
-    result = asyncio.run(_run())
-    assert result == ["pool-ok"]
-    assert call_count == 2
-
-
-def test_does_not_retry_after_receiving_bytes() -> None:
-    call_count = 0
-
-    async def _run():
-        nonlocal call_count
-        client = LLMClient()
-
-        class _FailMidStream:
-            def __init__(self):
-                self.status_code = 200
-                self.headers = {}
-
-            def raise_for_status(self):
-                pass
-
-            async def aiter_raw(self):
-                yield b'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}\n\n'
-                raise httpx.ReadTimeout("mid-stream timeout")
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *args):
-                pass
-
-        def _fake_stream(method, url, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            return _FailMidStream()
-
-        mock_http = AsyncMock()
-        mock_http.is_closed = False
-        mock_http.stream = _fake_stream
-        client._http_client = mock_http
-
-        with pytest.raises(httpx.ReadTimeout):
-            await _collect_stream(client, timeout_seconds=5.0)
-
-    asyncio.run(_run())
-    assert call_count == 1
-
-
-def test_readerror_is_retried_pre_stream() -> None:
-    call_count = 0
-
-    async def _run():
-        nonlocal call_count
-        client = LLMClient()
-        body = _make_sse_body(
-            ['{"choices":[{"delta":{"content":"read-ok"},"finish_reason":null}]}']
-        )
-
-        def _fake_stream(method, url, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count <= 1:
-                raise httpx.ReadError("read error")
-            return _FakeResponse(200, body)
-
-        mock_http = AsyncMock()
-        mock_http.is_closed = False
-        mock_http.stream = _fake_stream
-        client._http_client = mock_http
-
-        with patch("app.services.llm_client.asyncio.sleep", new_callable=AsyncMock):
-            result = await _collect_stream(client, timeout_seconds=5.0)
-        return result
-
-    result = asyncio.run(_run())
-    assert result == ["read-ok"]
-    assert call_count == 2
-
-
-def test_remoteprotocolerror_is_retried_pre_stream() -> None:
-    call_count = 0
-
-    async def _run():
-        nonlocal call_count
-        client = LLMClient()
-        body = _make_sse_body(
-            ['{"choices":[{"delta":{"content":"proto-ok"},"finish_reason":null}]}']
-        )
-
-        def _fake_stream(method, url, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count <= 1:
-                raise httpx.RemoteProtocolError("remote protocol error")
-            return _FakeResponse(200, body)
-
-        mock_http = AsyncMock()
-        mock_http.is_closed = False
-        mock_http.stream = _fake_stream
-        client._http_client = mock_http
-
-        with patch("app.services.llm_client.asyncio.sleep", new_callable=AsyncMock):
-            result = await _collect_stream(client, timeout_seconds=5.0)
-        return result
-
-    result = asyncio.run(_run())
-    assert result == ["proto-ok"]
-    assert call_count == 2
-
-
-def test_writetimeout_is_retried_pre_stream() -> None:
-    call_count = 0
-
-    async def _run():
-        nonlocal call_count
-        client = LLMClient()
-        body = _make_sse_body(
-            ['{"choices":[{"delta":{"content":"write-ok"},"finish_reason":null}]}']
-        )
-
-        def _fake_stream(method, url, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count <= 1:
-                raise httpx.WriteTimeout("write timed out")
-            return _FakeResponse(200, body)
-
-        mock_http = AsyncMock()
-        mock_http.is_closed = False
-        mock_http.stream = _fake_stream
-        client._http_client = mock_http
-
-        with patch("app.services.llm_client.asyncio.sleep", new_callable=AsyncMock):
-            result = await _collect_stream(client, timeout_seconds=5.0)
-        return result
-
-    result = asyncio.run(_run())
-    assert result == ["write-ok"]
-    assert call_count == 2
-
-
-def test_propagates_after_retry_budget_exhausted() -> None:
-    call_count = 0
-
-    async def _run():
-        nonlocal call_count
-        client = LLMClient()
-
-        def _fake_stream(method, url, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            raise httpx.ReadError("always fails")
-
-        mock_http = AsyncMock()
-        mock_http.is_closed = False
-        mock_http.stream = _fake_stream
-        client._http_client = mock_http
-
-        with patch("app.services.llm_client.asyncio.sleep", new_callable=AsyncMock):
-            with pytest.raises(httpx.ReadError):
-                await _collect_stream(client, timeout_seconds=5.0)
-
-    asyncio.run(_run())
-    assert call_count == 3
-
-
-def test_chat_completion_retries_retryable_status_pre_response() -> None:
-    call_count = 0
-
-    async def _run():
-        nonlocal call_count
-        client = LLMClient()
-        request = httpx.Request("POST", "https://llm.example/v1/chat/completions")
-
-        async def _fake_post(url, **kwargs):
-            nonlocal call_count
-            _ = (url, kwargs)
-            call_count += 1
-            if call_count == 1:
-                return httpx.Response(
-                    503,
-                    json={"error": {"message": "gateway busy"}},
-                    request=request,
-                )
-            return httpx.Response(
-                200,
-                json={
-                    "choices": [
-                        {"message": {"content": "non-stream ok"}, "finish_reason": "stop"}
-                    ]
-                },
-                headers={"x-request-id": "req-chat-1"},
-                request=request,
-            )
-
-        mock_http = AsyncMock()
-        mock_http.is_closed = False
-        mock_http.post = _fake_post
-        client._http_client = mock_http
-
-        with patch("app.services.llm_client.asyncio.sleep", new_callable=AsyncMock):
-            return await client.chat_completion(**_BASE_KWARGS, timeout_seconds=7.0)
-
-    result = asyncio.run(_run())
-    assert result["choices"][0]["message"]["content"] == "non-stream ok"
-    assert result["request_id"] == "req-chat-1"
-    assert call_count == 2
-
-
-def test_http_client_is_reused_until_aclose(monkeypatch: pytest.MonkeyPatch) -> None:
-    created_clients: list[object] = []
-
-    class _ReusableAsyncClient:
-        def __init__(self, **kwargs: object) -> None:
-            self.kwargs = kwargs
-            self.is_closed = False
-
-        async def aclose(self) -> None:
-            self.is_closed = True
-
-    def _fake_async_client(**kwargs: object) -> _ReusableAsyncClient:
-        reusable_client = _ReusableAsyncClient(**kwargs)
-        created_clients.append(reusable_client)
-        return reusable_client
-
-    monkeypatch.setattr(
-        "app.services.llm_client.httpx.AsyncClient",
-        _fake_async_client,
-    )
-
-    async def _run():
-        client = LLMClient()
-        first_client = await client._get_http_client()
-        second_client = await client._get_http_client()
-        await client.aclose()
-        third_client = await client._get_http_client()
-        return first_client, second_client, third_client, client._http_client
-
-    first_client, second_client, third_client, active_client = asyncio.run(_run())
-
-    assert first_client is second_client
-    assert getattr(first_client, "is_closed") is True
-    assert third_client is active_client
-    assert third_client is created_clients[1]
-    assert len(created_clients) == 2
-
-
-def test_total_timeout_raises_stream_total_timeout_error() -> None:
-    async def _run():
-        client = LLMClient()
-
-        class _SlowStream:
-            def __init__(self):
-                self.status_code = 200
-                self.headers = {}
-
-            def raise_for_status(self):
-                pass
-
-            async def aiter_raw(self):
-                chunk = '{"choices":[{"delta":{"content":"tok"},"finish_reason":null}]}'
-                for _ in range(100):
-                    yield f"data: {chunk}\n\n".encode()
-                    await asyncio.sleep(0.05)
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *args):
-                pass
-
-        def _fake_stream(method, url, **kwargs):
-            return _SlowStream()
-
-        mock_http = AsyncMock()
-        mock_http.is_closed = False
-        mock_http.stream = _fake_stream
-        client._http_client = mock_http
-
-        with pytest.raises(StreamTotalTimeoutError, match="total wall-clock timeout"):
-            await _collect_stream(
-                client,
-                timeout_seconds=5.0,
-                total_timeout_seconds=0.1,
-            )
-
-    asyncio.run(_run())
-
-
 class _Settings:
     def __init__(
         self,
         *,
-        llm_client_mode: str = "legacy",
         connect_timeout: float = 1.5,
         model_timeout: float = 9.5,
     ) -> None:
-        self.llm_client_mode = llm_client_mode
         self.openai_connect_timeout_seconds = connect_timeout
         self.openai_model_timeout_seconds = model_timeout
-
-
-def test_legacy_stream_uses_separate_connect_and_model_timeouts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured_timeout: httpx.Timeout | None = None
-    monkeypatch.setattr(
-        "app.services.llm_client.get_settings",
-        lambda: _Settings(connect_timeout=2.5, model_timeout=99.0),
-    )
-
-    async def _run() -> list[str]:
-        client = LLMClient()
-        body = _make_sse_body(
-            ['{"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}']
-        )
-
-        def _fake_stream(method, url, **kwargs):
-            nonlocal captured_timeout
-            _ = (method, url)
-            captured_timeout = kwargs["timeout"]
-            return _FakeResponse(200, body)
-
-        mock_http = AsyncMock()
-        mock_http.is_closed = False
-        mock_http.stream = _fake_stream
-        client._http_client = mock_http
-        return await _collect_stream(client, timeout_seconds=17.0)
-
-    result = asyncio.run(_run())
-
-    assert result == ["ok"]
-    assert isinstance(captured_timeout, httpx.Timeout)
-    assert captured_timeout.connect == 2.5
-    assert captured_timeout.read == 17.0
-    assert captured_timeout.write == 2.5
-    assert captured_timeout.pool == 2.5
 
 
 class _FakeAsyncOpenAI:
@@ -654,13 +107,19 @@ class _AsyncChunkStream:
             yield item
 
 
+class _SlowAsyncChunkStream:
+    async def __aiter__(self):
+        while True:
+            await asyncio.sleep(0.05)
+            yield _SdkObject(
+                {"choices": [{"delta": {"content": "tok"}, "finish_reason": None}]}
+            )
+
+
 def _enable_async_openai(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakeAsyncOpenAI.created = []
     _FakeAsyncOpenAI.responses = []
-    monkeypatch.setattr(
-        "app.services.llm_client.get_settings",
-        lambda: _Settings(llm_client_mode="async_openai"),
-    )
+    monkeypatch.setattr("app.services.llm_client.get_settings", lambda: _Settings())
     monkeypatch.setattr("openai.AsyncOpenAI", _FakeAsyncOpenAI)
 
 
@@ -683,6 +142,71 @@ class _InlineQueue:
             yield item
 
 
+async def _collect_stream(client: LLMClient, **extra_kwargs: object) -> list[str]:
+    chunks: list[str] = []
+    kwargs = {**_BASE_KWARGS, **extra_kwargs}
+    async for chunk in client.stream_chat_completion(**kwargs):
+        if chunk.text_delta:
+            chunks.append(chunk.text_delta)
+    return chunks
+
+
+def test_http_client_is_reused_until_aclose(monkeypatch: pytest.MonkeyPatch) -> None:
+    created_clients: list[object] = []
+
+    class _ReusableAsyncClient:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+            self.is_closed = False
+
+        async def aclose(self) -> None:
+            self.is_closed = True
+
+    def _fake_async_client(**kwargs: object) -> _ReusableAsyncClient:
+        reusable_client = _ReusableAsyncClient(**kwargs)
+        created_clients.append(reusable_client)
+        return reusable_client
+
+    monkeypatch.setattr(
+        "app.services.llm_client.httpx.AsyncClient",
+        _fake_async_client,
+    )
+
+    async def _run():
+        client = LLMClient()
+        first_client = await client._get_http_client()
+        second_client = await client._get_http_client()
+        await client.aclose()
+        third_client = await client._get_http_client()
+        return first_client, second_client, third_client, client._http_client
+
+    first_client, second_client, third_client, active_client = asyncio.run(_run())
+
+    assert first_client is second_client
+    assert getattr(first_client, "is_closed") is True
+    assert third_client is active_client
+    assert third_client is created_clients[1]
+    assert len(created_clients) == 2
+
+
+def test_total_timeout_raises_stream_total_timeout_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_async_openai(monkeypatch)
+
+    async def _run() -> None:
+        client = LLMClient()
+        _FakeAsyncOpenAI.responses.append(_SlowAsyncChunkStream())
+        with pytest.raises(StreamTotalTimeoutError, match="total wall-clock timeout"):
+            await _collect_stream(
+                client,
+                timeout_seconds=5.0,
+                total_timeout_seconds=0.01,
+            )
+
+    asyncio.run(_run())
+
+
 def test_openai_base_url_normalization_variants() -> None:
     cases = {
         "https://llm.example": "https://llm.example/v1",
@@ -696,75 +220,6 @@ def test_openai_base_url_normalization_variants() -> None:
 
     for raw, expected in cases.items():
         assert LLMClient._openai_base_url(raw) == expected
-        assert LLMClient._chat_completions_url(raw) == f"{expected}/chat/completions"
-
-
-def test_queue_wraps_legacy_non_streaming_provider_call(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    inline_queue = _InlineQueue()
-    monkeypatch.setattr(
-        "app.services.llm_client.get_llm_request_queue",
-        lambda: inline_queue,
-    )
-
-    async def _run() -> dict[str, object]:
-        client = LLMClient()
-        request = httpx.Request("POST", "https://llm.example/v1/chat/completions")
-
-        async def _fake_post(url, **kwargs):
-            return httpx.Response(
-                200,
-                json={"choices": [{"message": {"content": "queued"}}]},
-                request=request,
-            )
-
-        mock_http = AsyncMock()
-        mock_http.is_closed = False
-        mock_http.post = _fake_post
-        client._http_client = mock_http
-        return await client.chat_completion(**_BASE_KWARGS)
-
-    result = asyncio.run(_run())
-
-    assert result["choices"][0]["message"]["content"] == "queued"
-    assert inline_queue.submit_calls == [
-        {"func_name": "_post_once", "queue_priority": 0}
-    ]
-    assert inline_queue.stream_calls == []
-
-
-def test_queue_wraps_legacy_streaming_provider_call(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    inline_queue = _InlineQueue()
-    monkeypatch.setattr(
-        "app.services.llm_client.get_llm_request_queue",
-        lambda: inline_queue,
-    )
-
-    async def _run() -> list[str]:
-        client = LLMClient()
-        body = _make_sse_body(
-            ['{"choices":[{"delta":{"content":"stream-queued"},"finish_reason":null}]}']
-        )
-
-        def _fake_stream(method, url, **kwargs):
-            return _FakeResponse(200, body)
-
-        mock_http = AsyncMock()
-        mock_http.is_closed = False
-        mock_http.stream = _fake_stream
-        client._http_client = mock_http
-        return await _collect_stream(client)
-
-    result = asyncio.run(_run())
-
-    assert result == ["stream-queued"]
-    assert inline_queue.stream_calls == [
-        {"func_name": "_attempt_stream", "queue_priority": 0}
-    ]
-    assert inline_queue.submit_calls == []
 
 
 def test_queue_wraps_async_openai_non_streaming_provider_call(
@@ -1009,7 +464,9 @@ def test_async_openai_stream_yields_chunks_usage_and_request_id(
     assert chunks[2].finish_reason == "stop"
 
 
-def test_async_openai_stream_retries_before_first_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_async_openai_stream_retries_before_first_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _enable_async_openai(monkeypatch)
     import openai
 
@@ -1110,37 +567,6 @@ def test_async_openai_reserved_params_cannot_override_required_fields(
     assert kwargs["temperature"] == 0
 
 
-def test_legacy_mode_remains_default_httpx_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "app.services.llm_client.get_settings",
-        lambda: _Settings(llm_client_mode="legacy"),
-    )
-    openai_constructor = MagicMock()
-    monkeypatch.setattr("openai.AsyncOpenAI", openai_constructor)
-
-    async def _run() -> dict[str, object]:
-        client = LLMClient()
-        request = httpx.Request("POST", "https://llm.example/v1/chat/completions")
-
-        async def _fake_post(url, **kwargs):
-            return httpx.Response(
-                200,
-                json={"choices": [{"message": {"content": "legacy"}}]},
-                request=request,
-            )
-
-        mock_http = AsyncMock()
-        mock_http.is_closed = False
-        mock_http.post = _fake_post
-        client._http_client = mock_http
-        return await client.chat_completion(**_BASE_KWARGS)
-
-    result = asyncio.run(_run())
-
-    assert result["choices"][0]["message"]["content"] == "legacy"
-    openai_constructor.assert_not_called()
-
-
 def test_redaction_removes_api_key_authorization_prompt_and_completion() -> None:
     secret_key = "sk-test-secret"
     prompt = "sensitive prompt text"
@@ -1200,84 +626,3 @@ def test_async_openai_errors_are_redacted(monkeypatch: pytest.MonkeyPatch) -> No
         assert "Bearer sk-private" not in message
 
     asyncio.run(_run())
-
-
-
-def test_legacy_malformed_stream_log_is_redacted(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    prompt = "private legacy prompt"
-    completion = "private legacy completion"
-    secret_key = "sk-legacy-secret"
-
-    async def _run() -> list[str]:
-        client = LLMClient()
-        body = _make_sse_body(
-            [
-                (
-                    "not-json Authorization: Bearer sk-legacy-secret "
-                    "private legacy prompt private legacy completion"
-                ),
-                '{"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}',
-            ]
-        )
-
-        def _fake_stream(method, url, **kwargs):
-            return _FakeResponse(200, body)
-
-        mock_http = AsyncMock()
-        mock_http.is_closed = False
-        mock_http.stream = _fake_stream
-        client._http_client = mock_http
-        with caplog.at_level("WARNING", logger="app.services.llm_client"):
-            return await _collect_stream(
-                client,
-                api_key=secret_key,
-                messages=[
-                    {"role": "user", "content": prompt},
-                    {"role": "assistant", "content": completion},
-                ],
-            )
-
-    result = asyncio.run(_run())
-
-    assert result == ["ok"]
-    logged = "\n".join(record.getMessage() for record in caplog.records)
-    assert secret_key not in logged
-    assert prompt not in logged
-    assert completion not in logged
-    assert "Bearer sk-legacy-secret" not in logged
-
-
-def test_legacy_malformed_stream_log_omits_raw_payload(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    secret_payload = "raw malformed completion payload"
-
-    async def _run() -> list[str]:
-        client = LLMClient()
-        body = _make_sse_body(
-            [
-                secret_payload,
-                '{"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}',
-            ]
-        )
-
-        def _fake_stream(method, url, **kwargs):
-            return _FakeResponse(200, body)
-
-        mock_http = AsyncMock()
-        mock_http.is_closed = False
-        mock_http.stream = _fake_stream
-        client._http_client = mock_http
-        with caplog.at_level("WARNING", logger="app.services.llm_client"):
-            return await _collect_stream(client)
-
-    result = asyncio.run(_run())
-
-    assert result == ["ok"]
-    logged = "\n".join(record.getMessage() for record in caplog.records)
-    assert secret_payload not in logged
-    assert "Skipping malformed SSE chunk from upstream" in logged
