@@ -154,6 +154,11 @@ async function mockCompletedBattle(page: Page, battleId: string): Promise<void> 
   });
 }
 
+async function expectVoteControlsReady(page: Page): Promise<void> {
+  await expect(page.getByRole("button", { name: "Submit Vote" })).toBeDisabled({ timeout: 60_000 });
+  await expect(page.getByRole("button", { name: "Tie" })).toBeVisible();
+}
+
 test("submits tie votes with rubric tags and comment payload", async ({ page }) => {
   const votePayloads: Array<{ csrfHeader: string | undefined; payload: unknown }> = [];
 
@@ -185,11 +190,18 @@ test("submits tie votes with rubric tags and comment payload", async ({ page }) 
 
   await page.goto("/battle/new");
 
-  await expect(page.getByText(/complete/i)).toBeVisible({ timeout: 60_000 });
+  await expectVoteControlsReady(page);
 
   await page.getByRole("button", { name: "Tie" }).click();
-  await page.getByRole("button", { name: "accuracy" }).click();
-  await page.getByRole("button", { name: "style" }).click();
+  await page.getByRole("button", { name: "Accuracy" }).click();
+  await page.getByRole("button", { name: "Style" }).click();
+  await page.getByRole("button", { name: "Knowledge" }).click();
+
+  const terminologyButton = page.getByRole("button", { name: "Terminology" });
+  await terminologyButton.hover();
+  await expect(page.getByRole("tooltip", { name: /Accurate translation of proper nouns/ })).toBeVisible();
+  await terminologyButton.click();
+
   await page.getByLabel("Optional feedback").fill("Both outputs are strong in different dimensions.");
 
   await page.getByRole("button", { name: "Submit Vote" }).click();
@@ -204,7 +216,7 @@ test("submits tie votes with rubric tags and comment payload", async ({ page }) 
   });
 
   const rubric = payload.rubric as Record<string, unknown>;
-  expect(rubric.tags).toEqual(expect.arrayContaining(["accuracy", "style"]));
+  expect(rubric.tags).toEqual(expect.arrayContaining(["accuracy", "style", "knowledge", "terminology"]));
 });
 
 test("shows conflict errors and allows retry with the same vote state", async ({ page }) => {
@@ -250,10 +262,10 @@ test("shows conflict errors and allows retry with the same vote state", async ({
 
   await page.goto("/battle/new");
 
-  await expect(page.getByText(/complete/i)).toBeVisible({ timeout: 60_000 });
+  await expectVoteControlsReady(page);
 
   await page.getByRole("button", { name: /Model A is better/i }).click();
-  await page.getByRole("button", { name: "fluency" }).click();
+  await page.getByRole("button", { name: "Fluency" }).click();
   await page.getByLabel("Optional feedback").fill("Retrying after conflict");
 
   const submitVote = page.getByRole("button", { name: "Submit Vote" });
@@ -326,7 +338,7 @@ test("submits only once when users double-click submit under latency", async ({ 
 
   await page.goto("/battle/new");
 
-  await expect(page.getByText(/complete/i)).toBeVisible({ timeout: 60_000 });
+  await expectVoteControlsReady(page);
 
   await page.getByRole("button", { name: /Model A is better/i }).click();
   const submitVote = page.getByRole("button", { name: "Submit Vote" });

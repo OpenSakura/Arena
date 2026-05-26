@@ -21,6 +21,10 @@ ALLOWED_RUBRIC_TAGS = frozenset(
         "accuracy",
         "fluency",
         "style",
+        "knowledge",
+        "cultural",
+        "voice",
+        "terminology",
         "consistency",
         "naturalness",
     }

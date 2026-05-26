@@ -146,10 +146,25 @@ describe("BattleView", () => {
     await screen.findByText("JP source");
     await screen.findByText("Alpha");
     await screen.findByText("Beta");
+    expect(screen.getByRole("button", { name: "Knowledge" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Cultural" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Voice" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Terminology" })).toBeDefined();
+
+    const culturalButton = screen.getByRole("button", { name: "Cultural" });
+    expect(culturalButton.getAttribute("aria-describedby")).toBe("tooltip-cultural");
+
+    const culturalTooltip = document.getElementById("tooltip-cultural");
+    expect(culturalTooltip).toBeDefined();
+    expect(culturalTooltip?.textContent).toContain("Proper handling");
 
     const user = userEvent.setup();
     const option = screen.getByText(/Model A is better/i).closest("button");
     if (!option) throw new Error("Vote option not found");
+
+    await user.click(culturalButton);
+    expect(dispatch).toHaveBeenCalledWith({ type: "TOGGLE_RUBRIC_TAG", tag: "cultural" });
+
     await user.click(option);
     await user.click(screen.getByRole("button", { name: "Submit Vote" }));
 

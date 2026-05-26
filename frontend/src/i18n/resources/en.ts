@@ -88,7 +88,7 @@ export const enResource = {
       },
       communityVoting: {
         title: "Community Voting",
-        description: "Vote on accuracy, fluency, style, and naturalness to build consensus."
+        description: "Vote on accuracy, fluency, style, naturalness, knowledge, cultural nuance, voice, and terminology to build consensus."
       },
       rankings: {
         title: "Elo & BT Rankings",
@@ -235,7 +235,22 @@ export const enResource = {
       fluency: "Fluency",
       style: "Style",
       consistency: "Consistency",
-      naturalness: "Naturalness"
+      naturalness: "Naturalness",
+      knowledge: "Knowledge",
+      cultural: "Cultural",
+      voice: "Voice",
+      terminology: "Terminology"
+    },
+    rubricDescriptions: {
+      accuracy: "Faithfulness to the original text without omissions or mistranslations.",
+      fluency: "Smoothness and readability in the target language.",
+      style: "Appropriate tone, register, and literary flair.",
+      consistency: "Uniform use of terms and character voice throughout.",
+      naturalness: "Phrasing that reads like natively written text.",
+      knowledge: "Correct understanding of domain-specific concepts or trivia.",
+      cultural: "Proper handling of cultural references and nuances.",
+      voice: "Preservation of character personality and speech patterns.",
+      terminology: "Accurate translation of proper nouns and specific terms."
     },
     errorEmptyStateTitle: "Unable to load battle",
     returnHome: "Return Home",

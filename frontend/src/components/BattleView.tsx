@@ -18,6 +18,10 @@ const RUBRIC_TAGS = [
   "style",
   "consistency",
   "naturalness",
+  "knowledge",
+  "cultural",
+  "voice",
+  "terminology",
 ] as const;
 
 export function BattleView({ battleId }: { battleId: string }) {
@@ -177,24 +181,33 @@ export function BattleView({ battleId }: { battleId: string }) {
                 <div className="mb-3 text-sm font-medium text-muted-foreground">{t("battle.rubricPrompt")}</div>
                 <div className="flex flex-wrap gap-2">
                   {RUBRIC_TAGS.map((tag) => (
-                    <button
-                      key={tag}
-                      type="button"
-                      onClick={() => toggleRubricTag(tag)}
-                      disabled={reveal !== null}
-                      aria-pressed={rubricTags.includes(tag)}
-                      className={`
-                        rounded-full border transition-all duration-200 ease-out outline-none
-                        px-3.5 py-1.5 text-xs capitalize font-medium
-                        ${reveal !== null ? "opacity-50 cursor-not-allowed" : ""}
-                        ${rubricTags.includes(tag)
-                          ? "border-primary/40 bg-primary/15 text-primary font-semibold shadow-sm shadow-primary/10"
-                          : "border-border bg-transparent text-muted-foreground hover:border-foreground/20 hover:bg-foreground/5 hover:text-foreground"
-                        }
-                      `}
-                    >
-                      {t(`battle.rubric.${tag}`)}
-                    </button>
+                    <div key={tag} className="group relative flex">
+                      <button
+                        type="button"
+                        onClick={() => toggleRubricTag(tag)}
+                        disabled={reveal !== null}
+                        aria-pressed={rubricTags.includes(tag)}
+                        aria-describedby={`tooltip-${tag}`}
+                        className={`
+                          rounded-full border transition-all duration-200 ease-out outline-none
+                          px-3.5 py-1.5 text-xs capitalize font-medium
+                          ${reveal !== null ? "opacity-50 cursor-not-allowed" : ""}
+                          ${rubricTags.includes(tag)
+                            ? "border-primary/40 bg-primary/15 text-primary font-semibold shadow-sm shadow-primary/10"
+                            : "border-border bg-transparent text-muted-foreground hover:border-foreground/20 hover:bg-foreground/5 hover:text-foreground"
+                          }
+                        `}
+                      >
+                        {t(`battle.rubric.${tag}`)}
+                      </button>
+                      <div
+                        id={`tooltip-${tag}`}
+                        role="tooltip"
+                        className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-max max-w-xs rounded bg-popover px-2 py-1 text-xs text-popover-foreground opacity-0 shadow-md transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 z-10"
+                      >
+                        {t(`battle.rubricDescriptions.${tag}`)}
+                      </div>
+                    </div>
                   ))}
                 </div>
               </div>
