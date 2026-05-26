@@ -14,6 +14,7 @@ from app.services import battle_orchestrator as orchestrator_module
 from app.services.battle_orchestrator import (
     BattleSnapshot,
     BattleOrchestrator,
+    DEFAULT_SYSTEM_PROMPT,
     PreparedRun,
     RunSnapshot,
     _iter_text_chunks,
@@ -1511,8 +1512,9 @@ def test_build_system_prompt_uses_default_prompt() -> None:
         target_lang="zh",
     )
 
-    assert "Translate the user input from ja to zh" in prompt
-    assert "Output policy" not in prompt
+    assert prompt == DEFAULT_SYSTEM_PROMPT
+    assert "{{ source_lang }}" not in prompt
+    assert "{{ target_lang }}" not in prompt
 
 
 def test_build_system_prompt_uses_model_prompt_when_present() -> None:
@@ -1655,20 +1657,12 @@ def test_prepare_runs_for_execution_applies_independent_prompt_fallbacks(
     assert prepared_by_side["B"].messages == [
         {
             "role": "system",
-            "content": (
-                "You are a professional literary translator. "
-                "Translate the user input from ja to zh while preserving tone, nuance, "
-                "style, and character voice."
-            ),
+            "content": DEFAULT_SYSTEM_PROMPT,
         },
         {"role": "user", "content": "User prompt: JP text"},
     ]
     assert prepared_by_side["B"].prompt_rendered == {
-        "system_prompt": (
-            "You are a professional literary translator. "
-            "Translate the user input from ja to zh while preserving tone, nuance, "
-            "style, and character voice."
-        ),
+        "system_prompt": DEFAULT_SYSTEM_PROMPT,
         "user_prompt": "User prompt: JP text",
         "source_lang": "ja",
         "target_lang": "zh",
