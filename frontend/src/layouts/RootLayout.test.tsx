@@ -1,6 +1,8 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
+
+import { createTestI18n, TestI18nProvider } from "@/i18n/test-utils";
 import { RootLayout } from "./RootLayout";
 import { routerFutureConfig } from "@/router";
 
@@ -18,6 +20,7 @@ vi.mock("@/hooks/useArenaAuth", () => ({
 
 describe("RootLayout", () => {
   it("renders header, main wrapper with correct spacing, and footer", async () => {
+    const i18n = await createTestI18n("en");
     const memRouter = createMemoryRouter(
       [
         {
@@ -29,7 +32,11 @@ describe("RootLayout", () => {
       { initialEntries: ["/"], future: routerFutureConfig },
     );
 
-    render(<RouterProvider router={memRouter} future={{ v7_startTransition: true }} />);
+    render(
+      <TestI18nProvider i18n={i18n}>
+        <RouterProvider router={memRouter} future={{ v7_startTransition: true }} />
+      </TestI18nProvider>,
+    );
 
     expect(await screen.findByRole("banner")).toBeDefined();
     expect(await screen.findByRole("contentinfo")).toBeDefined();
@@ -40,6 +47,7 @@ describe("RootLayout", () => {
   });
 
   it("renders wider main wrapper for /battle routes", async () => {
+    const i18n = await createTestI18n("en");
     const memRouter = createMemoryRouter(
       [
         {
@@ -51,7 +59,11 @@ describe("RootLayout", () => {
       { initialEntries: ["/battle/new"], future: routerFutureConfig },
     );
 
-    render(<RouterProvider router={memRouter} future={{ v7_startTransition: true }} />);
+    render(
+      <TestI18nProvider i18n={i18n}>
+        <RouterProvider router={memRouter} future={{ v7_startTransition: true }} />
+      </TestI18nProvider>,
+    );
     
     const main = screen.getByRole("main");
     expect(main.className).toContain("max-w-none");

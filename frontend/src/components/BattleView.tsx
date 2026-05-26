@@ -7,8 +7,9 @@
 
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
-import { SESSION_EXPIRED_MESSAGE } from "@/auth/session";
 
+
+import { useTranslation } from "react-i18next";
 import { useBattle } from "@/hooks/useBattle";
 
 const RUBRIC_TAGS = [
@@ -19,11 +20,8 @@ const RUBRIC_TAGS = [
   "naturalness",
 ] as const;
 
-function formatRubricTag(tag: string) {
-  return tag.charAt(0).toUpperCase() + tag.slice(1);
-}
-
 export function BattleView({ battleId }: { battleId: string }) {
+  const { t } = useTranslation();
   const {
     state,
     dispatch,
@@ -71,11 +69,11 @@ export function BattleView({ battleId }: { battleId: string }) {
             <line x1="12" y1="16" x2="12.01" y2="16" />
           </svg>
         </div>
-        <h2 className="text-xl font-semibold">Unable to load battle</h2>
+        <h2 className="text-xl font-semibold">{t("battle.errorEmptyStateTitle")}</h2>
         <p className="text-muted-foreground max-w-md">{errorText}</p>
         {!isAuthed && (
           <Button onClick={() => window.location.href = "/"} variant="outline" className="mt-4">
-            Return Home
+            {t("battle.returnHome")}
           </Button>
         )}
       </div>
@@ -86,7 +84,7 @@ export function BattleView({ battleId }: { battleId: string }) {
     <div
         className="grid gap-6"
       >
-      <section aria-label="Battle comparison" className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+      <section aria-label={t("battle.comparisonAriaLabel")} className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         {/* Source text panel */}
         <section className="flex h-full flex-col glass-panel-accent relative overflow-hidden">
           <div className="flex items-center justify-between border-b border-foreground/[0.06] p-5">
@@ -99,7 +97,7 @@ export function BattleView({ battleId }: { battleId: string }) {
                 </svg>
               </div>
               <div className="flex items-center gap-2.5">
-                <h2 className="text-xl font-bold heading-gradient">Source Text</h2>
+                <h2 className="text-xl font-bold heading-gradient">{t("battle.sourceText")}</h2>
                 <span className="lang-badge-jp">{jpSourceLang}</span>
               </div>
             </div>
@@ -115,7 +113,7 @@ export function BattleView({ battleId }: { battleId: string }) {
         {/* Translation panels */}
         <Panel
           side="A"
-          title="Model A"
+          title={t("battle.modelA")}
           text={outA}
           reveal={reveal?.A}
           adminReveal={adminRevealData?.A}
@@ -126,7 +124,7 @@ export function BattleView({ battleId }: { battleId: string }) {
         />
         <Panel
           side="B"
-          title="Model B"
+          title={t("battle.modelB")}
           text={outB}
           reveal={reveal?.B}
           adminReveal={adminRevealData?.B}
@@ -149,25 +147,25 @@ export function BattleView({ battleId }: { battleId: string }) {
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-8 w-8 text-red-600/80" aria-hidden>
                     <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
                   </svg>
-                  <h3 className="text-lg font-semibold text-foreground">Session Expired</h3>
+                  <h3 className="text-lg font-semibold text-foreground">{t("battle.sessionExpiredTitle")}</h3>
                   <p className="text-sm text-muted-foreground max-w-md mx-auto">
-                    {SESSION_EXPIRED_MESSAGE}
+                    {t("battle.sessionExpiredBody")}
                   </p>
                 </div>
               </div>
             ) : (
             <>
               <div className="w-full max-w-2xl text-center">
-                <h3 className="mb-2 text-xl font-bold heading-gradient">Cast Your Vote</h3>
+                <h3 className="mb-2 text-xl font-bold heading-gradient">{t("battle.chooseWinner")}</h3>
                 <p className="mb-5 text-sm text-muted-foreground">
                   {voteSubmitted && !reveal
-                    ? "Vote recorded."
-                    : "Which translation is better?"}
+                    ? t("battle.voteRecorded")
+                    : t("battle.votePrompt")}
                 </p>
                 <div className="flex flex-wrap justify-center gap-3">
-                  <VoteOption label="Model A is better" side="A" active={winner === "A"} disabled={reveal !== null} onClick={() => dispatch({ type: "SET_WINNER", winner: "A" })} />
-                  <VoteOption label="Tie" active={winner === "tie"} disabled={reveal !== null} onClick={() => dispatch({ type: "SET_WINNER", winner: "tie" })} />
-                  <VoteOption label="Model B is better" side="B" active={winner === "B"} disabled={reveal !== null} onClick={() => dispatch({ type: "SET_WINNER", winner: "B" })} />
+                  <VoteOption label={t("battle.voteA")} side="A" active={winner === "A"} disabled={reveal !== null} onClick={() => dispatch({ type: "SET_WINNER", winner: "A" })} />
+                  <VoteOption label={t("battle.voteTie")} active={winner === "tie"} disabled={reveal !== null} onClick={() => dispatch({ type: "SET_WINNER", winner: "tie" })} />
+                  <VoteOption label={t("battle.voteB")} side="B" active={winner === "B"} disabled={reveal !== null} onClick={() => dispatch({ type: "SET_WINNER", winner: "B" })} />
                 </div>
               </div>
 
@@ -176,7 +174,7 @@ export function BattleView({ battleId }: { battleId: string }) {
               </div>
 
               <div className="w-full max-w-2xl">
-                <div className="mb-3 text-sm font-medium text-muted-foreground">Why did you choose this? (optional tags)</div>
+                <div className="mb-3 text-sm font-medium text-muted-foreground">{t("battle.rubricPrompt")}</div>
                 <div className="flex flex-wrap gap-2">
                   {RUBRIC_TAGS.map((tag) => (
                     <button
@@ -195,7 +193,7 @@ export function BattleView({ battleId }: { battleId: string }) {
                         }
                       `}
                     >
-                      {formatRubricTag(tag)}
+                      {t(`battle.rubric.${tag}`)}
                     </button>
                   ))}
                 </div>
@@ -203,7 +201,7 @@ export function BattleView({ battleId }: { battleId: string }) {
 
               <div className="w-full max-w-2xl">
                 <label className="mb-2 block text-sm font-medium text-muted-foreground" htmlFor="vote-comment">
-                  Optional feedback
+                  {t("battle.feedbackLabel")}
                 </label>
                 <textarea
                   id="vote-comment"
@@ -211,7 +209,7 @@ export function BattleView({ battleId }: { battleId: string }) {
                   onChange={(evt) => dispatch({ type: "SET_COMMENT", comment: evt.target.value })}
                   rows={3}
                   disabled={reveal !== null}
-                  placeholder="What influenced your decision?"
+                  placeholder={t("battle.feedbackPlaceholder")}
                   className={`textarea-premium ${reveal !== null ? "opacity-50 cursor-not-allowed" : ""}`}
                 />
               </div>
@@ -232,10 +230,10 @@ export function BattleView({ battleId }: { battleId: string }) {
                     className="h-12 w-full max-w-md rounded-full text-lg shadow-lg shadow-primary/20 hover:shadow-primary/30 hover:scale-[1.01] transition-all duration-200"
                   >
                     {submittingVote
-                      ? "Submitting..."
+                      ? t("battle.submittingVoteButton")
                       : voteSubmitted
-                        ? "Update Vote"
-                        : "Submit Vote"}
+                        ? t("battle.updateVoteButton")
+                        : t("battle.submitVoteButton")}
                   </Button>
                 </>
               )}
@@ -249,7 +247,7 @@ export function BattleView({ battleId }: { battleId: string }) {
                       variant="outline"
                       className="rounded-full text-muted-foreground hover:text-foreground hover:border-foreground/20"
                     >
-                      Retry Battle
+                      {t("battle.retryBattle")}
                     </Button>
                   )}
                   <Button
@@ -258,7 +256,7 @@ export function BattleView({ battleId }: { battleId: string }) {
                     onClick={handleStartAnotherBattle}
                     className="rounded-full text-muted-foreground hover:text-foreground"
                   >
-                    Start another battle
+                    {t("battle.startAnother")}
                   </Button>
                 </div>
               )}
@@ -310,8 +308,8 @@ export function BattleView({ battleId }: { battleId: string }) {
                 <polyline points="20 6 9 17 4 12" />
               </svg>
             </motion.div>
-            <h3 className="text-lg font-bold heading-sakura mb-2">Models Revealed</h3>
-            <p className="text-xs text-muted-foreground/60 mb-5">Thank you for your vote! Here are the models behind each translation.</p>
+            <h3 className="text-lg font-bold heading-sakura mb-2">{t("battle.revealTitle")}</h3>
+            <p className="text-xs text-muted-foreground/60 mb-5">{t("battle.revealDescription")}</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-lg mx-auto">
               <motion.div
                 initial={{ opacity: 0, x: -20 }}
@@ -325,12 +323,12 @@ export function BattleView({ battleId }: { battleId: string }) {
               >
                 {winner === "A" && (
                   <div className="absolute top-2 right-2">
-                    <span className="badge border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px]">Winner</span>
+                    <span className="badge border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px]">{t("battle.revealWinnerBadge")}</span>
                   </div>
                 )}
                 <div className="flex items-center gap-2 mb-1.5">
                   <span className="flex h-5 w-5 items-center justify-center rounded text-[10px] font-bold bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">A</span>
-                  <span className="text-xs text-muted-foreground">Model A</span>
+                  <span className="text-xs text-muted-foreground">{t("battle.modelA")}</span>
                 </div>
                 <div className="font-semibold text-foreground">{reveal.A.display_name}</div>
               </motion.div>
@@ -346,12 +344,12 @@ export function BattleView({ battleId }: { battleId: string }) {
               >
                 {winner === "B" && (
                   <div className="absolute top-2 right-2">
-                    <span className="badge border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px]">Winner</span>
+                    <span className="badge border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px]">{t("battle.revealWinnerBadge")}</span>
                   </div>
                 )}
                 <div className="flex items-center gap-2 mb-1.5">
                   <span className="flex h-5 w-5 items-center justify-center rounded text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">B</span>
-                  <span className="text-xs text-muted-foreground">Model B</span>
+                  <span className="text-xs text-muted-foreground">{t("battle.modelB")}</span>
                 </div>
                 <div className="font-semibold text-foreground">{reveal.B.display_name}</div>
               </motion.div>
@@ -363,7 +361,7 @@ export function BattleView({ battleId }: { battleId: string }) {
                 transition={{ delay: 0.4 }}
                 className="mt-4 text-xs text-muted-foreground/60"
               >
-                You voted this as a tie
+                {t("battle.revealTie")}
               </motion.div>
             )}
           </motion.div>
@@ -430,6 +428,7 @@ function Panel({
   isStreaming?: boolean;
   langBadge?: string;
 }) {
+  const { t } = useTranslation();
   const isActivelyStreaming = isStreaming && Boolean(text);
 
   return (
@@ -458,12 +457,12 @@ function Panel({
           {isActivelyStreaming && (
             <span className="flex items-center gap-1.5 text-xs text-muted-foreground/50">
               <span className="inline-block h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
-              Streaming
+              {t("battle.statusStreaming")}
             </span>
           )}
           {isStreaming && !text && (
             <span className="thinking-metal text-xs">
-              Thinking...
+              {t("battle.statusThinking")}
             </span>
           )}
           {adminReveal && !reveal && (
@@ -476,10 +475,10 @@ function Panel({
                 type="button"
                 onClick={onAdminReveal}
                 className="px-1 text-[10px] text-muted-foreground/40 underline-offset-2 hover:text-muted-foreground hover:underline"
-                aria-label={`Reveal ${title} identity`}
-                title={`Reveal ${title} identity`}
+                aria-label={t("battle.adminRevealAria", { title })}
+                title={t("battle.adminRevealAria", { title })}
               >
-                Reveal model
+                {t("battle.adminRevealButton")}
               </button>
             )
           )}
@@ -500,10 +499,10 @@ function Panel({
             <span className="text-muted-foreground/50 italic text-base flex items-center gap-2">
               {isStreaming ? (
                 <span className="thinking-metal thinking-metal-lg">
-                  Thinking...
-                </span>
+              {t("battle.statusThinking")}
+            </span>
               ) : (
-                "Waiting for output..."
+                t("battle.statusWaiting")
               )}
             </span>
           )}

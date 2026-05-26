@@ -5,6 +5,7 @@
  */
 
 import { Link } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { SakuraIcon } from "@/components/icons/SakuraIcon";
 import { useArenaAuth } from "@/hooks/useArenaAuth";
 
@@ -18,6 +19,7 @@ function GitHubIcon({ className = "" }: { className?: string }) {
 
 export function Footer() {
   const auth = useArenaAuth();
+  const { t } = useTranslation();
   const isAuthed = auth.authStatus === "authenticated";
 
   return (
@@ -36,7 +38,7 @@ export function Footer() {
               </span>
             </div>
             <p className="text-xs leading-relaxed text-muted-foreground/60 max-w-[240px]">
-              Open-source platform for blind pairwise evaluation of JP→ZH translation models. Powered by community votes.
+              {t("footer.tagline")}
             </p>
             <div className="flex items-center gap-2 mt-1">
               <span className="lang-badge-jp">JP</span>
@@ -48,20 +50,20 @@ export function Footer() {
           {/* Navigation column */}
           <div>
             <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/40 mb-3">
-              Navigation
+              {t("footer.navigation")}
             </div>
-            <nav aria-label="Footer navigation" className="grid gap-2 text-sm text-muted-foreground">
+            <nav aria-label={t("footer.navigation")} className="grid gap-2 text-sm text-muted-foreground">
               {isAuthed ? (
                 <Link to="/battle/new" className="transition-colors hover:text-foreground w-fit">
-                  Battle
+                  {t("nav.battle")}
                 </Link>
               ) : null}
               <Link to="/leaderboard" className="transition-colors hover:text-foreground w-fit">
-                Leaderboard
+                {t("nav.leaderboard")}
               </Link>
               {isAuthed ? (
                 <Link to="/onboarding" className="transition-colors hover:text-foreground w-fit">
-                  Profile
+                  {t("nav.onboarding")}
                 </Link>
               ) : null}
             </nav>
@@ -70,9 +72,9 @@ export function Footer() {
           {/* Links column */}
           <div>
             <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/40 mb-3">
-              Project
+              {t("footer.project")}
             </div>
-            <nav aria-label="Project links" className="grid gap-2 text-sm text-muted-foreground">
+            <nav aria-label={t("footer.project")} className="grid gap-2 text-sm text-muted-foreground">
               <a
                 href="https://github.com/OpenSakura"
                 target="_blank"
@@ -90,8 +92,8 @@ export function Footer() {
         {/* Bottom bar */}
         <div className="divider-fade mt-8 mb-4" />
         <div className="flex flex-col sm:flex-row items-center justify-between gap-2 text-[11px] text-muted-foreground/40">
-          <span>Built with React, FastAPI & community passion</span>
-          <span>Elo + Bradley-Terry rating systems</span>
+          <span>{t("footer.builtWith")}</span>
+          <span>{t("footer.systems")}</span>
         </div>
       </div>
     </footer>

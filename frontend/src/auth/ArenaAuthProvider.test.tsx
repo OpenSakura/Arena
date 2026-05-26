@@ -4,6 +4,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useArenaAuth } from "@/hooks/useArenaAuth";
+import { createTestI18n, TestI18nProvider } from "@/i18n/test-utils";
 
 import {
   ArenaAuthProvider,
@@ -86,14 +87,21 @@ function Probe() {
   );
 }
 
-async function renderProviderWithFetch(fetchMock: ReturnType<typeof vi.fn>) {
+async function renderAuthProvider(fetchMock: ReturnType<typeof vi.fn>, locale: "en" | "zh" = "en") {
   vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
+  const i18n = await createTestI18n(locale);
 
-  render(
-    <ArenaAuthProvider>
-      <Probe />
-    </ArenaAuthProvider>,
+  return render(
+    <TestI18nProvider i18n={i18n}>
+      <ArenaAuthProvider>
+        <Probe />
+      </ArenaAuthProvider>
+    </TestI18nProvider>,
   );
+}
+
+async function renderProviderWithFetch(fetchMock: ReturnType<typeof vi.fn>, locale: "en" | "zh" = "en") {
+  await renderAuthProvider(fetchMock, locale);
 
   await screen.findByText("child-content");
 }
@@ -136,6 +144,18 @@ describe("ArenaAuthProvider component", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("localizes loading authentication copy while bootstrap is pending", async () => {
+    const fetchMock = vi.fn(() => new Promise<Response>(() => undefined));
+
+    await renderAuthProvider(fetchMock, "zh");
+
+    expect(screen.getByText("正在加载登录信息…")).toBeDefined();
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/public-config", {
+      signal: expect.any(AbortSignal),
+      headers: { Accept: "application/json" },
+    });
   });
 
   it("bootstraps authenticated session state from backend session JSON", async () => {
@@ -238,32 +258,28 @@ describe("ArenaAuthProvider component", () => {
 
   it("shows an error shell when public config bootstrap fails", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response("boom", { status: 500 }));
-    vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
 
-    render(
-      <ArenaAuthProvider>
-        <Probe />
-      </ArenaAuthProvider>,
-    );
+    await renderAuthProvider(fetchMock);
 
     await screen.findByText("Failed to load public config (500)");
+    expect(screen.getByText("Please refresh the page to try again.")).toBeDefined();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("shows an error shell when backend session bootstrap fails", async () => {
+  it("localizes session error shell when backend session bootstrap fails", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse(PUBLIC_CONFIG))
       .mockResolvedValueOnce(new Response("unauthorized", { status: 401 }));
-    vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
 
-    render(
-      <ArenaAuthProvider>
-        <Probe />
-      </ArenaAuthProvider>,
-    );
+    await renderAuthProvider(fetchMock, "zh");
 
-    await screen.findByText("Failed to load auth session (401)");
+    await screen.findByText("加载登录会话失败（401）");
+    expect(screen.getByText("请刷新页面后重试。")).toBeDefined();
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/v1/public-config", {
+      signal: expect.any(AbortSignal),
+      headers: { Accept: "application/json" },
+    });
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/v1/auth/session", {
       signal: expect.any(AbortSignal),
       credentials: "include",

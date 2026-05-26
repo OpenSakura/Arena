@@ -8,8 +8,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Header } from "./Header";
 import { ThemeProvider } from "./ThemeProvider";
 
+import { createTestI18n, TestI18nProvider } from "@/i18n/test-utils";
+import type { i18n } from "i18next";
+
 const useArenaAuthMock = vi.fn();
 const useAdminAccessMock = vi.fn();
+
+let i18nInstance: i18n;
 
 vi.mock("@/hooks/useArenaAuth", () => ({
   useArenaAuth: () => useArenaAuthMock(),
@@ -21,11 +26,13 @@ vi.mock("@/hooks/useAdminAccess", () => ({
 
 function renderHeader(initialEntries: string[] = ["/"]) {
   return render(
-    <MemoryRouter initialEntries={initialEntries}>
-      <ThemeProvider>
-        <Header />
-      </ThemeProvider>
-    </MemoryRouter>,
+    <TestI18nProvider i18n={i18nInstance}>
+      <MemoryRouter initialEntries={initialEntries}>
+        <ThemeProvider>
+          <Header />
+        </ThemeProvider>
+      </MemoryRouter>
+    </TestI18nProvider>
   );
 }
 
@@ -42,7 +49,8 @@ function makeAuthState(overrides: Record<string, unknown> = {}) {
   };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  i18nInstance = await createTestI18n("en");
   useArenaAuthMock.mockReset();
   useAdminAccessMock.mockReset();
 

@@ -10,6 +10,7 @@ import { createRoot } from "react-dom/client";
 import { RouterProvider } from "react-router-dom";
 
 import { ArenaAuthProvider } from "@/auth/ArenaAuthProvider";
+import "./i18n";
 import { router, routerFutureConfig } from "./router";
 
 const rootElement = document.getElementById("root");

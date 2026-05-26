@@ -5,6 +5,7 @@
  */
 
 import { useEffect, useReducer } from "react";
+import { useTranslation } from "react-i18next";
 
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuthHeaders } from "@/hooks/useAuthHeaders";
@@ -127,6 +128,22 @@ type Action =
   | { type: "SHOW_MORE"; amount: number };
 
 const TASKS_PAGE_SIZE = 50;
+
+const TASK_ROUTE_ERROR_KEYS: Record<string, string> = {
+  "admin.tasksRoute.errors.invalidTaskSetsResponse": "admin.tasksRoute.errors.invalidTaskSetsResponse",
+  "admin.tasksRoute.errors.invalidTasksResponse": "admin.tasksRoute.errors.invalidTasksResponse",
+  "admin.tasksRoute.errors.invalidTaskSetResponse": "admin.tasksRoute.errors.invalidTaskSetResponse",
+  "admin.tasksRoute.errors.invalidTaskResponse": "admin.tasksRoute.errors.invalidTaskResponse",
+  "admin.tasksRoute.errors.invalidImportResponse": "admin.tasksRoute.errors.invalidImportResponse",
+  "admin.tasksRoute.errors.nameRequired": "admin.tasksRoute.errors.nameRequired",
+  "admin.tasksRoute.errors.sourceTextRequired": "admin.tasksRoute.errors.sourceTextRequired",
+  "admin.tasksRoute.errors.sourceLangRequired": "admin.tasksRoute.errors.sourceLangRequired",
+  "admin.tasksRoute.errors.targetLangRequired": "admin.tasksRoute.errors.targetLangRequired",
+  "admin.tasksRoute.errors.invalidJsonSyntax": "admin.tasksRoute.errors.invalidJsonSyntax",
+  "admin.tasksRoute.errors.expectedJsonObject": "admin.tasksRoute.errors.expectedJsonObject",
+  "Invalid JSON syntax": "admin.tasksRoute.errors.invalidJsonSyntax",
+  "Expected a JSON object": "admin.tasksRoute.errors.expectedJsonObject",
+};
 
 const INITIAL_STATE: State = {
   taskSets: [],
@@ -357,12 +374,12 @@ function isImportResponse(value: unknown): value is ImportResponse {
 
 function parseTaskSetsResponse(value: unknown): ListTaskSetsResponse {
   if (!isRecord(value) || !Array.isArray(value.task_sets)) {
-    throw new Error("Invalid task sets response");
+    throw new Error("admin.tasksRoute.errors.invalidTaskSetsResponse");
   }
 
   const taskSets = value.task_sets.filter(isTaskSet);
   if (taskSets.length !== value.task_sets.length) {
-    throw new Error("Invalid task sets response");
+    throw new Error("admin.tasksRoute.errors.invalidTaskSetsResponse");
   }
 
   return { task_sets: taskSets };
@@ -370,12 +387,12 @@ function parseTaskSetsResponse(value: unknown): ListTaskSetsResponse {
 
 function parseTasksResponse(value: unknown): ListTasksResponse {
   if (!isRecord(value) || !Array.isArray(value.tasks)) {
-    throw new Error("Invalid tasks response");
+    throw new Error("admin.tasksRoute.errors.invalidTasksResponse");
   }
 
   const tasks = value.tasks.filter(isTask);
   if (tasks.length !== value.tasks.length) {
-    throw new Error("Invalid tasks response");
+    throw new Error("admin.tasksRoute.errors.invalidTasksResponse");
   }
 
   return { tasks };
@@ -383,7 +400,7 @@ function parseTasksResponse(value: unknown): ListTasksResponse {
 
 function parseTaskSet(value: unknown): TaskSet {
   if (!isTaskSet(value)) {
-    throw new Error("Invalid task set response");
+    throw new Error("admin.tasksRoute.errors.invalidTaskSetResponse");
   }
 
   return value;
@@ -391,7 +408,7 @@ function parseTaskSet(value: unknown): TaskSet {
 
 function parseTask(value: unknown): Task {
   if (!isTask(value)) {
-    throw new Error("Invalid task response");
+    throw new Error("admin.tasksRoute.errors.invalidTaskResponse");
   }
 
   return value;
@@ -399,7 +416,7 @@ function parseTask(value: unknown): Task {
 
 function parseImportResponse(value: unknown): ImportResponse {
   if (!isImportResponse(value)) {
-    throw new Error("Invalid import response");
+    throw new Error("admin.tasksRoute.errors.invalidImportResponse");
   }
 
   return value;
@@ -417,8 +434,15 @@ function toEditTaskState(task: Task): EditTaskState {
 }
 
 export default function AdminTasksRoute() {
+  const { t } = useTranslation();
   const { authStatus } = useAuthHeaders();
   const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
+
+  function errorMessage(err: unknown, fallbackKey: string) {
+    if (!(err instanceof Error)) return t(fallbackKey);
+    const translationKey = TASK_ROUTE_ERROR_KEYS[err.message];
+    return translationKey ? t(translationKey) : err.message;
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -438,7 +462,7 @@ export default function AdminTasksRoute() {
         if (cancelled) return;
         dispatch({
           type: "LOAD_TASK_SETS_ERROR",
-          error: err instanceof Error ? err.message : "Failed to load task sets",
+          error: errorMessage(err, "admin.tasksRoute.errors.loadTaskSetsFailed"),
         });
       }
     }
@@ -474,7 +498,7 @@ export default function AdminTasksRoute() {
         if (cancelled) return;
         dispatch({
           type: "LOAD_TASKS_ERROR",
-          error: err instanceof Error ? err.message : "Failed to load tasks",
+          error: errorMessage(err, "admin.tasksRoute.errors.loadTasksFailed"),
         });
       }
     }
@@ -494,7 +518,7 @@ export default function AdminTasksRoute() {
 
     dispatch({ type: "CREATE_SET_START" });
     try {
-      if (!state.newSetName.trim()) throw new Error("name is required");
+      if (!state.newSetName.trim()) throw new Error("admin.tasksRoute.errors.nameRequired");
 
       const payload: Record<string, unknown> = {
         name: state.newSetName.trim(),
@@ -507,7 +531,7 @@ export default function AdminTasksRoute() {
     } catch (err) {
       dispatch({
         type: "CREATE_SET_ERROR",
-        error: err instanceof Error ? err.message : "Failed to create task set",
+        error: errorMessage(err, "admin.tasksRoute.errors.createTaskSetFailed"),
       });
     }
   }
@@ -517,7 +541,7 @@ export default function AdminTasksRoute() {
 
     dispatch({ type: "SAVE_SET_START" });
     try {
-      if (!state.editingSet.name.trim()) throw new Error("name is required");
+      if (!state.editingSet.name.trim()) throw new Error("admin.tasksRoute.errors.nameRequired");
 
       const payload: Record<string, unknown> = {
         name: state.editingSet.name.trim(),
@@ -532,14 +556,14 @@ export default function AdminTasksRoute() {
     } catch (err) {
       dispatch({
         type: "SAVE_SET_ERROR",
-        error: err instanceof Error ? err.message : "Failed to update task set",
+        error: errorMessage(err, "admin.tasksRoute.errors.updateTaskSetFailed"),
       });
     }
   }
 
   async function handleDeleteSelectedTaskSet() {
     if (authStatus !== "authenticated" || !state.editingSet) return;
-    if (!confirm("Delete this task set? (must be empty)")) return;
+    if (!confirm(t("admin.tasksRoute.confirmDeleteTaskSet"))) return;
 
     try {
       await apiDelete(`/admin/task-sets/${encodeURIComponent(state.editingSet.id)}`);
@@ -547,7 +571,7 @@ export default function AdminTasksRoute() {
     } catch (err) {
       dispatch({
         type: "DELETE_SET_ERROR",
-        error: err instanceof Error ? err.message : "Failed to delete task set",
+        error: errorMessage(err, "admin.tasksRoute.errors.deleteTaskSetFailed"),
       });
     }
   }
@@ -557,7 +581,7 @@ export default function AdminTasksRoute() {
 
     dispatch({ type: "CREATE_TASK_START" });
     try {
-      if (!state.taskSourceText.trim()) throw new Error("source_text is required");
+      if (!state.taskSourceText.trim()) throw new Error("admin.tasksRoute.errors.sourceTextRequired");
 
       const payload: Record<string, unknown> = {
         task_set_id: state.selectedTaskSetId ? state.selectedTaskSetId : null,
@@ -572,7 +596,7 @@ export default function AdminTasksRoute() {
     } catch (err) {
       dispatch({
         type: "CREATE_TASK_ERROR",
-        error: err instanceof Error ? err.message : "Failed to create task",
+        error: errorMessage(err, "admin.tasksRoute.errors.createTaskFailed"),
       });
     }
   }
@@ -582,9 +606,9 @@ export default function AdminTasksRoute() {
 
     dispatch({ type: "SAVE_TASK_START" });
     try {
-      if (!state.editingTask.source_text.trim()) throw new Error("source_text is required");
-      if (!state.editingTask.source_lang.trim()) throw new Error("source_lang is required");
-      if (!state.editingTask.target_lang.trim()) throw new Error("target_lang is required");
+      if (!state.editingTask.source_text.trim()) throw new Error("admin.tasksRoute.errors.sourceTextRequired");
+      if (!state.editingTask.source_lang.trim()) throw new Error("admin.tasksRoute.errors.sourceLangRequired");
+      if (!state.editingTask.target_lang.trim()) throw new Error("admin.tasksRoute.errors.targetLangRequired");
 
       const payload: Record<string, unknown> = {
         task_set_id: state.editingTask.task_set_id ? state.editingTask.task_set_id : null,
@@ -601,14 +625,14 @@ export default function AdminTasksRoute() {
     } catch (err) {
       dispatch({
         type: "SAVE_TASK_ERROR",
-        error: err instanceof Error ? err.message : "Failed to update task",
+        error: errorMessage(err, "admin.tasksRoute.errors.updateTaskFailed"),
       });
     }
   }
 
   async function handleDeleteTask(id: string) {
     if (authStatus !== "authenticated") return;
-    if (!confirm("Delete this task?")) return;
+    if (!confirm(t("admin.tasksRoute.confirmDeleteTask"))) return;
 
     try {
       await apiDelete(`/admin/tasks/${encodeURIComponent(id)}`);
@@ -616,7 +640,7 @@ export default function AdminTasksRoute() {
     } catch (err) {
       dispatch({
         type: "DELETE_TASK_ERROR",
-        error: err instanceof Error ? err.message : "Failed to delete task",
+        error: errorMessage(err, "admin.tasksRoute.errors.deleteTaskFailed"),
       });
     }
   }
@@ -624,7 +648,7 @@ export default function AdminTasksRoute() {
   async function handleImportJsonl() {
     if (authStatus !== "authenticated") return;
     if (!state.importFile) {
-      dispatch({ type: "IMPORT_ERROR", error: "Select a .jsonl file first" });
+      dispatch({ type: "IMPORT_ERROR", error: t("admin.tasksRoute.errors.selectJsonlFirst") });
       return;
     }
 
@@ -654,7 +678,7 @@ export default function AdminTasksRoute() {
     } catch (err) {
       dispatch({
         type: "IMPORT_ERROR",
-        error: err instanceof Error ? err.message : "Failed to import tasks",
+        error: errorMessage(err, "admin.tasksRoute.errors.importTasksFailed"),
       });
     }
   }
@@ -689,7 +713,7 @@ export default function AdminTasksRoute() {
   return (
     <div className="grid gap-4">
       <div className="flex items-center justify-between gap-2.5">
-        <h2 className="heading-gradient text-xl">Tasks & Task Sets</h2>
+        <h2 className="heading-gradient text-xl">{t("admin.tasksRoute.title")}</h2>
         <span className="text-xs text-muted-foreground font-mono">/admin/tasks</span>
       </div>
 
@@ -701,38 +725,38 @@ export default function AdminTasksRoute() {
               <line x1="12" y1="5" x2="12" y2="19" />
               <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
-            Create task set
+            {t("admin.tasksRoute.createSet.title")}
           </div>
           <div className="mt-2.5 grid gap-2.5">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="new-set-name">
-                  name
+                  {t("admin.tasksRoute.form.name")}
                 </label>
                 <input
                   id="new-set-name"
                   value={newSetName}
                   onChange={(e) => dispatch({ type: "SET_NEW_SET_NAME", value: e.target.value })}
                   className="input-premium"
-                  placeholder="e.g., public_jp_ln_samples"
+                  placeholder={t("admin.tasksRoute.form.namePlaceholder")}
                 />
               </div>
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="new-set-desc">
-                  description
+                  {t("admin.tasksRoute.form.description")}
                 </label>
                 <input
                   id="new-set-desc"
                   value={newSetDescription}
                   onChange={(e) => dispatch({ type: "SET_NEW_SET_DESCRIPTION", value: e.target.value })}
                   className="input-premium"
-                  placeholder="optional"
+                  placeholder={t("admin.tasksRoute.form.optionalPlaceholder")}
                 />
               </div>
             </div>
             <div className="grid gap-1.5">
               <label className="label-premium" htmlFor="new-set-metadata">
-                metadata (optional JSON object)
+                {t("admin.tasksRoute.form.metadataOptional")}
               </label>
               <textarea
                 id="new-set-metadata"
@@ -740,7 +764,7 @@ export default function AdminTasksRoute() {
                 onChange={(e) => dispatch({ type: "SET_NEW_SET_METADATA_TEXT", value: e.target.value })}
                 className="textarea-premium"
                 rows={4}
-                placeholder='{"license":"public","source":"curated"}'
+                placeholder={t("admin.tasksRoute.form.setMetadataPlaceholder")}
               />
             </div>
             <div className="flex items-center gap-2.5">
@@ -750,7 +774,7 @@ export default function AdminTasksRoute() {
                 disabled={creatingSet}
                 className="btn-primary-action"
               >
-                {creatingSet ? "Creating..." : "Create"}
+                {creatingSet ? t("admin.tasksRoute.actions.creating") : t("admin.tasksRoute.actions.create")}
               </button>
             </div>
           </div>
@@ -758,7 +782,7 @@ export default function AdminTasksRoute() {
 
       <section className="glass-panel p-5">
           <div className="flex items-center justify-between gap-2.5 section-header">
-            <span>Task sets</span>
+            <span>{t("admin.tasksRoute.taskSets.title")}</span>
             {loadingSets ? <Skeleton className="h-3 w-16" /> : null}
           </div>
 
@@ -769,7 +793,7 @@ export default function AdminTasksRoute() {
                 checked={selectedTaskSetId === ""}
                 onChange={() => dispatch({ type: "SET_SELECTED_TASK_SET_ID", value: "" })}
               />
-              <span>All tasks</span>
+              <span>{t("admin.tasksRoute.taskSets.allTasks")}</span>
             </label>
 
             {taskSets.map((s) => (
@@ -787,13 +811,13 @@ export default function AdminTasksRoute() {
 
           {editingSet ? (
             <div className="mt-3.5 grid gap-2.5 border-t border-border pt-3.5">
-              <div className="section-header">Edit selected task set</div>
+              <div className="section-header">{t("admin.tasksRoute.editSet.title")}</div>
               <div className="text-xs text-muted-foreground">{editingSet.id}</div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="grid gap-1.5">
                   <label className="label-premium" htmlFor="edit-set-name">
-                    name
+                    {t("admin.tasksRoute.form.name")}
                   </label>
                   <input
                     id="edit-set-name"
@@ -804,7 +828,7 @@ export default function AdminTasksRoute() {
                 </div>
                 <div className="grid gap-1.5">
                   <label className="label-premium" htmlFor="edit-set-desc">
-                    description
+                    {t("admin.tasksRoute.form.description")}
                   </label>
                   <input
                     id="edit-set-desc"
@@ -817,7 +841,7 @@ export default function AdminTasksRoute() {
 
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="edit-set-meta">
-                  metadata (JSON object)
+                  {t("admin.tasksRoute.form.metadata")}
                 </label>
                 <textarea
                   id="edit-set-meta"
@@ -835,14 +859,14 @@ export default function AdminTasksRoute() {
                   disabled={savingSet}
                   className="btn-primary-action"
                 >
-                  {savingSet ? "Saving..." : "Save"}
+                  {savingSet ? t("admin.tasksRoute.actions.saving") : t("admin.tasksRoute.actions.save")}
                 </button>
                 <button
                   type="button"
                   onClick={() => void handleDeleteSelectedTaskSet()}
                   className="btn-danger"
                 >
-                  Delete
+                  {t("admin.tasksRoute.actions.delete")}
                 </button>
               </div>
             </div>
@@ -855,13 +879,13 @@ export default function AdminTasksRoute() {
               <line x1="12" y1="5" x2="12" y2="19" />
               <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
-            Create single task
+            {t("admin.tasksRoute.createTask.title")}
           </div>
           <div className="mt-2.5 grid gap-2.5">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="task-source-lang">
-                  source_lang
+                  {t("admin.tasksRoute.form.sourceLang")}
                 </label>
                 <input
                   id="task-source-lang"
@@ -872,7 +896,7 @@ export default function AdminTasksRoute() {
               </div>
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="task-target-lang">
-                  target_lang
+                  {t("admin.tasksRoute.form.targetLang")}
                 </label>
                 <input
                   id="task-target-lang"
@@ -885,7 +909,7 @@ export default function AdminTasksRoute() {
 
             <div className="grid gap-1.5">
               <label className="label-premium" htmlFor="task-source-text">
-                source_text
+                {t("admin.tasksRoute.form.sourceText")}
               </label>
               <textarea
                 id="task-source-text"
@@ -893,13 +917,13 @@ export default function AdminTasksRoute() {
                 onChange={(e) => dispatch({ type: "SET_TASK_SOURCE_TEXT", value: e.target.value })}
                 className="textarea-premium"
                 rows={6}
-                placeholder="Japanese source text"
+                placeholder={t("admin.tasksRoute.form.sourceTextPlaceholder")}
               />
             </div>
 
             <div className="grid gap-1.5">
               <label className="label-premium" htmlFor="task-metadata">
-                metadata (optional JSON object)
+                {t("admin.tasksRoute.form.metadataOptional")}
               </label>
               <textarea
                 id="task-metadata"
@@ -907,7 +931,7 @@ export default function AdminTasksRoute() {
                 onChange={(e) => dispatch({ type: "SET_TASK_METADATA_TEXT", value: e.target.value })}
                 className="textarea-premium"
                 rows={4}
-                placeholder='{"work":"...","chapter":"..."}'
+                placeholder={t("admin.tasksRoute.form.taskMetadataPlaceholder")}
               />
             </div>
 
@@ -918,10 +942,12 @@ export default function AdminTasksRoute() {
                 disabled={creatingTask}
                 className="btn-primary-action"
               >
-                {creatingTask ? "Creating..." : "Create"}
+                {creatingTask ? t("admin.tasksRoute.actions.creating") : t("admin.tasksRoute.actions.create")}
               </button>
               <span className="text-xs text-muted-foreground">
-                Task set: {selectedTaskSetId ? selectedTaskSetId : "(none)"}
+                {t("admin.tasksRoute.status.taskSet", {
+                  id: selectedTaskSetId ? selectedTaskSetId : t("admin.tasksRoute.values.none"),
+                })}
               </span>
             </div>
           </div>
@@ -934,13 +960,13 @@ export default function AdminTasksRoute() {
               <polyline points="17 8 12 3 7 8" />
               <line x1="12" y1="3" x2="12" y2="15" />
             </svg>
-            Import tasks (.jsonl)
+            {t("admin.tasksRoute.import.title")}
           </div>
           <div className="mt-2.5 grid gap-2.5">
             <input
               type="file"
               accept=".jsonl"
-              aria-label="Select JSONL file to import"
+              aria-label={t("admin.tasksRoute.import.fileAriaLabel")}
               onChange={(e) => dispatch({ type: "SET_IMPORT_FILE", value: e.target.files?.[0] ?? null })}
               className="text-muted-foreground"
             />
@@ -948,7 +974,7 @@ export default function AdminTasksRoute() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="import-source-lang">
-                  default source_lang
+                  {t("admin.tasksRoute.form.defaultSourceLang")}
                 </label>
                 <input
                   id="import-source-lang"
@@ -959,7 +985,7 @@ export default function AdminTasksRoute() {
               </div>
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="import-target-lang">
-                  default target_lang
+                  {t("admin.tasksRoute.form.defaultTargetLang")}
                 </label>
                 <input
                   id="import-target-lang"
@@ -977,16 +1003,21 @@ export default function AdminTasksRoute() {
                 disabled={importing}
                 className="btn-primary-action"
               >
-                {importing ? "Importing..." : "Import"}
+                {importing ? t("admin.tasksRoute.actions.importing") : t("admin.tasksRoute.actions.import")}
               </button>
               <span className="text-xs text-muted-foreground">
-                Task set: {selectedTaskSetId ? selectedTaskSetId : "(none)"}
+                {t("admin.tasksRoute.status.taskSet", {
+                  id: selectedTaskSetId ? selectedTaskSetId : t("admin.tasksRoute.values.none"),
+                })}
               </span>
             </div>
 
             {importResult ? (
               <div className="text-xs text-muted-foreground">
-                Imported {importResult.imported} tasks from {importResult.filename}
+                {t("admin.tasksRoute.status.imported", {
+                  count: importResult.imported,
+                  filename: importResult.filename,
+                })}
               </div>
             ) : null}
           </div>
@@ -994,14 +1025,18 @@ export default function AdminTasksRoute() {
 
       <section className="glass-panel p-5">
           <div className="flex items-center justify-between gap-2.5 section-header">
-            <span>Tasks</span>
+            <span>{t("admin.tasksRoute.tasks.title")}</span>
             {loadingTasks ? <Skeleton className="h-3 w-16" /> : null}
           </div>
 
           {!loadingTasks ? (
             <div className="mt-1.5 text-xs text-muted-foreground">
-              Showing {tasks.length} task(s)
-              {selectedTaskSetId ? ` for task_set_id=${selectedTaskSetId}` : ""}
+              {selectedTaskSetId
+                ? t("admin.tasksRoute.status.showingTasksForSet", {
+                    count: tasks.length,
+                    taskSetId: selectedTaskSetId,
+                  })
+                : t("admin.tasksRoute.status.showingTasks", { count: tasks.length })}
             </div>
           ) : null}
 
@@ -1009,43 +1044,45 @@ export default function AdminTasksRoute() {
             <table className="mt-2.5 w-full border-collapse">
               <thead>
                 <tr>
-                  <th className="th-premium">id</th>
-                  <th className="th-premium">lang</th>
-                  <th className="th-premium">text</th>
-                  <th className="th-premium">actions</th>
+                  <th className="th-premium">{t("admin.tasksRoute.tasks.headers.id")}</th>
+                  <th className="th-premium">{t("admin.tasksRoute.tasks.headers.lang")}</th>
+                  <th className="th-premium">{t("admin.tasksRoute.tasks.headers.text")}</th>
+                  <th className="th-premium">{t("admin.tasksRoute.tasks.headers.actions")}</th>
                 </tr>
               </thead>
               <tbody>
-                {tasks.slice(0, visibleCount).map((t) => (
-                  <tr key={t.id} className="tr-premium">
+                {tasks.slice(0, visibleCount).map((task) => (
+                  <tr key={task.id} className="tr-premium">
                     <td className="td-premium">
                       <div className="font-mono text-xs">
-                        {t.id}
+                        {task.id}
                       </div>
-                      {t.task_set_id ? (
-                        <div className="text-xs text-muted-foreground">set: {t.task_set_id}</div>
+                      {task.task_set_id ? (
+                        <div className="text-xs text-muted-foreground">
+                          {t("admin.tasksRoute.tasks.setLabel", { id: task.task_set_id })}
+                        </div>
                       ) : null}
                     </td>
                     <td className="td-premium">
-                      {t.source_lang} -&gt; {t.target_lang}
+                      {task.source_lang} -&gt; {task.target_lang}
                     </td>
                     <td className="td-premium">
                       <div className="whitespace-pre-wrap leading-relaxed">
-                        {t.source_text.length > 240 ? `${t.source_text.slice(0, 240)}...` : t.source_text}
+                        {task.source_text.length > 240 ? `${task.source_text.slice(0, 240)}...` : task.source_text}
                       </div>
                     </td>
 
                     <td className="td-premium">
                       <div className="flex flex-wrap gap-2">
-                        <button type="button" className="btn-action" onClick={() => dispatch({ type: "START_EDIT_TASK", task: toEditTaskState(t) })}>
-                          Edit
+                        <button type="button" className="btn-action" onClick={() => dispatch({ type: "START_EDIT_TASK", task: toEditTaskState(task) })}>
+                          {t("admin.tasksRoute.actions.edit")}
                         </button>
                         <button
                           type="button"
                           className="btn-danger"
-                          onClick={() => void handleDeleteTask(t.id)}
+                          onClick={() => void handleDeleteTask(task.id)}
                         >
-                          Delete
+                          {t("admin.tasksRoute.actions.delete")}
                         </button>
                       </div>
                     </td>
@@ -1058,9 +1095,9 @@ export default function AdminTasksRoute() {
           {editingTask ? (
             <div className="mt-3.5 grid gap-2.5 border-t border-border pt-3.5">
               <div className="flex items-baseline justify-between gap-2.5">
-                <div className="section-header">Edit task</div>
+                <div className="section-header">{t("admin.tasksRoute.editTask.title")}</div>
                 <button type="button" onClick={() => dispatch({ type: "CLOSE_EDIT_TASK" })} className="btn-action">
-                  Close
+                  {t("admin.tasksRoute.actions.close")}
                 </button>
               </div>
 
@@ -1069,7 +1106,7 @@ export default function AdminTasksRoute() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="grid gap-1.5">
                   <label className="label-premium" htmlFor="edit-task-set-id">
-                    task_set_id
+                    {t("admin.tasksRoute.form.taskSetId")}
                   </label>
                   <select
                     id="edit-task-set-id"
@@ -1077,7 +1114,7 @@ export default function AdminTasksRoute() {
                     onChange={(e) => dispatch({ type: "SET_EDIT_TASK_FIELD", field: "task_set_id", value: e.target.value })}
                     className="input-premium"
                   >
-                    <option value="">(none)</option>
+                    <option value="">{t("admin.tasksRoute.values.none")}</option>
                     {taskSets.map((s) => (
                       <option key={s.id} value={s.id}>
                         {s.name}
@@ -1088,7 +1125,7 @@ export default function AdminTasksRoute() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div className="grid gap-1.5">
                     <label className="label-premium" htmlFor="edit-task-source-lang">
-                      source_lang
+                      {t("admin.tasksRoute.form.sourceLang")}
                     </label>
                     <input
                       id="edit-task-source-lang"
@@ -1099,7 +1136,7 @@ export default function AdminTasksRoute() {
                   </div>
                   <div className="grid gap-1.5">
                     <label className="label-premium" htmlFor="edit-task-target-lang">
-                      target_lang
+                      {t("admin.tasksRoute.form.targetLang")}
                     </label>
                     <input
                       id="edit-task-target-lang"
@@ -1113,7 +1150,7 @@ export default function AdminTasksRoute() {
 
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="edit-task-source-text">
-                  source_text
+                  {t("admin.tasksRoute.form.sourceText")}
                 </label>
                 <textarea
                   id="edit-task-source-text"
@@ -1126,7 +1163,7 @@ export default function AdminTasksRoute() {
 
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="edit-task-metadata">
-                  metadata (JSON object)
+                  {t("admin.tasksRoute.form.metadata")}
                 </label>
                 <textarea
                   id="edit-task-metadata"
@@ -1144,14 +1181,14 @@ export default function AdminTasksRoute() {
                   disabled={savingTask}
                   className="btn-primary-action"
                 >
-                  {savingTask ? "Saving..." : "Save"}
+                  {savingTask ? t("admin.tasksRoute.actions.saving") : t("admin.tasksRoute.actions.save")}
                 </button>
                 <button
                   type="button"
                   onClick={() => void handleDeleteTask(editingTask.id)}
                   className="btn-danger"
                 >
-                  Delete
+                  {t("admin.tasksRoute.actions.delete")}
                 </button>
               </div>
             </div>
@@ -1164,10 +1201,13 @@ export default function AdminTasksRoute() {
                 onClick={() => dispatch({ type: "SHOW_MORE", amount: TASKS_PAGE_SIZE })}
                 className="btn-action"
               >
-                Show more
+                {t("admin.tasksRoute.actions.showMore")}
               </button>
               <span className="text-xs text-muted-foreground">
-                Showing {visibleCount} of {tasks.length} tasks
+                {t("admin.tasksRoute.status.showingVisible", {
+                  visible: visibleCount,
+                  total: tasks.length,
+                })}
               </span>
             </div>
           ) : null}

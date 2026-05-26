@@ -1,4 +1,6 @@
 import { useEffect, useReducer } from "react";
+import { useTranslation } from "react-i18next";
+
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuthHeaders } from "@/hooks/useAuthHeaders";
 import {
@@ -16,6 +18,23 @@ const ALL_SCOPES = [
   "battle:execute",
   "vote:create",
 ];
+
+const SCOPE_I18N_KEYS: Record<string, string> = {
+  "battle:create": "battleCreate",
+  "battle:read": "battleRead",
+  "battle:execute": "battleExecute",
+  "vote:create": "voteCreate",
+};
+
+const SERVICE_ACCOUNT_ERROR_KEYS: Record<string, string> = {
+  "admin.serviceAccounts.errors.nameRequired": "admin.serviceAccounts.errors.nameRequired",
+  "admin.serviceAccounts.errors.scopeRequired": "admin.serviceAccounts.errors.scopeRequired",
+  "Invalid response format": "admin.serviceAccounts.errors.invalidResponseFormat",
+  "Invalid create response": "admin.serviceAccounts.errors.invalidCreateResponse",
+  "Invalid update response": "admin.serviceAccounts.errors.invalidUpdateResponse",
+  "Invalid create token response": "admin.serviceAccounts.errors.invalidCreateTokenResponse",
+  "Invalid revoke response": "admin.serviceAccounts.errors.invalidRevokeResponse",
+};
 
 type CreateFormState = {
   name: string;
@@ -196,8 +215,15 @@ function reducer(state: State, action: Action): State {
 }
 
 export default function AdminServiceAccountsRoute() {
+  const { t } = useTranslation();
   const { authStatus } = useAuthHeaders();
   const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
+
+  function errorMessage(err: unknown, fallbackKey: string) {
+    if (!(err instanceof Error)) return t(fallbackKey);
+    const translationKey = SERVICE_ACCOUNT_ERROR_KEYS[err.message];
+    return translationKey ? t(translationKey) : err.message;
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -213,7 +239,7 @@ export default function AdminServiceAccountsRoute() {
         dispatch({ type: "LOAD_SUCCESS", accounts });
       } catch (err) {
         if (cancelled) return;
-        dispatch({ type: "LOAD_ERROR", error: err instanceof Error ? err.message : "Failed to load accounts" });
+        dispatch({ type: "LOAD_ERROR", error: errorMessage(err, "admin.serviceAccounts.errors.loadFailed") });
       }
     }
     void load();
@@ -231,7 +257,7 @@ export default function AdminServiceAccountsRoute() {
     if (authStatus !== "authenticated") return;
     dispatch({ type: "CREATE_START" });
     try {
-      if (!state.create.name.trim()) throw new Error("name is required");
+      if (!state.create.name.trim()) throw new Error("admin.serviceAccounts.errors.nameRequired");
       const created = await createServiceAccount({
         name: state.create.name.trim(),
         description: state.create.description.trim() || null,
@@ -239,7 +265,7 @@ export default function AdminServiceAccountsRoute() {
       });
       dispatch({ type: "CREATE_SUCCESS", created });
     } catch (err) {
-      dispatch({ type: "CREATE_ERROR", error: err instanceof Error ? err.message : "Failed to create" });
+      dispatch({ type: "CREATE_ERROR", error: errorMessage(err, "admin.serviceAccounts.errors.createFailed") });
     }
   }
 
@@ -247,7 +273,7 @@ export default function AdminServiceAccountsRoute() {
     if (authStatus !== "authenticated" || !state.edit) return;
     dispatch({ type: "SAVE_EDIT_START" });
     try {
-      if (!state.edit.name.trim()) throw new Error("name is required");
+      if (!state.edit.name.trim()) throw new Error("admin.serviceAccounts.errors.nameRequired");
       const updated = await updateServiceAccount(state.edit.id, {
         name: state.edit.name.trim(),
         description: state.edit.description.trim() || null,
@@ -255,7 +281,7 @@ export default function AdminServiceAccountsRoute() {
       });
       dispatch({ type: "SAVE_EDIT_SUCCESS", updated });
     } catch (err) {
-      dispatch({ type: "SAVE_EDIT_ERROR", error: err instanceof Error ? err.message : "Failed to save" });
+      dispatch({ type: "SAVE_EDIT_ERROR", error: errorMessage(err, "admin.serviceAccounts.errors.saveFailed") });
     }
   }
 
@@ -263,7 +289,7 @@ export default function AdminServiceAccountsRoute() {
     if (authStatus !== "authenticated" || !state.tokenCreate.serviceAccountId) return;
     dispatch({ type: "CREATE_TOKEN_START" });
     try {
-      if (state.tokenCreate.scopes.length === 0) throw new Error("at least one scope is required");
+      if (state.tokenCreate.scopes.length === 0) throw new Error("admin.serviceAccounts.errors.scopeRequired");
       let expires_at: string | null = null;
       if (state.tokenCreate.expiresAt) {
         expires_at = new Date(state.tokenCreate.expiresAt).toISOString();
@@ -274,26 +300,26 @@ export default function AdminServiceAccountsRoute() {
       });
       dispatch({ type: "CREATE_TOKEN_SUCCESS", account: res.service_account, plaintext: res.plaintext_token });
     } catch (err) {
-      dispatch({ type: "CREATE_TOKEN_ERROR", error: err instanceof Error ? err.message : "Failed to create token" });
+      dispatch({ type: "CREATE_TOKEN_ERROR", error: errorMessage(err, "admin.serviceAccounts.errors.createTokenFailed") });
     }
   }
 
   async function handleRevokeToken(accountId: string, tokenId: string) {
     if (authStatus !== "authenticated") return;
-    if (!confirm("Are you sure you want to revoke this token?")) return;
+    if (!confirm(t("admin.serviceAccounts.confirmRevoke"))) return;
     dispatch({ type: "REVOKE_TOKEN_START", tokenId });
     try {
       await revokeServiceAccountToken(tokenId);
       dispatch({ type: "REVOKE_TOKEN_SUCCESS", accountId, tokenId, revokedAt: new Date().toISOString() });
     } catch (err) {
-      dispatch({ type: "REVOKE_TOKEN_ERROR", error: err instanceof Error ? err.message : "Failed to revoke token" });
+      dispatch({ type: "REVOKE_TOKEN_ERROR", error: errorMessage(err, "admin.serviceAccounts.errors.revokeTokenFailed") });
     }
   }
 
   return (
     <div className="grid gap-4">
       <div className="flex items-center justify-between gap-2.5">
-        <h2 className="heading-gradient text-xl">Service Accounts</h2>
+        <h2 className="heading-gradient text-xl">{t("admin.serviceAccounts.title")}</h2>
         <span className="text-xs text-muted-foreground font-mono">/admin/service-accounts</span>
       </div>
 
@@ -301,9 +327,9 @@ export default function AdminServiceAccountsRoute() {
 
       {state.newPlaintextToken ? (
         <section className="glass-panel-accent p-5 border-emerald-500/50 bg-emerald-500/10">
-          <div className="section-header mb-1 text-emerald-500">Token created</div>
+          <div className="section-header mb-1 text-emerald-500">{t("admin.serviceAccounts.token.createdTitle")}</div>
           <div className="mt-2 text-sm text-muted-foreground">
-            Copy now. This token will not be shown again.
+            {t("admin.serviceAccounts.token.createdWarning")}
           </div>
           <div className="mt-3 flex items-center gap-2">
             <code className="px-3 py-1.5 bg-background border border-border rounded font-mono text-sm break-all">
@@ -312,28 +338,30 @@ export default function AdminServiceAccountsRoute() {
           </div>
           <div className="mt-4">
             <button type="button" className="btn-action" onClick={() => dispatch({ type: "DISMISS_PLAINTEXT_TOKEN" })}>
-              Dismiss
+              {t("admin.serviceAccounts.actions.dismiss")}
             </button>
           </div>
         </section>
       ) : null}
 
       <section className="glass-panel-accent p-5">
-        <div className="section-header mb-1">Create service account</div>
+        <div className="section-header mb-1">{t("admin.serviceAccounts.create.title")}</div>
         <div className="mt-2.5 grid gap-3">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="grid gap-1.5">
-              <label className="label-premium">Name</label>
+              <label className="label-premium" htmlFor="create-service-account-name">{t("admin.serviceAccounts.form.name")}</label>
               <input
+                id="create-service-account-name"
                 value={state.create.name}
                 onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "name", value: e.target.value })}
                 className="input-premium"
-                placeholder="e.g., CI/CD Bot"
+                placeholder={t("admin.serviceAccounts.form.namePlaceholder")}
               />
             </div>
             <div className="grid gap-1.5">
-              <label className="label-premium">Description (optional)</label>
+              <label className="label-premium" htmlFor="create-service-account-description">{t("admin.serviceAccounts.form.descriptionOptional")}</label>
               <input
+                id="create-service-account-description"
                 value={state.create.description}
                 onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "description", value: e.target.value })}
                 className="input-premium"
@@ -348,12 +376,12 @@ export default function AdminServiceAccountsRoute() {
                 onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "enabled", value: e.target.checked })}
                 className="mr-2"
               />
-              enabled
+              {t("admin.serviceAccounts.form.enabled")}
             </label>
           </div>
           <div>
             <button type="button" onClick={() => void handleCreate()} disabled={state.creating} className="btn-primary-action">
-              {state.creating ? "Creating..." : "Create"}
+              {state.creating ? t("admin.serviceAccounts.actions.creating") : t("admin.serviceAccounts.actions.create")}
             </button>
           </div>
         </div>
@@ -361,11 +389,11 @@ export default function AdminServiceAccountsRoute() {
 
       <section className="glass-panel p-5">
         <div className="flex items-baseline justify-between gap-2.5 section-header">
-          <span>Accounts</span>
+          <span>{t("admin.serviceAccounts.list.title")}</span>
           {state.loading ? <Skeleton className="h-3 w-16" /> : null}
         </div>
         {state.accounts.length === 0 && !state.loading ? (
-          <p className="mt-2.5 mb-0 text-muted-foreground">No service accounts found.</p>
+          <p className="mt-2.5 mb-0 text-muted-foreground">{t("admin.serviceAccounts.list.empty")}</p>
         ) : null}
         {state.accounts.length > 0 ? (
           <div className="mt-4 grid gap-4">
@@ -375,14 +403,14 @@ export default function AdminServiceAccountsRoute() {
                   <div>
                     <div className="font-semibold text-sm flex items-center gap-2">
                       {a.name}
-                      {!a.enabled && <span className="text-xs bg-destructive/20 text-destructive px-1.5 py-0.5 rounded">disabled</span>}
+                      {!a.enabled && <span className="text-xs bg-destructive/20 text-destructive px-1.5 py-0.5 rounded">{t("admin.serviceAccounts.values.disabled")}</span>}
                     </div>
                     <div className="text-xs text-muted-foreground font-mono mt-0.5">{a.id}</div>
                   </div>
                   <div className="flex gap-2">
-                    <button type="button" className="btn-action text-xs" onClick={() => dispatch({ type: "START_EDIT", edit: { id: a.id, name: a.name, description: a.description || "", enabled: a.enabled } })}>Edit</button>
+                    <button type="button" className="btn-action text-xs" onClick={() => dispatch({ type: "START_EDIT", edit: { id: a.id, name: a.name, description: a.description || "", enabled: a.enabled } })}>{t("admin.serviceAccounts.actions.edit")}</button>
                     <button type="button" className="btn-action text-xs" onClick={() => dispatch({ type: "TOGGLE_EXPAND", id: a.id })}>
-                      {state.expandedAccountId === a.id ? "Hide Tokens" : "Tokens"}
+                      {state.expandedAccountId === a.id ? t("admin.serviceAccounts.actions.hideTokens") : t("admin.serviceAccounts.actions.tokens")}
                     </button>
                   </div>
                 </div>
@@ -390,23 +418,24 @@ export default function AdminServiceAccountsRoute() {
                 {state.expandedAccountId === a.id ? (
                   <div className="p-4 border-t border-border/50 bg-background/80">
                     <div className="flex justify-between items-center mb-3">
-                      <div className="text-sm font-semibold">Tokens</div>
+                      <div className="text-sm font-semibold">{t("admin.serviceAccounts.token.listTitle")}</div>
                       <button type="button" className="btn-primary-action text-xs py-1" onClick={() => dispatch({ type: "START_CREATE_TOKEN", id: a.id })}>
-                        New Token
+                        {t("admin.serviceAccounts.actions.newToken")}
                       </button>
                     </div>
 
                     {state.creatingTokenFor === a.id ? (
                       <div className="mb-4 p-3 border border-border/50 rounded-lg bg-muted/20">
-                        <div className="text-sm font-medium mb-2">Create Token</div>
+                        <div className="text-sm font-medium mb-2">{t("admin.serviceAccounts.token.createTitle")}</div>
                         <div className="grid gap-3">
                           <div>
-                            <label className="label-premium">Scopes</label>
+                            <label className="label-premium">{t("admin.serviceAccounts.token.scopesLabel")}</label>
                             <div className="mt-1 flex flex-wrap gap-3">
                               {ALL_SCOPES.map((scope) => (
-                                <label key={scope} className="flex items-center text-sm gap-1.5">
+                                <label key={scope} className="flex items-start text-sm gap-1.5 max-w-xs">
                                   <input
                                     type="checkbox"
+                                    value={scope}
                                     checked={state.tokenCreate.scopes.includes(scope)}
                                     onChange={(e) => {
                                       const newScopes = e.target.checked
@@ -415,14 +444,19 @@ export default function AdminServiceAccountsRoute() {
                                       dispatch({ type: "SET_TOKEN_CREATE_FIELD", field: "scopes", value: newScopes });
                                     }}
                                   />
-                                  {scope}
+                                  <span>
+                                    <span>{t(`admin.serviceAccounts.scopes.${SCOPE_I18N_KEYS[scope]}.label`)}</span>
+                                    <span className="block text-[11px] text-muted-foreground">{t(`admin.serviceAccounts.scopes.${SCOPE_I18N_KEYS[scope]}.description`)}</span>
+                                    <code className="block font-mono text-[11px] text-muted-foreground">{scope}</code>
+                                  </span>
                                 </label>
                               ))}
                             </div>
                           </div>
                           <div>
-                            <label className="label-premium">Expires At (optional)</label>
+                            <label className="label-premium" htmlFor="create-token-expires-at">{t("admin.serviceAccounts.token.expiresAtOptional")}</label>
                             <input
+                              id="create-token-expires-at"
                               type="datetime-local"
                               value={state.tokenCreate.expiresAt}
                               onChange={(e) => dispatch({ type: "SET_TOKEN_CREATE_FIELD", field: "expiresAt", value: e.target.value })}
@@ -431,10 +465,10 @@ export default function AdminServiceAccountsRoute() {
                           </div>
                           <div className="flex gap-2">
                             <button type="button" disabled={state.creatingToken} className="btn-primary-action py-1 px-3 text-sm" onClick={() => void handleCreateToken()}>
-                              {state.creatingToken ? "Creating..." : "Confirm Create"}
+                              {state.creatingToken ? t("admin.serviceAccounts.actions.creating") : t("admin.serviceAccounts.actions.confirmCreate")}
                             </button>
                             <button type="button" className="btn-action py-1 px-3 text-sm" onClick={() => dispatch({ type: "CLOSE_CREATE_TOKEN" })}>
-                              Cancel
+                              {t("admin.serviceAccounts.actions.cancel")}
                             </button>
                           </div>
                         </div>
@@ -442,27 +476,27 @@ export default function AdminServiceAccountsRoute() {
                     ) : null}
 
                     {a.tokens.length === 0 ? (
-                      <div className="text-xs text-muted-foreground">No tokens.</div>
+                      <div className="text-xs text-muted-foreground">{t("admin.serviceAccounts.token.empty")}</div>
                     ) : (
                       <div className="grid gap-2">
-                        {a.tokens.map((t) => (
-                          <div key={t.id} className="flex items-center justify-between text-sm p-2 bg-background border border-border/30 rounded">
+                        {a.tokens.map((token) => (
+                          <div key={token.id} className="flex items-center justify-between text-sm p-2 bg-background border border-border/30 rounded">
                             <div>
-                              <div className="font-mono">{t.token_prefix}...</div>
+                              <div className="font-mono">{token.token_prefix}...</div>
                               <div className="text-xs text-muted-foreground mt-0.5">
-                                {t.status} • scopes: {t.scopes.join(", ")}
-                                {t.expires_at ? ` • expires: ${new Date(t.expires_at).toLocaleString()}` : ""}
+                                {t("admin.serviceAccounts.token.statusScopes", { status: token.status, scopes: token.scopes.join(", ") })}
+                                {token.expires_at ? t("admin.serviceAccounts.token.expires", { date: new Date(token.expires_at).toLocaleString() }) : ""}
                               </div>
                             </div>
                             <div>
-                              {t.status === "active" ? (
+                              {token.status === "active" ? (
                                 <button
                                   type="button"
-                                  disabled={state.revokingTokenId === t.id}
-                                  onClick={() => void handleRevokeToken(a.id, t.id)}
+                                  disabled={state.revokingTokenId === token.id}
+                                  onClick={() => void handleRevokeToken(a.id, token.id)}
                                   className="text-xs text-destructive hover:underline"
                                 >
-                                  {state.revokingTokenId === t.id ? "..." : "Revoke"}
+                                  {state.revokingTokenId === token.id ? t("admin.serviceAccounts.actions.revoking") : t("admin.serviceAccounts.actions.revoke")}
                                 </button>
                               ) : null}
                             </div>
@@ -481,24 +515,26 @@ export default function AdminServiceAccountsRoute() {
       {state.edit ? (
         <section className="glass-panel-accent p-5">
           <div className="flex items-baseline justify-between gap-2.5">
-            <div className="section-header">Edit service account</div>
+            <div className="section-header">{t("admin.serviceAccounts.edit.title")}</div>
             <button type="button" onClick={() => dispatch({ type: "CLOSE_EDIT" })} className="btn-action">
-              Close
+              {t("admin.serviceAccounts.actions.close")}
             </button>
           </div>
           <div className="mt-1.5 text-xs text-muted-foreground">{state.edit.id}</div>
           <div className="mt-2.5 grid gap-3">
             <div className="grid gap-1.5">
-              <label className="label-premium">Name</label>
+              <label className="label-premium" htmlFor="edit-service-account-name">{t("admin.serviceAccounts.form.name")}</label>
               <input
+                id="edit-service-account-name"
                 value={state.edit.name}
                 onChange={(e) => dispatch({ type: "SET_EDIT_FIELD", field: "name", value: e.target.value })}
                 className="input-premium"
               />
             </div>
             <div className="grid gap-1.5">
-              <label className="label-premium">Description</label>
+              <label className="label-premium" htmlFor="edit-service-account-description">{t("admin.serviceAccounts.form.description")}</label>
               <input
+                id="edit-service-account-description"
                 value={state.edit.description}
                 onChange={(e) => dispatch({ type: "SET_EDIT_FIELD", field: "description", value: e.target.value })}
                 className="input-premium"
@@ -511,11 +547,11 @@ export default function AdminServiceAccountsRoute() {
                 onChange={(e) => dispatch({ type: "SET_EDIT_FIELD", field: "enabled", value: e.target.checked })}
                 className="mr-2"
               />
-              enabled
+              {t("admin.serviceAccounts.form.enabled")}
             </label>
             <div className="mt-2">
               <button type="button" onClick={() => void handleSaveEdit()} disabled={state.savingEdit} className="btn-primary-action">
-                {state.savingEdit ? "Saving..." : "Save"}
+                {state.savingEdit ? t("admin.serviceAccounts.actions.saving") : t("admin.serviceAccounts.actions.save")}
               </button>
             </div>
           </div>

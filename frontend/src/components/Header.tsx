@@ -1,8 +1,10 @@
 import { Link, useLocation } from "react-router-dom";
 import { useEffect, useState, useId } from "react";
+import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "framer-motion";
 
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { Button } from "@/components/ui/button";
 import { SakuraIcon } from "@/components/icons/SakuraIcon";
 import { useAdminAccess } from "@/hooks/useAdminAccess";
@@ -11,25 +13,26 @@ import type { BackendSessionUser } from "@/auth/session";
 
 type NavLink = {
   href: string;
-  label: string;
+  labelKey: string;
   prefix?: string;
   adminRequired?: boolean;
   authRequired?: boolean;
 };
 
 const NAV_LINKS: NavLink[] = [
-  { href: "/battle/new", label: "Battle", prefix: "/battle", authRequired: true },
-  { href: "/leaderboard", label: "Leaderboard" },
-  { href: "/onboarding", label: "Profile", authRequired: true },
-  { href: "/admin/models", label: "Admin", prefix: "/admin", adminRequired: true },
+  { href: "/battle/new", labelKey: "nav.battle", prefix: "/battle", authRequired: true },
+  { href: "/leaderboard", labelKey: "nav.leaderboard" },
+  { href: "/onboarding", labelKey: "nav.onboarding", authRequired: true },
+  { href: "/admin/models", labelKey: "nav.admin", prefix: "/admin", adminRequired: true },
 ];
 
-function getUserLabel(user: BackendSessionUser | null) {
-  if (!user) return "Signed in";
-  return user.profile.email ?? user.profile.display_name ?? user.profile.name ?? user.profile.preferred_username ?? "Signed in";
+function getUserLabel(user: BackendSessionUser | null, fallback: string) {
+  if (!user) return fallback;
+  return user.profile.email ?? user.profile.display_name ?? user.profile.name ?? user.profile.preferred_username ?? fallback;
 }
 
 export function Header() {
+  const { t } = useTranslation();
   const auth = useArenaAuth();
   const { isAdmin } = useAdminAccess();
   const location = useLocation();
@@ -59,7 +62,7 @@ export function Header() {
     return pathname === link.href || pathname.startsWith(link.href + "/");
   }
 
-  const identity = getUserLabel(auth.user);
+  const identity = getUserLabel(auth.user, t("auth.signedIn"));
 
   function AuthButtonGroup({ mobile = false }: { mobile?: boolean }) {
     if (auth.authStatus === "loading") {
@@ -77,7 +80,7 @@ export function Header() {
             onClick={() => void auth.signoutRedirect()}
             className={mobile ? "justify-start" : undefined}
           >
-            Logout
+            {t("auth.logout")}
           </Button>
         </div>
       );
@@ -90,7 +93,7 @@ export function Header() {
         onClick={() => void auth.signinRedirect({ state: { returnTo } })}
         className={mobile ? "justify-start" : undefined}
       >
-        Login
+        {t("auth.login")}
       </Button>
     );
   }
@@ -126,7 +129,7 @@ export function Header() {
                   : "text-muted-foreground hover:text-foreground hover:bg-foreground/5"
               }`}
             >
-              {link.label}
+              {t(link.labelKey)}
               {isActive(link) && (
                 <motion.span
                   layoutId="nav-indicator"
@@ -143,6 +146,7 @@ export function Header() {
             <AuthButtonGroup />
           </div>
 
+          <LanguageSwitcher className="mx-1" />
           <ThemeToggle className="mx-1" />
         </nav>
 
@@ -150,7 +154,7 @@ export function Header() {
           type="button"
           className="md:hidden flex flex-col gap-1 p-2"
           onClick={() => setMobileOpen(!mobileOpen)}
-          aria-label="Toggle menu"
+          aria-label={t("header.toggleMenu")}
           aria-expanded={mobileOpen}
           aria-controls={mobileMenuId}
         >
@@ -186,14 +190,18 @@ export function Header() {
                       : "text-muted-foreground hover:text-foreground hover:bg-foreground/5"
                   }`}
                 >
-                  {link.label}
+                  {t(link.labelKey)}
                 </Link>
               ))}
               <div className="divider-fade my-3" />
 
               <div className="space-y-3 py-2">
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-xs text-muted-foreground">Theme</span>
+                  <span className="text-xs text-muted-foreground">{t("language.switcherLabel")}</span>
+                  <LanguageSwitcher />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs text-muted-foreground">{t("theme.toggle")}</span>
                   <ThemeToggle />
                 </div>
                 <AuthButtonGroup mobile />

@@ -2,7 +2,9 @@
 
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Routes, Route } from "react-router-dom";
+import { TestI18nProvider, createTestI18n } from "@/i18n/test-utils";
+import type { i18n } from "i18next";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const useArenaAuthMock = vi.fn();
@@ -21,7 +23,10 @@ vi.mock("@/lib/api", () => ({
   apiGet: (...args: unknown[]) => apiGetMock(...args),
 }));
 
-beforeEach(() => {
+let i18nInstance: i18n;
+
+beforeEach(async () => {
+  i18nInstance = await createTestI18n("en");
   useArenaAuthMock.mockReturnValue({ authStatus: "unauthenticated", signinRedirect: vi.fn() });
   apiGetMock.mockReset();
 });
@@ -36,7 +41,9 @@ describe("LeaderboardRoute", () => {
 
     render(
       <MemoryRouter initialEntries={["/leaderboard"]}>
-        <LeaderboardRoute />
+        <TestI18nProvider i18n={i18nInstance}>
+          <LeaderboardRoute />
+        </TestI18nProvider>
       </MemoryRouter>
     );
 
@@ -54,7 +61,7 @@ describe("LeaderboardRoute", () => {
 
     expect(await screen.findByText("No ratings yet")).toBeDefined();
     expect(screen.getByText("95% CI")).toBeDefined();
-    expect(screen.getByRole("link", { name: "Elo (baseline)" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "Elo" }).getAttribute("href")).toBe(
       "/leaderboard?method=elo"
     );
     expect(screen.getByRole("link", { name: "Show 95% CI" }).getAttribute("href")).toBe(
@@ -75,7 +82,9 @@ describe("LeaderboardRoute", () => {
 
     render(
       <MemoryRouter initialEntries={["/leaderboard"]}>
-        <LeaderboardRoute />
+        <TestI18nProvider i18n={i18nInstance}>
+          <LeaderboardRoute />
+        </TestI18nProvider>
       </MemoryRouter>
     );
 
@@ -93,7 +102,9 @@ describe("LeaderboardRoute", () => {
 
     render(
       <MemoryRouter initialEntries={["/leaderboard?method=bt&include_confidence=true"]}>
-        <LeaderboardRoute />
+        <TestI18nProvider i18n={i18nInstance}>
+          <LeaderboardRoute />
+        </TestI18nProvider>
       </MemoryRouter>
     );
 
@@ -117,7 +128,7 @@ describe("LeaderboardRoute", () => {
     });
 
     expect(await screen.findByText(/250 bootstrap rounds/)).toBeDefined();
-    expect(screen.getByRole("link", { name: "Elo (baseline)" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "Elo" }).getAttribute("href")).toBe(
       "/leaderboard?method=elo&include_confidence=true"
     );
     expect(screen.getByRole("link", { name: "Hide 95% CI" }).getAttribute("href")).toBe(
@@ -138,7 +149,9 @@ describe("LeaderboardRoute", () => {
 
     render(
       <MemoryRouter initialEntries={["/leaderboard?method=bt"]}>
-        <LeaderboardRoute />
+        <TestI18nProvider i18n={i18nInstance}>
+          <LeaderboardRoute />
+        </TestI18nProvider>
       </MemoryRouter>
     );
 
@@ -176,7 +189,9 @@ describe("LeaderboardRoute", () => {
 
     render(
       <MemoryRouter initialEntries={["/leaderboard?method=elo&include_confidence=true"]}>
-        <LeaderboardRoute />
+        <TestI18nProvider i18n={i18nInstance}>
+          <LeaderboardRoute />
+        </TestI18nProvider>
       </MemoryRouter>
     );
 
@@ -212,7 +227,9 @@ describe("LeaderboardRoute", () => {
 
     render(
       <MemoryRouter initialEntries={["/leaderboard?method=bt"]}>
-        <LeaderboardRoute />
+        <TestI18nProvider i18n={i18nInstance}>
+          <LeaderboardRoute />
+        </TestI18nProvider>
       </MemoryRouter>
     );
 
@@ -232,7 +249,9 @@ describe("LeaderboardRoute", () => {
 
     render(
       <MemoryRouter initialEntries={["/leaderboard?method=bt"]}>
-        <LeaderboardRoute />
+        <TestI18nProvider i18n={i18nInstance}>
+          <LeaderboardRoute />
+        </TestI18nProvider>
       </MemoryRouter>
     );
 
@@ -262,3 +281,33 @@ describe("LeaderboardRoute", () => {
     expect(screen.queryByRole("columnheader", { name: "95% CI" })).toBeNull();
   });
 });
+
+  it("query: changing filters updates query params correctly in Chinese locale too", async () => {
+    let resolveApi: (value: unknown) => void;
+    apiGetMock.mockReturnValue(new Promise((resolve) => { resolveApi = resolve; }));
+
+    const zhI18n = await createTestI18n("zh");
+
+    render(
+      <TestI18nProvider i18n={zhI18n}>
+        <MemoryRouter initialEntries={["/leaderboard"]}>
+          <Routes><Route path="/leaderboard" element={<LeaderboardRoute />} /></Routes>
+        </MemoryRouter>
+      </TestI18nProvider>
+    );
+
+    // Initial query
+    expect(apiGetMock).toHaveBeenCalledWith("/leaderboard?method=elo&judge_type=all");
+
+    // Wait for empty state to load
+    resolveApi!({ method: "elo", ci: false, bootstrap_rounds: null, models: [] });
+    expect(await screen.findByText("暂无评分")).toBeDefined();
+    
+    // Check Chinese UI labels
+    expect(screen.getByText("排行榜")).toBeDefined();
+    
+    // Instead of clicking and waiting for router, just assert the generated hrefs
+    expect(screen.getByRole("link", { name: "Bradley-Terry" }).getAttribute("href")).toBe("/leaderboard?method=bt");
+    expect(screen.getByRole("link", { name: "人工投票" }).getAttribute("href")).toBe("/leaderboard?method=elo&judge_type=human");
+    expect(screen.getByRole("link", { name: "显示 95% CI" }).getAttribute("href")).toBe("/leaderboard?method=elo&include_confidence=true");
+  });

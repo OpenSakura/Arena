@@ -4,6 +4,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { createTestI18n, TestI18nProvider } from "@/i18n/test-utils";
 import AdminModelsRoute from "./AdminModelsRoute";
 
 const useAuthHeadersMock = vi.fn();
@@ -72,9 +73,18 @@ function modelRecord(overrides: Record<string, unknown> = {}) {
   };
 }
 
+async function renderAdminModelsRoute(locale: "en" | "zh" = "en") {
+  const i18n = await createTestI18n(locale);
+  return render(
+    <TestI18nProvider i18n={i18n}>
+      <AdminModelsRoute />
+    </TestI18nProvider>,
+  );
+}
+
 describe("AdminModelsRoute", () => {
   it("does not load models when unauthenticated and shows empty state", async () => {
-    render(<AdminModelsRoute />);
+    await renderAdminModelsRoute();
 
     await screen.findByText("Model Registry");
     expect(apiGetMock).not.toHaveBeenCalled();
@@ -82,11 +92,23 @@ describe("AdminModelsRoute", () => {
     await screen.findByText("No models yet.");
   });
 
+  it("renders model registry labels from the Chinese catalog", async () => {
+    await renderAdminModelsRoute("zh");
+
+    await screen.findByRole("heading", { name: "模型注册表" });
+    expect(screen.getByText("创建模型")).toBeDefined();
+    expect(screen.getByLabelText("显示名称")).toBeDefined();
+    expect(screen.getByLabelText("模型名称")).toBeDefined();
+    expect(screen.getByLabelText("基础 URL")).toBeDefined();
+    expect(screen.getByRole("button", { name: "创建" })).toBeDefined();
+    expect(screen.getByText("暂无模型。" )).toBeDefined();
+  });
+
   it("loads and renders model rows when authenticated", async () => {
     authenticatedSession();
     apiGetMock.mockResolvedValue({ models: [modelRecord()] });
 
-    render(<AdminModelsRoute />);
+    await renderAdminModelsRoute();
 
     await screen.findByText("Model One");
 
@@ -106,7 +128,7 @@ describe("AdminModelsRoute", () => {
       }),
     );
 
-    render(<AdminModelsRoute />);
+    await renderAdminModelsRoute();
     await screen.findByText("No models yet.");
 
     const user = userEvent.setup();
@@ -134,11 +156,64 @@ describe("AdminModelsRoute", () => {
     await screen.findByText("Model Two");
   });
 
+  it("preserves the model create payload keys and values under Chinese locale", async () => {
+    authenticatedSession();
+    apiGetMock.mockResolvedValue({ models: [] });
+    apiPostMock.mockResolvedValue(
+      modelRecord({
+        id: "model-localized",
+        display_name: "Localized Payload Model",
+        model_name: "gpt-localized",
+        base_url: "https://gateway-localized.example/v1",
+        visibility: "private",
+        tags: { family: "openai", tier: "cheap" },
+        params: { route: "jp2zh", top_p: 0.95, max_tokens: 1024 },
+      }),
+    );
+
+    await renderAdminModelsRoute("zh");
+    await screen.findByText("暂无模型。");
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("显示名称"), "Localized Payload Model");
+    await user.type(screen.getByLabelText("模型名称"), "gpt-localized");
+    await user.type(screen.getByLabelText("基础 URL"), "https://gateway-localized.example/v1");
+    await user.selectOptions(screen.getByLabelText("可见性"), "private");
+
+    const tagsTextarea = document.getElementById("create-tags");
+    const paramsTextarea = document.getElementById("create-params");
+    if (!(tagsTextarea instanceof HTMLTextAreaElement) || !(paramsTextarea instanceof HTMLTextAreaElement)) {
+      throw new Error("JSON payload textareas not found");
+    }
+    fireEvent.change(tagsTextarea, { target: { value: '{"family":"openai","tier":"cheap"}' } });
+    fireEvent.change(paramsTextarea, { target: { value: '{"route":"jp2zh","top_p":0.95,"max_tokens":1024}' } });
+
+    await user.click(screen.getByRole("button", { name: "创建" }));
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith(
+        "/admin/models",
+        {
+          display_name: "Localized Payload Model",
+          model_name: "gpt-localized",
+          base_url: "https://gateway-localized.example/v1",
+          enabled: true,
+          visibility: "private",
+          tags: { family: "openai", tier: "cheap" },
+          params: { route: "jp2zh", top_p: 0.95, max_tokens: 1024 },
+          system_prompt: null,
+          user_prompt: null,
+        },
+      );
+    });
+    expect(apiPostMock.mock.calls[0]).toHaveLength(2);
+  });
+
   it("shows validation errors before create API call", async () => {
     authenticatedSession();
     apiGetMock.mockResolvedValue({ models: [] });
 
-    render(<AdminModelsRoute />);
+    await renderAdminModelsRoute();
     await screen.findByText("No models yet.");
 
     const user = userEvent.setup();
@@ -158,13 +233,16 @@ describe("AdminModelsRoute", () => {
       }),
     );
 
-    render(<AdminModelsRoute />);
+    await renderAdminModelsRoute();
     await screen.findByText("Model One");
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Edit" }));
 
-    const displayNameInput = screen.getByLabelText("display_name");
+    const displayNameInput = document.getElementById("edit-display-name");
+    if (!(displayNameInput instanceof HTMLInputElement)) {
+      throw new Error("Edit display name input not found");
+    }
     await user.clear(displayNameInput);
     await user.type(displayNameInput, "Model One Renamed");
 
@@ -198,9 +276,7 @@ describe("AdminModelsRoute", () => {
     expect(apiPutMock.mock.calls[0]).toHaveLength(2);
 
     await screen.findByText("Model One Server Normalized");
-    expect((displayNameInput as HTMLInputElement).value).toBe(
-      "Model One Server Normalized",
-    );
+    expect(displayNameInput.value).toBe("Model One Server Normalized");
     expect((frequencyPenaltyInput as HTMLInputElement).value).toBe("0.5");
   });
 
@@ -210,7 +286,7 @@ describe("AdminModelsRoute", () => {
     apiDeleteMock.mockResolvedValue(null);
     vi.spyOn(window, "confirm").mockReturnValue(true);
 
-    render(<AdminModelsRoute />);
+    await renderAdminModelsRoute();
     await screen.findByText("Model One");
 
     const user = userEvent.setup();
@@ -230,14 +306,14 @@ describe("AdminModelsRoute", () => {
     authenticatedSession();
     apiGetMock.mockResolvedValue({ models: [modelRecord()] });
 
-    render(<AdminModelsRoute />);
+    await renderAdminModelsRoute();
     await screen.findByText("Model One");
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Edit" }));
 
-    const apiKeyInput = screen.getByLabelText("new api_key (optional)") as HTMLInputElement;
-    const clearApiKeyCheckbox = screen.getByLabelText("clear api_key") as HTMLInputElement;
+    const apiKeyInput = screen.getByLabelText("New API key (optional)") as HTMLInputElement;
+    const clearApiKeyCheckbox = screen.getByLabelText("Clear API key") as HTMLInputElement;
 
     await user.click(clearApiKeyCheckbox);
     expect(clearApiKeyCheckbox.checked).toBe(true);
@@ -261,7 +337,7 @@ describe("AdminModelsRoute", () => {
     apiGetMock.mockResolvedValue({ models: [modelRecord()] });
     apiPostMock.mockResolvedValue({ ok: true, model_id: "model-1", has_api_key: true });
 
-    render(<AdminModelsRoute />);
+    await renderAdminModelsRoute();
     await screen.findByText("Model One");
 
     const user = userEvent.setup();
@@ -288,7 +364,7 @@ describe("AdminModelsRoute", () => {
       }),
     );
 
-    render(<AdminModelsRoute />);
+    await renderAdminModelsRoute();
     await screen.findByText("No models yet.");
 
     const user = userEvent.setup();
@@ -345,7 +421,7 @@ describe("AdminModelsRoute", () => {
       }),
     );
 
-    render(<AdminModelsRoute />);
+    await renderAdminModelsRoute();
     await screen.findByText("Model One");
 
     const user = userEvent.setup();

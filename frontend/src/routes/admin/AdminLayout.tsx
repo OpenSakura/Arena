@@ -1,18 +1,22 @@
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, Navigate, Outlet, useLocation } from "react-router-dom";
 
+import { SESSION_EXPIRED_MESSAGE } from "@/auth/session";
 import { useAdminAccess } from "@/hooks/useAdminAccess";
 
 const ADMIN_TABS = [
-  { href: "/admin/models", label: "Models" },
-  { href: "/admin/tasks", label: "Tasks" },
-  { href: "/admin/service-accounts", label: "Service Accounts" },
+  { id: "models", href: "/admin/models", labelKey: "admin.layout.tabs.models" },
+  { id: "tasks", href: "/admin/tasks", labelKey: "admin.layout.tabs.tasks" },
+  { id: "serviceAccounts", href: "/admin/service-accounts", labelKey: "admin.layout.tabs.serviceAccounts" },
 ] as const;
 
 export function AdminLayout({ children }: { children?: ReactNode }) {
+  const { t } = useTranslation();
   const location = useLocation();
   const { isAuthenticated, isAdmin, loading, error } = useAdminAccess();
   const normalizedPathname = (location.pathname ?? "").replace(/\/+$/, "") || "/";
+  const guardError = error === SESSION_EXPIRED_MESSAGE ? t("admin.layout.guards.sessionExpired") : error;
 
   const loadingState = (
     <div className="grid gap-6">
@@ -28,7 +32,7 @@ export function AdminLayout({ children }: { children?: ReactNode }) {
     return (
       <div className="grid gap-6">
         <div className="glass-panel-accent p-6 text-center">
-          <p className="text-sm text-destructive">{error}</p>
+          <p className="text-sm text-destructive">{guardError}</p>
         </div>
       </div>
     );
@@ -45,7 +49,7 @@ export function AdminLayout({ children }: { children?: ReactNode }) {
       <div className="grid gap-6">
         <div className="glass-panel-accent p-6 text-center">
           <p className="text-sm text-muted-foreground">
-            You are not authorized to access the admin area.
+            {t("admin.layout.guards.notAuthorized")}
           </p>
         </div>
       </div>
@@ -62,14 +66,14 @@ export function AdminLayout({ children }: { children?: ReactNode }) {
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
           </div>
-          <h1 className="heading-gradient text-2xl">Admin</h1>
+          <h1 className="heading-gradient text-2xl">{t("admin.layout.title")}</h1>
         </div>
         <nav className="flex items-center gap-1 rounded-xl border border-border/50 bg-background/30 p-1 backdrop-blur">
           {ADMIN_TABS.map((tab) => {
             const active = normalizedPathname.startsWith(tab.href);
             return (
               <Link
-                key={tab.href}
+                key={tab.id}
                 to={tab.href}
                 className={`rounded-lg px-4 py-1.5 text-sm font-medium transition-all duration-200 ${
                   active
@@ -77,7 +81,7 @@ export function AdminLayout({ children }: { children?: ReactNode }) {
                     : "text-muted-foreground hover:text-foreground hover:bg-foreground/5"
                 }`}
               >
-                {tab.label}
+                {t(tab.labelKey)}
               </Link>
             );
           })}

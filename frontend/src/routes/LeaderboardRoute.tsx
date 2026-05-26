@@ -6,6 +6,7 @@
 
 import { useState, useEffect } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { Trans, useTranslation } from "react-i18next";
 
 import { apiGet } from "@/lib/api";
 import { useArenaAuth } from "@/hooks/useArenaAuth";
@@ -121,6 +122,7 @@ function podiumClass(index: number) {
 }
 
 export default function LeaderboardRoute() {
+  const { t } = useTranslation();
   const auth = useArenaAuth();
 
   const [searchParams, setSearchParams] = useSearchParams();
@@ -199,7 +201,7 @@ export default function LeaderboardRoute() {
             voteSourceCounts: undefined,
             isLoading: false,
           }));
-          setErrorText(err instanceof Error ? err.message : "Failed to load leaderboard");
+          setErrorText(err instanceof Error ? err.message : t("leaderboard.error"));
         }
       });
       
@@ -214,7 +216,7 @@ export default function LeaderboardRoute() {
   const confidenceToggleHref = includeConfidence
     ? `/leaderboard?method=${selectedMethod}${judgeType !== "all" ? `&judge_type=${judgeType}` : ""}`
     : `/leaderboard?method=${selectedMethod}&include_confidence=true${judgeType !== "all" ? `&judge_type=${judgeType}` : ""}`;
-  const confidenceToggleLabel = includeConfidence ? "Hide 95% CI" : "Show 95% CI";
+  const confidenceToggleLabel = includeConfidence ? t("leaderboard.filters.confidence.hide") : t("leaderboard.filters.confidence.show");
 
   const maxRating = models.length > 0 ? Math.max(...models.map((m) => m.rating ?? 0)) : 0;
 
@@ -239,21 +241,34 @@ export default function LeaderboardRoute() {
             </svg>
           </div>
           <div>
-            <h2 className="heading-gradient text-3xl">Leaderboard</h2>
+            <h2 className="heading-gradient text-3xl">{t("leaderboard.title")}</h2>
             <div className="mt-1 flex flex-col gap-0.5 sm:flex-row sm:gap-2 sm:items-center text-sm text-muted-foreground">
               <span>
-                Method: <span className="font-semibold text-foreground/80">{selectedMethod.toUpperCase()}</span>
+                {t("leaderboard.meta.method")}<span className="font-semibold text-foreground/80">{selectedMethod.toUpperCase()}</span>
                 {includeConfidence && bootstrapRounds
-                  ? ` (${bootstrapRounds} bootstrap rounds)`
+                  ? t("leaderboard.meta.bootstrapRounds", { count: bootstrapRounds })
                   : ""}
               </span>
               {voteSourceCounts && (
                 <>
                   <span className="hidden sm:inline">&bull;</span>
                   <span>
-                    Votes: <span className="font-semibold text-foreground/80">{voteSourceCounts.total}</span> total
-                    {" "}(<span className="font-semibold text-foreground/80">{voteSourceCounts.human}</span> human,
-                    {" "}<span className="font-semibold text-foreground/80">{voteSourceCounts.bot}</span> bot)
+                    {t("leaderboard.meta.votes.total")}
+                    <Trans
+                      i18nKey="leaderboard.meta.votes.totalCount"
+                      values={{ total: voteSourceCounts.total }}
+                      components={{
+                        1: <span className="font-semibold text-foreground/80" />
+                      }}
+                    />
+                    <Trans
+                      i18nKey="leaderboard.meta.votes.breakdown"
+                      values={{ human: voteSourceCounts.human, bot: voteSourceCounts.bot }}
+                      components={{
+                        1: <span className="font-semibold text-foreground/80" />,
+                        2: <span className="font-semibold text-foreground/80" />
+                      }}
+                    />
                   </span>
                 </>
               )}
@@ -266,36 +281,36 @@ export default function LeaderboardRoute() {
           <div className="flex items-center gap-1.5 rounded-xl border border-border/50 bg-background/30 p-1 backdrop-blur">
             <Link
               to={buildFilterLink("all")}
-              aria-label="All votes"
+              aria-label={t("leaderboard.filters.judgeType.all")}
               className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition-all ${
                 judgeType === "all"
                   ? "bg-primary/10 text-primary shadow-sm"
                   : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
               }`}
             >
-              All votes
+              {t("leaderboard.filters.judgeType.all")}
             </Link>
             <Link
               to={buildFilterLink("human")}
-              aria-label="Human votes"
+              aria-label={t("leaderboard.filters.judgeType.human")}
               className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition-all ${
                 judgeType === "human"
                   ? "bg-primary/10 text-primary shadow-sm"
                   : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
               }`}
             >
-              Human votes
+              {t("leaderboard.filters.judgeType.human")}
             </Link>
             <Link
               to={buildFilterLink("bot")}
-              aria-label="Bot votes"
+              aria-label={t("leaderboard.filters.judgeType.bot")}
               className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition-all ${
                 judgeType === "bot"
                   ? "bg-primary/10 text-primary shadow-sm"
                   : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
               }`}
             >
-              Bot votes
+              {t("leaderboard.filters.judgeType.bot")}
             </Link>
           </div>
 
@@ -303,14 +318,14 @@ export default function LeaderboardRoute() {
           <div className="flex items-center gap-1.5 rounded-xl border border-border/50 bg-background/30 p-1 backdrop-blur">
             <Link
               to={`/leaderboard?method=elo${includeConfidence ? "&include_confidence=true" : ""}${judgeType !== "all" ? `&judge_type=${judgeType}` : ""}`}
-              aria-label="Elo (baseline)"
+              aria-label={t("leaderboard.filters.method.elo")}
               className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition-all ${
                 selectedMethod === "elo"
                   ? "bg-primary/10 text-primary shadow-sm"
                   : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
               }`}
             >
-              Elo
+              {t("leaderboard.filters.method.elo")}
             </Link>
             <Link
               to={`/leaderboard?method=bt${includeConfidence ? "&include_confidence=true" : ""}${judgeType !== "all" ? `&judge_type=${judgeType}` : ""}`}
@@ -320,7 +335,7 @@ export default function LeaderboardRoute() {
                   : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
               }`}
             >
-              Bradley-Terry
+              {t("leaderboard.filters.method.bt")}
             </Link>
             <div className="h-4 w-px bg-border/50 mx-0.5" />
             <Link
@@ -332,7 +347,7 @@ export default function LeaderboardRoute() {
                   : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
               }`}
             >
-              95% CI
+              {t("leaderboard.filters.confidence.label")}
             </Link>
           </div>
         </div>
@@ -353,23 +368,23 @@ export default function LeaderboardRoute() {
               <line x1="6" y1="20" x2="6" y2="14" />
             </svg>
           </div>
-          <div className="text-lg font-semibold text-foreground/60 mb-2">No ratings yet</div>
+          <div className="text-lg font-semibold text-foreground/60 mb-2">{t("leaderboard.empty.title")}</div>
           <p className="text-muted-foreground text-sm max-w-xs">
-            Start a battle and cast some votes to see models ranked here.
+            {t("leaderboard.empty.description")}
           </p>
           {auth.authStatus === "authenticated" ? (
             <Link
               to="/battle/new"
               className="mt-5 inline-block rounded-full border border-primary/20 bg-primary/10 px-6 py-2 text-sm font-semibold text-primary transition-all hover:bg-primary/20 hover:scale-[1.02]"
             >
-              Start a battle
+              {t("leaderboard.empty.cta")}
             </Link>
           ) : (
             <button
               onClick={() => void auth.signinRedirect({ state: { returnTo: "/battle/new" } })}
               className="mt-5 inline-block rounded-full border border-primary/20 bg-primary/10 px-6 py-2 text-sm font-semibold text-primary transition-all hover:bg-primary/20 hover:scale-[1.02]"
             >
-              Start a battle
+              {t("leaderboard.empty.cta")}
             </button>
           )}
         </div>
@@ -402,16 +417,16 @@ export default function LeaderboardRoute() {
                     <div>
                       <div className="text-sm font-bold text-foreground mb-0.5">{row.display_name}</div>
                       <div className="text-xs text-muted-foreground">
-                        #{index + 1} Rank
+                        {t("leaderboard.podium.rank", { rank: index + 1 })}
                       </div>
                     </div>
                     <div className="flex items-baseline gap-1">
                       {row.games_played === 0 ? (
-                        <span className="text-sm font-medium text-muted-foreground/60 uppercase tracking-wider">Unrated</span>
+                        <span className="text-sm font-medium text-muted-foreground/60 uppercase tracking-wider">{t("leaderboard.status.unrated")}</span>
                       ) : (
                         <>
                           <span className="text-2xl font-bold tabular-nums font-mono text-foreground">{(row.rating ?? 0).toFixed(0)}</span>
-                          <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">rating</span>
+                          <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">{t("leaderboard.podium.rating")}</span>
                         </>
                       )}
                     </div>
@@ -422,9 +437,9 @@ export default function LeaderboardRoute() {
                     )}
                     <div className="text-[10px] text-muted-foreground/40">
                       {row.games_played === 0 ? (
-                        <span className="inline-block rounded-full border border-primary/15 bg-primary/[0.05] px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-primary/60">New</span>
+                        <span className="inline-block rounded-full border border-primary/15 bg-primary/[0.05] px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-primary/60">{t("leaderboard.status.new")}</span>
                       ) : (
-                        `${row.games_played} games`
+                        t("leaderboard.podium.games", { count: row.games_played })
                       )}
                     </div>
                   </div>
@@ -438,13 +453,13 @@ export default function LeaderboardRoute() {
           <table className="w-full border-collapse min-w-[480px]">
             <thead>
               <tr className="bg-foreground/[0.02]">
-                <th className="th-premium w-20">Rank</th>
-                <th className="th-premium">Model</th>
-                <th className="th-premium text-right">Rating</th>
+                <th className="th-premium w-20">{t("leaderboard.table.rank")}</th>
+                <th className="th-premium">{t("leaderboard.table.model")}</th>
+                <th className="th-premium text-right">{t("leaderboard.table.rating")}</th>
                 {hasConfidence ? (
-                  <th className="th-premium text-right">95% CI</th>
+                  <th className="th-premium text-right">{t("leaderboard.filters.confidence.label")}</th>
                 ) : null}
-                <th className="th-premium text-right">Games</th>
+                <th className="th-premium text-right">{t("leaderboard.table.games")}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/30">
@@ -481,7 +496,7 @@ export default function LeaderboardRoute() {
                   </td>
                   <td className="td-premium text-right tabular-nums font-mono text-sm font-semibold">
                     {row.games_played === 0 ? (
-                      <span className="text-xs font-medium text-muted-foreground/50 uppercase tracking-wider not-italic">Unrated</span>
+                      <span className="text-xs font-medium text-muted-foreground/50 uppercase tracking-wider not-italic">{t("leaderboard.status.unrated")}</span>
                     ) : (
                       (row.rating ?? 0).toFixed(1)
                     )}
@@ -495,7 +510,7 @@ export default function LeaderboardRoute() {
                   ) : null}
                   <td className="td-premium text-right tabular-nums text-muted-foreground">
                     {row.games_played === 0 ? (
-                      <span className="inline-block rounded-full border border-primary/20 bg-primary/[0.06] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-primary/70">New</span>
+                      <span className="inline-block rounded-full border border-primary/20 bg-primary/[0.06] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-primary/70">{t("leaderboard.status.new")}</span>
                     ) : (
                       row.games_played
                     )}

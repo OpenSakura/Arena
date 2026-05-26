@@ -1,4 +1,6 @@
 import { createContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 
 import { setApiCsrfToken } from "@/lib/api";
 
@@ -20,7 +22,21 @@ type RedirectCompatibilityArgs = {
 type AuthState =
   | { status: "loading" }
   | { status: "ready"; config: PublicAuthConfig; session: BackendSessionResponse; sessionError: SessionErrorCode | null }
-  | { status: "error"; message: string; sessionError: SessionErrorCode };
+  | { status: "error"; error: AuthBootstrapErrorDetails; sessionError: SessionErrorCode };
+
+type AuthBootstrapErrorDetails =
+  | { kind: "publicConfig"; status: number }
+  | { kind: "session"; status: number }
+  | { kind: "unknown" };
+
+class AuthBootstrapRequestError extends Error {
+  constructor(
+    readonly kind: "publicConfig" | "session",
+    readonly status: number,
+  ) {
+    super("auth-bootstrap-request-failed");
+  }
+}
 
 export type ArenaAuthContextValue = {
   authStatus: "loading" | "authenticated" | "unauthenticated";
@@ -49,7 +65,7 @@ async function loadPublicConfig(signal: AbortSignal): Promise<PublicConfig> {
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to load public config (${response.status})`);
+    throw new AuthBootstrapRequestError("publicConfig", response.status);
   }
 
   return (await response.json()) as PublicConfig;
@@ -67,29 +83,33 @@ async function loadBackendSession(sessionPath: string, signal: AbortSignal): Pro
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to load auth session (${response.status})`);
+    throw new AuthBootstrapRequestError("session", response.status);
   }
 
   return (await response.json()) as BackendSessionResponse;
 }
 
 function LoadingShell() {
+  const { t } = useTranslation();
+
   return (
     <div className="min-h-screen grid place-items-center px-6">
       <div className="glass-panel p-6 text-center">
         <div className="mx-auto h-4 w-4 rounded-full shimmer bg-muted/60" />
-        <p className="mt-3 text-sm text-muted-foreground">Loading authentication…</p>
+        <p className="mt-3 text-sm text-muted-foreground">{t("auth.bootstrap.loading")}</p>
       </div>
     </div>
   );
 }
 
-function ErrorShell({ message }: { message: string }) {
+function ErrorShell({ error }: { error: AuthBootstrapErrorDetails }) {
+  const { t } = useTranslation();
+
   return (
     <div className="min-h-screen grid place-items-center px-6">
       <div className="glass-panel-accent max-w-md p-6 text-center">
-        <p className="text-sm font-medium text-destructive">{message}</p>
-        <p className="mt-2 text-xs text-muted-foreground">Please refresh the page to try again.</p>
+        <p className="text-sm font-medium text-destructive">{formatAuthBootstrapError(error, t)}</p>
+        <p className="mt-2 text-xs text-muted-foreground">{t("auth.bootstrap.refresh")}</p>
       </div>
     </div>
   );
@@ -99,8 +119,24 @@ function buildLoginUrl(loginPath: string, returnTo: string) {
   return `${loginPath}?returnTo=${encodeURIComponent(returnTo)}`;
 }
 
-function getSessionErrorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "Failed to load authentication session";
+function getAuthBootstrapError(error: unknown): AuthBootstrapErrorDetails {
+  if (error instanceof AuthBootstrapRequestError) {
+    return { kind: error.kind, status: error.status };
+  }
+
+  return { kind: "unknown" };
+}
+
+function formatAuthBootstrapError(error: AuthBootstrapErrorDetails, t: TFunction) {
+  if (error.kind === "publicConfig") {
+    return t("auth.bootstrap.errors.publicConfig", { status: error.status });
+  }
+
+  if (error.kind === "session") {
+    return t("auth.bootstrap.errors.session", { status: error.status });
+  }
+
+  return t("auth.bootstrap.errors.fallback");
 }
 
 export function ArenaAuthProvider({ children }: { children: ReactNode }) {
@@ -129,7 +165,7 @@ export function ArenaAuthProvider({ children }: { children: ReactNode }) {
         setApiCsrfToken(null);
         setState({
           status: "error",
-          message: getSessionErrorMessage(error),
+          error: getAuthBootstrapError(error),
           sessionError: "SessionBootstrapFailed",
         });
       }
@@ -213,7 +249,7 @@ export function ArenaAuthProvider({ children }: { children: ReactNode }) {
   }
 
   if (state.status === "error") {
-    return <ErrorShell message={state.message} />;
+    return <ErrorShell error={state.error} />;
   }
 
   return <ArenaAuthContext.Provider value={value}>{children}</ArenaAuthContext.Provider>;

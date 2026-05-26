@@ -7,14 +7,15 @@
 
 import { useEffect, useMemo, useReducer, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 
 import { hasBattleSessionError, isBattleBootstrapReady } from "@/components/battleAuth";
 import { loadOrCreateBattle, mergeBattleDelta } from "@/components/battleViewUtils";
 import { getApiPrefix, apiPost } from "@/lib/api";
+import i18n from "i18next";
 import { streamSSE } from "@/lib/sse";
 import { useArenaAuth } from "@/hooks/useArenaAuth";
 import { asRecord, isRecord } from "@/lib/typeGuards";
-import { SESSION_EXPIRED_MESSAGE } from "@/auth/session";
 
 type Side = "A" | "B";
 type ReplayPolicy = "consume" | "ignore";
@@ -268,19 +269,10 @@ function battleReducer(state: BattleState, action: Action): BattleState {
       };
 
     case "RUN_ERROR":
-      {
-        const prefix = action.side ? `Run error (${action.side})` : "Run error";
-        const fallback = action.side
-          ? `Translation run ${action.side} encountered an error`
-          : "A translation run encountered an error";
-
       return {
         ...state,
-        errorText:
-          state.errorText ??
-            (action.error ? `${prefix}: ${action.error}` : fallback),
+        errorText: state.errorText ?? action.error ?? i18n.t("battle.errors.runErrorFallbackGen"),
       };
-      }
 
     case "BATTLE_COMPLETED":
       return { ...state, status: "done", errorText: null, retryAllowed: false };
@@ -289,9 +281,7 @@ function battleReducer(state: BattleState, action: Action): BattleState {
       return {
         ...state,
         status: "failed",
-        errorText: action.detail
-          ? `Battle failed: ${action.detail}`
-          : state.errorText ?? "Battle failed to complete",
+        errorText: action.detail ?? state.errorText ?? i18n.t("battle.errors.battleFailedFallback"),
         retryAllowed: false,
       };
 
@@ -299,7 +289,7 @@ function battleReducer(state: BattleState, action: Action): BattleState {
       return {
         ...state,
         status: "error",
-        errorText: action.detail ? `Battle error: ${action.detail}` : "Battle stream failed",
+        errorText: action.detail ?? i18n.t("battle.errors.streamFailed"),
         retryAllowed: false,
       };
 
@@ -310,7 +300,7 @@ function battleReducer(state: BattleState, action: Action): BattleState {
           state.status === "done" || state.status === "failed"
             ? state.status
             : "error",
-        errorText: state.errorText ?? "Battle stream ended before completion",
+        errorText: state.errorText ?? i18n.t("battle.errors.streamEndedEarly"),
         retryAllowed: false,
       };
 
@@ -423,7 +413,7 @@ function isBattlePublic(value: unknown): value is BattlePublic {
 
 function parseBattlePublic(value: unknown): BattlePublic {
   if (!isBattlePublic(value)) {
-    throw new Error("Invalid battle response");
+    throw new Error(i18n.t("battle.errors.invalidBattleResponse"));
   }
   return value;
 }
@@ -448,12 +438,13 @@ function isVoteSubmitResponse(value: unknown): value is VoteSubmitResponse {
 
 function parseVoteSubmitResponse(value: unknown): VoteSubmitResponse {
   if (!isVoteSubmitResponse(value)) {
-    throw new Error("Invalid vote response");
+    throw new Error(i18n.t("battle.errors.invalidVoteResponse"));
   }
   return value;
 }
 
 export function useBattle(battleId: string) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const restartKey = searchParams.get("r") ?? "";
@@ -483,11 +474,11 @@ export function useBattle(battleId: string) {
       }
       if (battleId === "new") {
         if (hasSessionError) {
-          dispatch({ type: "BOOTSTRAP_ERROR", error: SESSION_EXPIRED_MESSAGE });
+          dispatch({ type: "BOOTSTRAP_ERROR", error: t("battle.sessionExpiredBody") });
           return;
         }
         if (!isAuthed) {
-          dispatch({ type: "BOOTSTRAP_ERROR", error: "Login required to start a battle." });
+          dispatch({ type: "BOOTSTRAP_ERROR", error: t("battle.errors.loginRequiredToStart") });
           return;
         }
       }
@@ -502,7 +493,7 @@ export function useBattle(battleId: string) {
         redirectedBattleCache.delete(battleId);
         bootstrapKeyRef.current = bootstrapKey;
         if (!isAuthed) {
-          dispatch({ type: "BOOTSTRAP_ERROR", error: "Login required to view battles." });
+          dispatch({ type: "BOOTSTRAP_ERROR", error: t("battle.errors.loginRequiredToView") });
           return;
         }
 
@@ -539,7 +530,7 @@ export function useBattle(battleId: string) {
         const isFinished = battle.status === "completed" || battle.status === "failed";
 
         if (!isAuthed) {
-          dispatch({ type: "BOOTSTRAP_ERROR", error: "Login required to view battles." });
+          dispatch({ type: "BOOTSTRAP_ERROR", error: t("battle.errors.loginRequiredToView") });
           return;
         }
 
@@ -559,12 +550,12 @@ export function useBattle(battleId: string) {
         if (cancelled) return;
         bootstrapKeyRef.current = null;
         
-        const message = err instanceof Error ? err.message : "Failed to load battle";
+        const message = err instanceof Error ? err.message : t("battle.errors.failedToLoad");
         let error = message;
         if (message.includes("401")) {
-          error = isAuthed ? SESSION_EXPIRED_MESSAGE : "Login required to view battles.";
+          error = isAuthed ? t("battle.sessionExpiredBody") : t("battle.errors.loginRequiredToView");
         } else if (message.includes("403")) {
-          error = "Permission denied. You can only view your own battles.";
+          error = t("battle.errors.permissionDenied");
         }
 
         dispatch({
@@ -633,9 +624,9 @@ export function useBattle(battleId: string) {
         if (cancelled) return;
         const message = err instanceof Error ? err.message : "";
         if (message.includes("401")) {
-          dispatch({ type: "BOOTSTRAP_ERROR", error: isAuthed ? SESSION_EXPIRED_MESSAGE : "Login required to view battles." });
+          dispatch({ type: "BOOTSTRAP_ERROR", error: isAuthed ? t("battle.sessionExpiredBody") : t("battle.errors.loginRequiredToView") });
         } else if (message.includes("403")) {
-          dispatch({ type: "BOOTSTRAP_ERROR", error: "Permission denied. You can only view your own battles." });
+          dispatch({ type: "BOOTSTRAP_ERROR", error: t("battle.errors.permissionDenied") });
         }
         // Otherwise, best-effort sync only. Keep current terminal state if refresh fails.
       }
@@ -730,6 +721,7 @@ export function useBattle(battleId: string) {
               type: "RUN_ERROR",
               error: typeof errorPayload?.error === "string" ? errorPayload.error : null,
               side,
+              // Let hook translate this later, or translate here
             });
             continue;
           }
@@ -769,11 +761,11 @@ export function useBattle(battleId: string) {
           return;
         }
 
-        const message = err instanceof Error ? err.message : "Battle stream failed";
+        const message = err instanceof Error ? err.message : t("battle.errors.streamFailed");
         dispatch({
           type: "STREAM_ERROR",
           error: message.includes("401")
-            ? "Session expired or authentication failed. Please reload the page."
+            ? t("battle.errors.sessionExpiredReload")
             : message,
         });
       }
@@ -789,11 +781,11 @@ export function useBattle(battleId: string) {
 
   async function handleVoteSubmit() {
     if (hasSessionError) {
-      dispatch({ type: "VOTE_ERROR", error: SESSION_EXPIRED_MESSAGE });
+      dispatch({ type: "VOTE_ERROR", error: t("battle.sessionExpiredBody") });
       return;
     }
     if (!isAuthed) {
-      dispatch({ type: "VOTE_ERROR", error: "Login required to submit a vote." });
+      dispatch({ type: "VOTE_ERROR", error: t("battle.errors.loginRequiredToSubmit") });
       return;
     }
     if (
@@ -822,7 +814,7 @@ export function useBattle(battleId: string) {
     } catch (err) {
       dispatch({
         type: "VOTE_ERROR",
-        error: err instanceof Error ? err.message : "Failed to submit vote",
+        error: err instanceof Error ? err.message : t("battle.errors.failedToSubmitVote"),
       });
     } finally {
       voteSubmitLockRef.current = false;
@@ -838,11 +830,11 @@ export function useBattle(battleId: string) {
     const retryFallbackStatus = state.status === "failed" ? "failed" : "error";
 
     if (hasSessionError) {
-      dispatch({ type: "RETRY_ERROR", error: SESSION_EXPIRED_MESSAGE, status: retryFallbackStatus });
+      dispatch({ type: "RETRY_ERROR", error: t("battle.sessionExpiredBody"), status: retryFallbackStatus });
       return;
     }
     if (!isAuthed) {
-      dispatch({ type: "RETRY_ERROR", error: "Login required to retry.", status: retryFallbackStatus });
+      dispatch({ type: "RETRY_ERROR", error: t("battle.errors.loginRequiredToRetry"), status: retryFallbackStatus });
       return;
     }
     if (!state.resolvedBattleId || state.voteId) {
@@ -858,7 +850,7 @@ export function useBattle(battleId: string) {
       dispatch({
         type: "RETRY_ERROR",
         status: retryFallbackStatus,
-        error: err instanceof Error ? err.message : "Failed to retry battle",
+        error: err instanceof Error ? err.message : t("battle.errors.failedToRetry"),
       });
     }
   }
@@ -884,18 +876,18 @@ export function useBattle(battleId: string) {
 
   const statusLabel =
     state.status === "done"
-      ? "Complete"
-      : state.status === "streaming"
-        ? "Thinking..."
-        : state.status === "reconnecting"
-          ? "Reconnecting..."
-          : state.status === "failed"
-            ? "Failed"
-            : state.status === "error"
-              ? "Error"
-              : state.status === "loading"
-                ? "Loading..."
-                  : state.status.charAt(0).toUpperCase() + state.status.slice(1);
+      ? t("battle.statusComplete")
+      : state.status === "failed"
+        ? t("battle.statusFailed")
+        : state.status === "error"
+          ? t("battle.statusError")
+          : state.status === "reconnecting"
+            ? t("battle.statusReconnecting")
+            : state.status === "loading"
+              ? t("battle.statusLoading")
+              : state.status === "streaming"
+                ? t("battle.statusStreaming")
+                : t("battle.statusThinking");
 
   return {
     state,

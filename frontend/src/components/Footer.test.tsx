@@ -6,7 +6,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Footer } from "./Footer";
 
+import { createTestI18n, TestI18nProvider } from "@/i18n/test-utils";
+import type { i18n } from "i18next";
+
 const useArenaAuthMock = vi.fn();
+
+let i18nInstance: i18n;
 
 vi.mock("@/hooks/useArenaAuth", () => ({
   useArenaAuth: () => useArenaAuthMock(),
@@ -27,13 +32,16 @@ function makeAuthState(overrides: Record<string, unknown> = {}) {
 
 function renderFooter() {
   return render(
-    <MemoryRouter>
-      <Footer />
-    </MemoryRouter>,
+    <TestI18nProvider i18n={i18nInstance}>
+      <MemoryRouter>
+        <Footer />
+      </MemoryRouter>
+    </TestI18nProvider>
   );
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  i18nInstance = await createTestI18n("en");
   useArenaAuthMock.mockReset();
   useArenaAuthMock.mockReturnValue(makeAuthState());
 });

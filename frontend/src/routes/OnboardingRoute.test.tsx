@@ -2,8 +2,9 @@
 
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, beforeAll } from "vitest";
 
+import { createTestI18n, TestI18nProvider } from "@/i18n/test-utils";
 import OnboardingRoute from "./OnboardingRoute";
 
 const useAuthHeadersMock = vi.fn();
@@ -40,8 +41,20 @@ beforeEach(() => {
 });
 
 describe("OnboardingRoute", () => {
+  let i18nEn: Awaited<ReturnType<typeof createTestI18n>>;
+  let i18nZh: Awaited<ReturnType<typeof createTestI18n>>;
+
+  beforeAll(async () => {
+    i18nEn = await createTestI18n("en");
+    i18nZh = await createTestI18n("zh");
+  });
+
   it("shows login guard and disables profile save for anonymous users", async () => {
-    render(<OnboardingRoute />);
+    render(
+      <TestI18nProvider i18n={i18nEn}>
+        <OnboardingRoute />
+      </TestI18nProvider>
+    );
 
     await screen.findByText("Login required to save");
     expect(apiGetMock).not.toHaveBeenCalled();
@@ -55,7 +68,11 @@ describe("OnboardingRoute", () => {
       sessionError: "SessionExpired",
     });
 
-    render(<OnboardingRoute />);
+    render(
+      <TestI18nProvider i18n={i18nEn}>
+        <OnboardingRoute />
+      </TestI18nProvider>
+    );
 
     await screen.findByText("Session expired");
     expect(
@@ -85,7 +102,11 @@ describe("OnboardingRoute", () => {
       },
     });
 
-    render(<OnboardingRoute />);
+    render(
+      <TestI18nProvider i18n={i18nEn}>
+        <OnboardingRoute />
+      </TestI18nProvider>
+    );
 
     await waitFor(() => {
       expect(apiGetMock).toHaveBeenCalledWith("/me");
@@ -116,7 +137,11 @@ describe("OnboardingRoute", () => {
     apiGetMock.mockResolvedValue({ authenticated: true, profile: null });
     apiPutMock.mockResolvedValue({ authenticated: true, profile: {} });
 
-    render(<OnboardingRoute />);
+    render(
+      <TestI18nProvider i18n={i18nEn}>
+        <OnboardingRoute />
+      </TestI18nProvider>
+    );
 
     await waitFor(() => {
       expect(apiGetMock).toHaveBeenCalledTimes(1);
@@ -153,7 +178,11 @@ describe("OnboardingRoute", () => {
       },
     });
 
-    render(<OnboardingRoute />);
+    render(
+      <TestI18nProvider i18n={i18nEn}>
+        <OnboardingRoute />
+      </TestI18nProvider>
+    );
 
     await waitFor(() => {
       expect(apiGetMock).toHaveBeenCalledTimes(1);
@@ -201,7 +230,11 @@ describe("OnboardingRoute", () => {
     apiGetMock.mockRejectedValueOnce(new Error("load failed"));
     apiPutMock.mockRejectedValueOnce(new Error("save failed"));
 
-    render(<OnboardingRoute />);
+    render(
+      <TestI18nProvider i18n={i18nEn}>
+        <OnboardingRoute />
+      </TestI18nProvider>
+    );
 
     await screen.findByText("load failed");
 
@@ -209,5 +242,83 @@ describe("OnboardingRoute", () => {
     await user.click(screen.getByRole("button", { name: "Save profile" }));
 
     await screen.findByText("save failed");
+  });
+
+  it("renders translated strings and exact option values using Chinese variant", async () => {
+    authenticatedSession();
+    apiGetMock.mockResolvedValue({ authenticated: true, profile: null });
+    apiPutMock.mockResolvedValue({ authenticated: true, profile: {} });
+
+    render(
+      <TestI18nProvider i18n={i18nZh}>
+        <OnboardingRoute />
+      </TestI18nProvider>
+    );
+
+    await screen.findByText("个人资料");
+    expect(screen.getByLabelText("昵称（可选）")).toBeDefined();
+    expect(screen.getByRole("button", { name: "保存资料" })).toBeDefined();
+
+    const zhVariantSelect = screen.getByLabelText("中文变体") as HTMLSelectElement;
+    expect(zhVariantSelect).toBeDefined();
+    
+    const options = Array.from(zhVariantSelect.options);
+    expect(options.some(opt => opt.value === "zh-Hans")).toBe(true);
+    expect(options.some(opt => opt.value === "zh-Hant")).toBe(true);
+    expect(options.some(opt => opt.text.includes("简体"))).toBe(true);
+    expect(options.some(opt => opt.text.includes("繁体"))).toBe(true);
+  });
+
+  it("shows explicit re-login copy for expired sessions in Chinese", async () => {
+    useAuthHeadersMock.mockReturnValue({
+      authStatus: "authenticated",
+      csrfToken: "csrf-token",
+      sessionError: "SessionExpired",
+    });
+
+    render(
+      <TestI18nProvider i18n={i18nZh}>
+        <OnboardingRoute />
+      </TestI18nProvider>
+    );
+
+    await screen.findByText("登录已过期");
+    expect(
+      screen.getByText(/加载或保存资料前登录已过期/i),
+    ).toBeDefined();
+    expect(apiGetMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "保存资料" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("submits payload preserving exact domain values under Chinese locale", async () => {
+    authenticatedSession();
+    apiGetMock.mockResolvedValue({ authenticated: true, profile: null });
+    apiPutMock.mockResolvedValue({ authenticated: true, profile: {} });
+
+    render(
+      <TestI18nProvider i18n={i18nZh}>
+        <OnboardingRoute />
+      </TestI18nProvider>
+    );
+
+    await waitFor(() => {
+      expect(apiGetMock).toHaveBeenCalledTimes(1);
+    });
+
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByLabelText("中文变体"), "zh-Hant");
+    await user.click(screen.getByRole("button", { name: "保存资料" }));
+
+    await waitFor(() => {
+      expect(apiPutMock).toHaveBeenCalledWith(
+        "/me/profile",
+        expect.objectContaining({
+          zh_variant: "zh-Hant",
+        }),
+      );
+    });
+    expect(apiPutMock.mock.calls[0]).toHaveLength(2);
+
+    await screen.findByText("保存成功");
   });
 });

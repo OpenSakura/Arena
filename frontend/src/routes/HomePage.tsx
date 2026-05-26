@@ -5,6 +5,7 @@
  */
 
 import { Link } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { useArenaAuth } from "@/hooks/useArenaAuth";
@@ -75,18 +76,18 @@ function IconChart({ className = "" }: { className?: string }) {
 
 const FEATURES = [
   {
-    title: "Blind A/B",
-    description: "Two models translate the same text. You judge without knowing which is which.",
+    titleKey: "home.features.blindTest.title",
+    descriptionKey: "home.features.blindTest.description",
     Icon: IconBlindTest,
   },
   {
-    title: "Community Voting",
-    description: "Vote on accuracy, fluency, style, and naturalness to build consensus.",
+    titleKey: "home.features.communityVoting.title",
+    descriptionKey: "home.features.communityVoting.description",
     Icon: IconVote,
   },
   {
-    title: "Elo & BT Rankings",
-    description: "Models are ranked using Elo and Bradley-Terry with 95% confidence intervals.",
+    titleKey: "home.features.rankings.title",
+    descriptionKey: "home.features.rankings.description",
     Icon: IconChart,
   },
 ] as const;
@@ -138,32 +139,33 @@ function IconStep4({ className = "" }: { className?: string }) {
 const STEPS = [
   {
     step: 1,
-    title: "Source Text",
-    description: "A Japanese passage is selected from our curated task pool.",
+    titleKey: "home.howItWorks.step1.title",
+    descriptionKey: "home.howItWorks.step1.description",
     Icon: IconStep1,
   },
   {
     step: 2,
-    title: "Blind Translation",
-    description: "Two models translate the same text. Identities are hidden.",
+    titleKey: "home.howItWorks.step2.title",
+    descriptionKey: "home.howItWorks.step2.description",
     Icon: IconStep2,
   },
   {
     step: 3,
-    title: "Cast Your Vote",
-    description: "You read both outputs and pick the better translation.",
+    titleKey: "home.howItWorks.step3.title",
+    descriptionKey: "home.howItWorks.step3.description",
     Icon: IconStep3,
   },
   {
     step: 4,
-    title: "Rankings Update",
-    description: "Models are re-ranked using Elo/BT after each vote.",
+    titleKey: "home.howItWorks.step4.title",
+    descriptionKey: "home.howItWorks.step4.description",
     Icon: IconStep4,
   },
 ] as const;
 
 export default function HomePage() {
   const auth = useArenaAuth();
+  const { t } = useTranslation();
 
   return (
     <div className="relative flex flex-col items-center p-6">
@@ -217,7 +219,7 @@ export default function HomePage() {
             >
               <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/[0.06] px-3.5 py-1 text-[11px] font-semibold uppercase tracking-widest text-primary/80">
                 <span className="inline-block h-1.5 w-1.5 rounded-full bg-primary/60 animate-pulse" />
-                Open-source translation arena
+                {t("home.taglineBadge")}
               </span>
             </div>
 
@@ -242,8 +244,7 @@ export default function HomePage() {
             <p
               className="mx-auto mb-8 max-w-xl text-base sm:text-lg leading-relaxed text-muted-foreground"
             >
-              Pairwise, blind comparisons of JP&gt;ZH light-novel style translations.
-              Vote on which output is better and help the community measure and improve translation models.
+              {t("home.heroDescription")}
             </p>
 
             <div
@@ -252,17 +253,17 @@ export default function HomePage() {
               {auth.authStatus === "authenticated" ? (
                 <Link to="/battle/new">
                   <Button size="lg" className="rounded-full px-8 text-base shadow-lg shadow-primary/20 hover:shadow-primary/30 hover:scale-[1.02] transition-all duration-200 animate-border-glow">
-                    Start a Battle
+                    {t("home.startBattle")}
                   </Button>
                 </Link>
               ) : (
                 <Button size="lg" className="rounded-full px-8 text-base shadow-lg shadow-primary/20 hover:shadow-primary/30 hover:scale-[1.02] transition-all duration-200 animate-border-glow" onClick={() => void auth.signinRedirect({ state: { returnTo: "/battle/new" } })}>
-                  Start a Battle
+                  {t("home.startBattle")}
                 </Button>
               )}
               <Link to="/leaderboard">
                 <Button variant="outline" size="lg" className="rounded-full px-8 text-base bg-background/50 hover:bg-background/80 border-border/50 hover:scale-[1.02] transition-all duration-200">
-                  View Leaderboard
+                  {t("home.viewLeaderboard")}
                 </Button>
               </Link>
             </div>
@@ -283,9 +284,9 @@ export default function HomePage() {
           >
             {FEATURES.map((feature) => (
               <FeatureCard
-                key={feature.title}
-                title={feature.title}
-                description={feature.description}
+                key={feature.titleKey}
+                title={t(feature.titleKey)}
+                description={t(feature.descriptionKey)}
                 Icon={feature.Icon}
               />
             ))}
@@ -298,9 +299,9 @@ export default function HomePage() {
         <div
           className="text-center mb-12"
         >
-          <h2 className="text-2xl sm:text-3xl font-bold heading-gradient mb-3">How it Works</h2>
+          <h2 className="text-2xl sm:text-3xl font-bold heading-gradient mb-3">{t("home.howItWorks.title")}</h2>
           <p className="text-sm text-muted-foreground max-w-md mx-auto">
-            Four simple steps from source text to community-driven model rankings.
+            {t("home.howItWorks.subtitle")}
           </p>
         </div>
 
@@ -312,7 +313,7 @@ export default function HomePage() {
             >
               {/* Step number */}
               <div className="absolute top-3 right-3 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/30">
-                Step {step.step}
+                {t("home.howItWorks.stepLabel", { step: step.step })}
               </div>
 
               {/* Hover glow */}
@@ -322,8 +323,8 @@ export default function HomePage() {
                 <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-primary/15 bg-primary/[0.08] group-hover:bg-primary/[0.12] group-hover:border-primary/25 transition-all duration-300">
                   <step.Icon className="h-5 w-5 text-primary/80" />
                 </div>
-                <div className="text-sm font-semibold text-foreground/90 mb-1.5">{step.title}</div>
-                <div className="text-xs leading-relaxed text-muted-foreground">{step.description}</div>
+                <div className="text-sm font-semibold text-foreground/90 mb-1.5">{t(step.titleKey)}</div>
+                <div className="text-xs leading-relaxed text-muted-foreground">{t(step.descriptionKey)}</div>
               </div>
             </div>
           ))}
@@ -343,13 +344,13 @@ export default function HomePage() {
           className="glass-panel-accent p-8"
         >
           <div className="grid grid-cols-3 gap-6 text-center">
-            <StatBlock label="Rating System" value="Elo + BT" />
-            <StatBlock label="Confidence" value="95% CI" />
-            <StatBlock label="Voting" value="Blind A/B" />
+            <StatBlock label={t("home.stats.ratingSystem.label")} value={t("home.stats.ratingSystem.value")} />
+            <StatBlock label={t("home.stats.confidence.label")} value={t("home.stats.confidence.value")} />
+            <StatBlock label={t("home.stats.voting.label")} value={t("home.stats.voting.value")} />
           </div>
           <div className="divider-fade mt-6 mb-5" />
           <p className="text-center text-xs text-muted-foreground/60 leading-relaxed max-w-lg mx-auto">
-            Join the community in evaluating JP→ZH translation quality. Every vote contributes to more accurate model rankings.
+            {t("home.stats.footer")}
           </p>
         </div>
       </section>

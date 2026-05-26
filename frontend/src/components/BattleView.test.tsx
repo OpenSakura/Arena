@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { render, screen, waitFor } from "@testing-library/react";
+import { createTestI18n, TestI18nProvider } from "@/i18n/test-utils";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,19 +10,25 @@ import { routerFutureConfig } from "@/router";
 import { BattleView } from "./BattleView";
 
 const useBattleMock = vi.fn();
+let testI18n: Awaited<ReturnType<typeof createTestI18n>>;
 
 vi.mock("@/hooks/useBattle", () => ({
   useBattle: (...args: unknown[]) => useBattleMock(...args),
 }));
 
-function renderBattleView(battleId = "new") {
-  return render(
+function renderBattleView(
+  battleId = "new",
+  i18nInstance = testI18n,
+) {
+  const router = (
     <MemoryRouter initialEntries={[`/battle/${battleId}`]} future={routerFutureConfig}>
       <Routes>
         <Route path="/battle/:battleId" element={<BattleView battleId={battleId} />} />
       </Routes>
-    </MemoryRouter>,
+    </MemoryRouter>
   );
+
+  return render(<TestI18nProvider i18n={i18nInstance}>{router}</TestI18nProvider>);
 }
 
 function createUseBattleState(overrides: Record<string, unknown> = {}) {
@@ -67,11 +74,55 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-beforeEach(() => {
-  useBattleMock.mockReset();
-});
-
 describe("BattleView", () => {
+  beforeEach(async () => {
+    testI18n = await createTestI18n("en");
+  });
+
+  it("localizes voting", async () => {
+    useBattleMock.mockReturnValue(
+      createUseBattleState({
+        state: {
+          status: "done",
+          jpSource: "JP source",
+          outA: "Alpha",
+          outB: "Beta",
+        },
+        statusLabel: "Complete",
+      }),
+    );
+
+    const testZh = await createTestI18n("zh");
+
+    renderBattleView("new", testZh);
+
+    expect(screen.getByText(/哪个翻译更好/i)).toBeDefined();
+    expect(screen.getByRole("button", { name: /模型 A 更好/i })).toBeDefined();
+    expect(screen.getByRole("button", { name: /不分胜负/i })).toBeDefined();
+    expect(screen.getByRole("button", { name: /模型 B 更好/i })).toBeDefined();
+
+    expect(screen.getByText("JP source")).toBeDefined();
+    expect(screen.getByText("Alpha")).toBeDefined();
+    expect(screen.getByText("Beta")).toBeDefined();
+  });
+
+  it("error", async () => {
+    useBattleMock.mockReturnValue(
+      createUseBattleState({
+        state: {
+          status: "error",
+          errorText: "Test Error",
+          resolvedBattleId: null
+        },
+        statusLabel: "Test Error",
+      }),
+    );
+
+    renderBattleView("new");
+    expect(screen.getByText(/Unable to load battle/i)).toBeDefined();
+    expect(screen.getByText(/Test Error/i)).toBeDefined();
+  });
+
   it("renders streamed outputs and submits a vote", async () => {
     const dispatch = vi.fn();
     const handleVoteSubmit = vi.fn();
@@ -90,7 +141,7 @@ describe("BattleView", () => {
       }),
     );
 
-    renderBattleView();
+    renderBattleView("new");
 
     await screen.findByText("JP source");
     await screen.findByText("Alpha");
@@ -118,7 +169,7 @@ describe("BattleView", () => {
       }),
     );
 
-    renderBattleView();
+    renderBattleView("new");
 
     await screen.findByText("JP source");
     await screen.findByText("Alpha");
@@ -129,7 +180,7 @@ describe("BattleView", () => {
     expect(comparisonGrid.classList.contains("grid-cols-1")).toBe(true);
     expect(comparisonGrid.classList.contains("lg:grid-cols-3")).toBe(true);
 
-    const sourcePanel = screen.getByText("Source Text").closest("section");
+    const sourcePanel = screen.getByText(/Source text/i).closest("section");
     const modelAPanel = screen.getByText("Model A").closest("section");
     const modelBPanel = screen.getByText("Model B").closest("section");
     const comparisonPanels = Array.from(comparisonGrid.children);
@@ -154,12 +205,12 @@ describe("BattleView", () => {
       }),
     );
 
-    renderBattleView();
+    renderBattleView("new");
 
     const thinkingNodes = await screen.findAllByText("Thinking...");
     expect(thinkingNodes).toHaveLength(4);
     expect(thinkingNodes.every((node) => node.classList.contains("thinking-metal"))).toBe(true);
-    expect(screen.getByText("Source Text").closest("section")?.textContent).not.toContain("Thinking...");
+    expect(screen.getByText(/Source text/i).closest("section")?.textContent).not.toContain("Thinking...");
     expect(screen.queryByText("Translating...")).toBeNull();
   });
 
@@ -174,7 +225,7 @@ describe("BattleView", () => {
       }),
     );
 
-    renderBattleView();
+    renderBattleView("new");
 
     await screen.findByText("Unable to load battle");
     expect(screen.getByText("Login required to view battles.")).toBeDefined();
@@ -190,7 +241,7 @@ describe("BattleView", () => {
       }),
     );
 
-    renderBattleView();
+    renderBattleView("new");
 
     await screen.findByText("Session Expired");
     expect(screen.getByText(/Your session has expired. Please log in again./i)).toBeDefined();

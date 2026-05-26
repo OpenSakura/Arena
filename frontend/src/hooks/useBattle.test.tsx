@@ -1,3 +1,4 @@
+import { createTestI18n, TestI18nProvider } from "@/i18n/test-utils";
 // @vitest-environment jsdom
 
 import { act, render, waitFor } from "@testing-library/react";
@@ -123,16 +124,26 @@ function renderUseBattle({ battleId = "new", search = "" }: { battleId?: string;
   searchParamsState.current = new URLSearchParams(search);
   const resultRef: { current: HookResult | null } = { current: null };
 
-  const view = render(<HookProbe battleId={battleId} resultRef={resultRef} />);
+  const view = render(
+    <TestI18nProvider i18n={testI18nInstance}>
+      <HookProbe battleId={battleId} resultRef={resultRef} />
+    </TestI18nProvider>
+  );
 
   return { ...view, resultRef };
 }
+
+let testI18nInstance: Awaited<ReturnType<typeof createTestI18n>>;
 
 async function* emptyStream() {
   // Intentionally empty.
 }
 
 describe("useBattle", () => {
+  beforeEach(async () => {
+    const testI18n = await createTestI18n("en");
+    testI18nInstance = testI18n;
+  });
   beforeEach(() => {
     navigateMock.mockReset();
     setSearchParamsMock.mockReset();
@@ -154,7 +165,7 @@ describe("useBattle", () => {
     const { resultRef } = renderUseBattle({ battleId: "new" });
 
     await waitFor(() => {
-      expect(resultRef.current?.state.errorText).toBe("Login required to start a battle.");
+      expect(resultRef.current?.state.errorText).toBe("Login required to start a battle."); // updated via TestI18nProvider
     });
 
     expect(mockedLoadOrCreateBattle).not.toHaveBeenCalled();
@@ -174,6 +185,23 @@ describe("useBattle", () => {
       expect(resultRef.current?.state.errorText).toBe(
         "Your session has expired. Please log in again.",
       );
+    });
+
+    expect(mockedLoadOrCreateBattle).not.toHaveBeenCalled();
+  });
+
+  it("localizes the session-expired inline error for /battle/new", async () => {
+    testI18nInstance = await createTestI18n("zh");
+    mockedUseArenaAuth.mockReturnValue(
+      createAuthState({
+        sessionError: "SessionExpired",
+      }),
+    );
+
+    const { resultRef } = renderUseBattle({ battleId: "new" });
+
+    await waitFor(() => {
+      expect(resultRef.current?.state.errorText).toBe("登录已过期，请重新登录。");
     });
 
     expect(mockedLoadOrCreateBattle).not.toHaveBeenCalled();
@@ -203,7 +231,11 @@ describe("useBattle", () => {
       expect(mockedLoadOrCreateBattle).toHaveBeenCalledTimes(1);
     });
 
-    view.rerender(<HookProbe battleId="battle-redirected" resultRef={{ current: null }} />);
+    view.rerender(
+      <TestI18nProvider i18n={testI18nInstance}>
+        <HookProbe battleId="battle-redirected" resultRef={{ current: null }} />
+      </TestI18nProvider>
+    );
 
     await waitFor(() => {
       expect(mockedLoadOrCreateBattle).toHaveBeenCalledTimes(1);
@@ -241,7 +273,11 @@ describe("useBattle", () => {
     });
 
     searchParamsState.current = new URLSearchParams("r=second");
-    view.rerender(<HookProbe battleId="new" resultRef={{ current: null }} />);
+    view.rerender(
+      <TestI18nProvider i18n={testI18nInstance}>
+        <HookProbe battleId="new" resultRef={{ current: null }} />
+      </TestI18nProvider>
+    );
 
     await waitFor(() => {
       expect(mockedLoadOrCreateBattle).toHaveBeenCalledTimes(2);

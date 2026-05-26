@@ -9,12 +9,31 @@
 
 
 import { useEffect, useReducer } from "react";
+import { useTranslation } from "react-i18next";
 
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuthHeaders } from "@/hooks/useAuthHeaders";
 import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api";
 import { parseJsonObjectOrNull, parseNumberOrNull } from "@/lib/adminParsers";
 import { isRecord } from "@/lib/typeGuards";
+
+const PROMPT_TOKENS = {
+  sourceText: "{{ source_text }}",
+  sourceLang: "{{ source_lang }}",
+  targetLang: "{{ target_lang }}",
+} as const;
+
+const MODEL_ERROR_KEYS: Record<string, string> = {
+  "admin.modelRegistry.errors.invalidModelsResponse": "admin.modelRegistry.errors.invalidModelsResponse",
+  "admin.modelRegistry.errors.invalidModelResponse": "admin.modelRegistry.errors.invalidModelResponse",
+  "admin.modelRegistry.errors.invalidModelTestResponse": "admin.modelRegistry.errors.invalidModelTestResponse",
+  "admin.modelRegistry.errors.displayNameRequired": "admin.modelRegistry.errors.displayNameRequired",
+  "admin.modelRegistry.errors.modelNameRequired": "admin.modelRegistry.errors.modelNameRequired",
+  "admin.modelRegistry.errors.baseUrlRequired": "admin.modelRegistry.errors.baseUrlRequired",
+  "Invalid number": "admin.modelRegistry.errors.invalidNumber",
+  "Invalid JSON syntax": "admin.modelRegistry.errors.invalidJsonSyntax",
+  "Expected a JSON object": "admin.modelRegistry.errors.expectedJsonObject",
+};
 
 type ModelAdmin = {
   id: string;
@@ -241,12 +260,12 @@ function isModelTestResponse(value: unknown): value is ModelTestResponse {
 
 function parseListModelsResponse(value: unknown): ListModelsResponse {
   if (!isRecord(value) || !Array.isArray(value.models)) {
-    throw new Error("Invalid models response");
+    throw new Error("admin.modelRegistry.errors.invalidModelsResponse");
   }
 
   const models = value.models.filter(isModelAdmin);
   if (models.length !== value.models.length) {
-    throw new Error("Invalid models response");
+    throw new Error("admin.modelRegistry.errors.invalidModelsResponse");
   }
 
   return { models };
@@ -254,7 +273,7 @@ function parseListModelsResponse(value: unknown): ListModelsResponse {
 
 function parseModelAdmin(value: unknown): ModelAdmin {
   if (!isModelAdmin(value)) {
-    throw new Error("Invalid model response");
+    throw new Error("admin.modelRegistry.errors.invalidModelResponse");
   }
 
   return value;
@@ -262,7 +281,7 @@ function parseModelAdmin(value: unknown): ModelAdmin {
 
 function parseModelTestResponse(value: unknown): ModelTestResponse {
   if (!isModelTestResponse(value)) {
-    throw new Error("Invalid model test response");
+    throw new Error("admin.modelRegistry.errors.invalidModelTestResponse");
   }
 
   return value;
@@ -291,8 +310,15 @@ function toEditState(model: ModelAdmin): EditState {
 }
 
 export default function AdminModelsRoute() {
+  const { t } = useTranslation();
   const { authStatus } = useAuthHeaders();
   const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
+
+  function errorMessage(err: unknown, fallbackKey: string) {
+    if (!(err instanceof Error)) return t(fallbackKey);
+    const translationKey = MODEL_ERROR_KEYS[err.message];
+    return translationKey ? t(translationKey) : err.message;
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -312,7 +338,7 @@ export default function AdminModelsRoute() {
         if (cancelled) return;
         dispatch({
           type: "LOAD_ERROR",
-          error: err instanceof Error ? err.message : "Failed to load models",
+          error: errorMessage(err, "admin.modelRegistry.errors.loadFailed"),
         });
       }
     }
@@ -328,9 +354,9 @@ export default function AdminModelsRoute() {
 
     dispatch({ type: "CREATE_START" });
     try {
-      if (!state.create.displayName.trim()) throw new Error("display_name is required");
-      if (!state.create.modelName.trim()) throw new Error("model_name is required");
-      if (!state.create.baseUrl.trim()) throw new Error("base_url is required");
+      if (!state.create.displayName.trim()) throw new Error("admin.modelRegistry.errors.displayNameRequired");
+      if (!state.create.modelName.trim()) throw new Error("admin.modelRegistry.errors.modelNameRequired");
+      if (!state.create.baseUrl.trim()) throw new Error("admin.modelRegistry.errors.baseUrlRequired");
 
       const payload: Record<string, unknown> = {
         display_name: state.create.displayName.trim(),
@@ -362,7 +388,7 @@ export default function AdminModelsRoute() {
     } catch (err) {
       dispatch({
         type: "CREATE_ERROR",
-        error: err instanceof Error ? err.message : "Failed to create model",
+        error: errorMessage(err, "admin.modelRegistry.errors.createFailed"),
       });
     }
   }
@@ -372,9 +398,9 @@ export default function AdminModelsRoute() {
 
     dispatch({ type: "SAVE_EDIT_START" });
     try {
-      if (!state.edit.display_name.trim()) throw new Error("display_name is required");
-      if (!state.edit.model_name.trim()) throw new Error("model_name is required");
-      if (!state.edit.base_url.trim()) throw new Error("base_url is required");
+      if (!state.edit.display_name.trim()) throw new Error("admin.modelRegistry.errors.displayNameRequired");
+      if (!state.edit.model_name.trim()) throw new Error("admin.modelRegistry.errors.modelNameRequired");
+      if (!state.edit.base_url.trim()) throw new Error("admin.modelRegistry.errors.baseUrlRequired");
 
       const patch: Record<string, unknown> = {
         display_name: state.edit.display_name.trim(),
@@ -406,14 +432,14 @@ export default function AdminModelsRoute() {
     } catch (err) {
       dispatch({
         type: "SAVE_EDIT_ERROR",
-        error: err instanceof Error ? err.message : "Failed to save model",
+        error: errorMessage(err, "admin.modelRegistry.errors.saveFailed"),
       });
     }
   }
 
   async function handleDelete(id: string) {
     if (authStatus !== "authenticated") return;
-    if (!confirm("Delete this model?")) return;
+    if (!confirm(t("admin.modelRegistry.confirmDelete"))) return;
 
     dispatch({ type: "CLEAR_TEST_RESULT" });
     try {
@@ -422,7 +448,7 @@ export default function AdminModelsRoute() {
     } catch (err) {
       dispatch({
         type: "DELETE_ERROR",
-        error: err instanceof Error ? err.message : "Failed to delete model",
+        error: errorMessage(err, "admin.modelRegistry.errors.deleteFailed"),
       });
     }
   }
@@ -439,7 +465,7 @@ export default function AdminModelsRoute() {
     } catch (err) {
       dispatch({
         type: "TEST_ERROR",
-        error: err instanceof Error ? err.message : "Failed to test model",
+        error: errorMessage(err, "admin.modelRegistry.errors.testFailed"),
       });
     }
   }
@@ -449,7 +475,7 @@ export default function AdminModelsRoute() {
   return (
     <div className="grid gap-4">
       <div className="flex items-center justify-between gap-2.5">
-        <h2 className="heading-gradient text-xl">Model Registry</h2>
+        <h2 className="heading-gradient text-xl">{t("admin.modelRegistry.title")}</h2>
         <span className="text-xs text-muted-foreground font-mono">/admin/models</span>
       </div>
 
@@ -461,20 +487,20 @@ export default function AdminModelsRoute() {
               <line x1="12" y1="5" x2="12" y2="19" />
               <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
-            Create model
+            {t("admin.modelRegistry.create.title")}
           </div>
           <div className="mt-2.5 grid gap-2.5">
             <div className="grid grid-cols-1 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="create-display-name">
-                  Display name
+                  {t("admin.modelRegistry.form.displayName")}
                 </label>
                 <input
                   id="create-display-name"
                   value={create.displayName}
                   onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "displayName", value: e.target.value })}
                   className="input-premium"
-                  placeholder="e.g., gpt-4o-mini (gateway)"
+                  placeholder={t("admin.modelRegistry.form.displayNamePlaceholder")}
                 />
               </div>
             </div>
@@ -482,26 +508,26 @@ export default function AdminModelsRoute() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="create-model-name">
-                  Model name
+                  {t("admin.modelRegistry.form.modelName")}
                 </label>
                 <input
                   id="create-model-name"
                   value={create.modelName}
                   onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "modelName", value: e.target.value })}
                   className="input-premium"
-                  placeholder="e.g., gpt-4o-mini"
+                  placeholder={t("admin.modelRegistry.form.modelNamePlaceholder")}
                 />
               </div>
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="create-base-url">
-                  Base URL
+                  {t("admin.modelRegistry.form.baseUrl")}
                 </label>
                 <input
                   id="create-base-url"
                   value={create.baseUrl}
                   onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "baseUrl", value: e.target.value })}
                   className="input-premium"
-                  placeholder="https://gateway.example.com (or .../v1)"
+                  placeholder={t("admin.modelRegistry.form.baseUrlPlaceholder")}
                 />
               </div>
             </div>
@@ -509,7 +535,7 @@ export default function AdminModelsRoute() {
             <div className="grid grid-cols-1 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="create-api-key">
-                  API key (optional)
+                  {t("admin.modelRegistry.form.apiKeyOptional")}
                 </label>
                 <input
                   id="create-api-key"
@@ -517,7 +543,7 @@ export default function AdminModelsRoute() {
                   value={create.apiKey}
                   onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "apiKey", value: e.target.value })}
                   className="input-premium"
-                  placeholder="stored encrypted at rest"
+                  placeholder={t("admin.modelRegistry.form.apiKeyPlaceholder")}
                 />
               </div>
             </div>
@@ -525,38 +551,38 @@ export default function AdminModelsRoute() {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="create-temp">
-                  temperature
+                  {t("admin.modelRegistry.form.temperature")}
                 </label>
                 <input
                   id="create-temp"
                   value={create.temperature}
                   onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "temperature", value: e.target.value })}
                   className="input-premium"
-                  placeholder="(optional)"
+                  placeholder={t("admin.modelRegistry.form.optionalPlaceholder")}
                 />
               </div>
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="create-fp">
-                  frequency_penalty
+                  {t("admin.modelRegistry.form.frequencyPenalty")}
                 </label>
                 <input
                   id="create-fp"
                   value={create.frequencyPenalty}
                   onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "frequencyPenalty", value: e.target.value })}
                   className="input-premium"
-                  placeholder="(optional)"
+                  placeholder={t("admin.modelRegistry.form.optionalPlaceholder")}
                 />
               </div>
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="create-pp">
-                  presence_penalty
+                  {t("admin.modelRegistry.form.presencePenalty")}
                 </label>
                 <input
                   id="create-pp"
                   value={create.presencePenalty}
                   onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "presencePenalty", value: e.target.value })}
                   className="input-premium"
-                  placeholder="(optional)"
+                  placeholder={t("admin.modelRegistry.form.optionalPlaceholder")}
                 />
               </div>
             </div>
@@ -564,7 +590,7 @@ export default function AdminModelsRoute() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="create-system-prompt">
-                  system_prompt (leave blank for default)
+                  {t("admin.modelRegistry.form.systemPrompt")}
                 </label>
                 <textarea
                   id="create-system-prompt"
@@ -572,12 +598,12 @@ export default function AdminModelsRoute() {
                   onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "systemPrompt", value: e.target.value })}
                   className="textarea-premium"
                   rows={4}
-                  placeholder="You are an expert translator..."
+                  placeholder={t("admin.modelRegistry.form.systemPromptPlaceholder")}
                 />
               </div>
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="create-user-prompt">
-                  user_prompt (leave blank for default)
+                  {t("admin.modelRegistry.form.userPrompt")}
                 </label>
                 <textarea
                   id="create-user-prompt"
@@ -585,22 +611,22 @@ export default function AdminModelsRoute() {
                   onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "userPrompt", value: e.target.value })}
                   className="textarea-premium"
                   rows={4}
-                  placeholder={"Translate the following from {{ source_lang }} to {{ target_lang }}:\n{{ source_text }}"}
+                  placeholder={t("admin.modelRegistry.form.userPromptPlaceholder", PROMPT_TOKENS)}
                 />
               </div>
             </div>
             <p className="text-xs text-muted-foreground">
-              Supported prompt tokens:{" "}
-              <code className="font-mono">{"{{ source_text }}"}</code>,{" "}
-              <code className="font-mono">{"{{ source_lang }}"}</code>,{" "}
-              <code className="font-mono">{"{{ target_lang }}"}</code>.
-              Leave both prompts blank to use the built-in defaults.
+              {t("admin.modelRegistry.form.promptTokensPrefix")} {" "}
+              <code className="font-mono">{PROMPT_TOKENS.sourceText}</code>{t("admin.modelRegistry.form.promptTokenSeparator")}{" "}
+              <code className="font-mono">{PROMPT_TOKENS.sourceLang}</code>{t("admin.modelRegistry.form.promptTokenSeparator")}{" "}
+              <code className="font-mono">{PROMPT_TOKENS.targetLang}</code>{t("admin.modelRegistry.form.promptTokenEnd")}
+              {t("admin.modelRegistry.form.promptTokensSuffix")}
             </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="create-tags">
-                  tags (JSON object)
+                  {t("admin.modelRegistry.form.tagsJson")}
                 </label>
                 <textarea
                   id="create-tags"
@@ -613,7 +639,7 @@ export default function AdminModelsRoute() {
               </div>
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="create-visibility">
-                  visibility
+                  {t("admin.modelRegistry.form.visibility")}
                 </label>
                 <select
                   id="create-visibility"
@@ -632,7 +658,7 @@ export default function AdminModelsRoute() {
                     onChange={(e) => dispatch({ type: "SET_CREATE_FIELD", field: "enabled", value: e.target.checked })}
                     className="mr-2"
                   />
-                  enabled
+                  {t("admin.modelRegistry.form.enabled")}
                 </label>
               </div>
             </div>
@@ -640,7 +666,7 @@ export default function AdminModelsRoute() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="create-params">
-                  params (JSON object)
+                  {t("admin.modelRegistry.form.paramsJson")}
                 </label>
                 <textarea
                   id="create-params"
@@ -655,10 +681,10 @@ export default function AdminModelsRoute() {
 
             <div className="flex items-center gap-2.5">
               <button type="button" onClick={() => void handleCreate()} disabled={creating} className="btn-primary-action">
-                {creating ? "Creating..." : "Create"}
+                {creating ? t("admin.modelRegistry.actions.creating") : t("admin.modelRegistry.actions.create")}
               </button>
               <span className="text-xs text-muted-foreground">
-                Model API keys are never returned by the backend.
+                {t("admin.modelRegistry.form.apiKeyHelper")}
               </span>
             </div>
           </div>
@@ -666,24 +692,24 @@ export default function AdminModelsRoute() {
 
       <section className="glass-panel p-5">
           <div className="flex items-baseline justify-between gap-2.5 section-header">
-            <span>Models</span>
+            <span>{t("admin.modelRegistry.list.title")}</span>
             {loading ? <Skeleton className="h-3 w-16" /> : null}
           </div>
 
           {models.length === 0 && !loading ? (
-            <p className="mt-2.5 mb-0 text-muted-foreground">No models yet.</p>
+            <p className="mt-2.5 mb-0 text-muted-foreground">{t("admin.modelRegistry.list.empty")}</p>
           ) : null}
 
           {models.length > 0 ? (
             <table className="mt-2.5 w-full border-collapse">
               <thead>
                 <tr>
-                  <th className="th-premium">Name</th>
-                  <th className="th-premium">Model</th>
-                  <th className="th-premium">Visibility</th>
-                  <th className="th-premium">Enabled</th>
-                  <th className="th-premium">Key</th>
-                  <th className="th-premium">Actions</th>
+                  <th className="th-premium">{t("admin.modelRegistry.list.headers.name")}</th>
+                  <th className="th-premium">{t("admin.modelRegistry.list.headers.model")}</th>
+                  <th className="th-premium">{t("admin.modelRegistry.list.headers.visibility")}</th>
+                  <th className="th-premium">{t("admin.modelRegistry.list.headers.enabled")}</th>
+                  <th className="th-premium">{t("admin.modelRegistry.list.headers.key")}</th>
+                  <th className="th-premium">{t("admin.modelRegistry.list.headers.actions")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -697,18 +723,18 @@ export default function AdminModelsRoute() {
                       <div>{m.model_name}</div>
                     </td>
                     <td className="td-premium">{m.visibility}</td>
-                    <td className="td-premium">{m.enabled ? "yes" : "no"}</td>
-                    <td className="td-premium">{m.has_api_key ? "yes" : "no"}</td>
+                    <td className="td-premium">{m.enabled ? t("admin.modelRegistry.values.yes") : t("admin.modelRegistry.values.no")}</td>
+                    <td className="td-premium">{m.has_api_key ? t("admin.modelRegistry.values.yes") : t("admin.modelRegistry.values.no")}</td>
                     <td className="td-premium">
                       <div className="flex flex-wrap gap-2">
                         <button type="button" className="btn-action" onClick={() => dispatch({ type: "START_EDIT", edit: toEditState(m) })}>
-                          Edit
+                          {t("admin.modelRegistry.actions.edit")}
                         </button>
                         <button type="button" className="btn-action" onClick={() => void handleTest(m.id)}>
-                          Test
+                          {t("admin.modelRegistry.actions.test")}
                         </button>
                         <button type="button" className="btn-danger" onClick={() => void handleDelete(m.id)}>
-                          Delete
+                          {t("admin.modelRegistry.actions.delete")}
                         </button>
                       </div>
                     </td>
@@ -722,9 +748,9 @@ export default function AdminModelsRoute() {
       {edit ? (
         <section className="glass-panel-accent p-5">
           <div className="flex items-baseline justify-between gap-2.5">
-            <div className="section-header">Edit model</div>
+            <div className="section-header">{t("admin.modelRegistry.edit.title")}</div>
             <button type="button" onClick={() => dispatch({ type: "CLOSE_EDIT" })} className="btn-action">
-              Close
+              {t("admin.modelRegistry.actions.close")}
             </button>
           </div>
 
@@ -734,7 +760,7 @@ export default function AdminModelsRoute() {
             <div className="grid grid-cols-1 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="edit-display-name">
-                  display_name
+                  {t("admin.modelRegistry.form.displayName")}
                 </label>
                 <input
                   id="edit-display-name"
@@ -748,7 +774,7 @@ export default function AdminModelsRoute() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="edit-model-name">
-                  model_name
+                  {t("admin.modelRegistry.form.modelName")}
                 </label>
                 <input
                   id="edit-model-name"
@@ -759,7 +785,7 @@ export default function AdminModelsRoute() {
               </div>
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="edit-base-url">
-                  base_url
+                  {t("admin.modelRegistry.form.baseUrl")}
                 </label>
                 <input
                   id="edit-base-url"
@@ -773,7 +799,7 @@ export default function AdminModelsRoute() {
             <div className="grid grid-cols-1 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="edit-visibility">
-                  visibility
+                  {t("admin.modelRegistry.form.visibility")}
                 </label>
                 <select
                   id="edit-visibility"
@@ -794,13 +820,13 @@ export default function AdminModelsRoute() {
                 onChange={(e) => dispatch({ type: "SET_EDIT_FIELD", field: "enabled", value: e.target.checked })}
                 className="mr-2"
               />
-              enabled
+              {t("admin.modelRegistry.form.enabled")}
             </label>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="edit-temp">
-                  temperature
+                  {t("admin.modelRegistry.form.temperature")}
                 </label>
                 <input
                   id="edit-temp"
@@ -811,7 +837,7 @@ export default function AdminModelsRoute() {
               </div>
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="edit-fp">
-                  frequency_penalty
+                  {t("admin.modelRegistry.form.frequencyPenalty")}
                 </label>
                 <input
                   id="edit-fp"
@@ -822,7 +848,7 @@ export default function AdminModelsRoute() {
               </div>
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="edit-pp">
-                  presence_penalty
+                  {t("admin.modelRegistry.form.presencePenalty")}
                 </label>
                 <input
                   id="edit-pp"
@@ -836,7 +862,7 @@ export default function AdminModelsRoute() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="edit-system-prompt">
-                  system_prompt (leave blank for default)
+                  {t("admin.modelRegistry.form.systemPrompt")}
                 </label>
                 <textarea
                   id="edit-system-prompt"
@@ -848,7 +874,7 @@ export default function AdminModelsRoute() {
               </div>
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="edit-user-prompt">
-                  user_prompt (leave blank for default)
+                  {t("admin.modelRegistry.form.userPrompt")}
                 </label>
                 <textarea
                   id="edit-user-prompt"
@@ -860,17 +886,17 @@ export default function AdminModelsRoute() {
               </div>
             </div>
             <p className="text-xs text-muted-foreground">
-              Supported prompt tokens:{" "}
-              <code className="font-mono">{"{{ source_text }}"}</code>,{" "}
-              <code className="font-mono">{"{{ source_lang }}"}</code>,{" "}
-              <code className="font-mono">{"{{ target_lang }}"}</code>.
-              Leave both prompts blank to use the built-in defaults.
+              {t("admin.modelRegistry.form.promptTokensPrefix")} {" "}
+              <code className="font-mono">{PROMPT_TOKENS.sourceText}</code>{t("admin.modelRegistry.form.promptTokenSeparator")}{" "}
+              <code className="font-mono">{PROMPT_TOKENS.sourceLang}</code>{t("admin.modelRegistry.form.promptTokenSeparator")}{" "}
+              <code className="font-mono">{PROMPT_TOKENS.targetLang}</code>{t("admin.modelRegistry.form.promptTokenEnd")}
+              {t("admin.modelRegistry.form.promptTokensSuffix")}
             </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="edit-tags">
-                  tags (JSON object)
+                  {t("admin.modelRegistry.form.tagsJson")}
                 </label>
                 <textarea
                   id="edit-tags"
@@ -885,7 +911,7 @@ export default function AdminModelsRoute() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="edit-params">
-                  params (JSON object)
+                  {t("admin.modelRegistry.form.paramsJson")}
                 </label>
                 <textarea
                   id="edit-params"
@@ -900,7 +926,7 @@ export default function AdminModelsRoute() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="grid gap-1.5">
                 <label className="label-premium" htmlFor="edit-api-key">
-                  new api_key (optional)
+                  {t("admin.modelRegistry.form.newApiKeyOptional")}
                 </label>
                 <input
                   id="edit-api-key"
@@ -911,7 +937,7 @@ export default function AdminModelsRoute() {
                     dispatch({ type: "SET_EDIT_FIELD", field: "clearApiKey", value: false });
                   }}
                   className="input-premium"
-                  placeholder="leave blank to keep"
+                  placeholder={t("admin.modelRegistry.form.newApiKeyPlaceholder")}
                   disabled={edit.clearApiKey}
                 />
               </div>
@@ -926,23 +952,28 @@ export default function AdminModelsRoute() {
                     }
                   }}
                 />
-                clear api_key
+                {t("admin.modelRegistry.form.clearApiKey")}
               </label>
             </div>
 
             <div className="flex items-center gap-2.5">
               <button type="button" onClick={() => void handleSaveEdit()} disabled={savingEdit} className="btn-primary-action">
-                {savingEdit ? "Saving..." : "Save"}
+                {savingEdit ? t("admin.modelRegistry.actions.saving") : t("admin.modelRegistry.actions.save")}
               </button>
               <button type="button" onClick={() => void handleTest(edit.id)} className="btn-action">
-                Test
+                {t("admin.modelRegistry.actions.test")}
               </button>
               <button type="button" onClick={() => void handleDelete(edit.id)} className="btn-danger">
-                Delete
+                {t("admin.modelRegistry.actions.delete")}
               </button>
               {testResult ? (
                 <span className="text-xs text-muted-foreground">
-                  Test: {testResult.ok ? "ok" : "fail"} ({testResult.note ?? ""})
+                  {t("admin.modelRegistry.testResult", {
+                    status: testResult.ok
+                      ? t("admin.modelRegistry.values.ok")
+                      : t("admin.modelRegistry.values.fail"),
+                    note: testResult.note ?? "",
+                  })}
                 </span>
               ) : null}
             </div>

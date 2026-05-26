@@ -1,7 +1,8 @@
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { createTestI18n, TestI18nProvider } from "@/i18n/test-utils";
 import BattleRoute from "./BattleRoute";
 import { BattleView } from "@/components/BattleView";
 
@@ -9,34 +10,45 @@ vi.mock("@/components/BattleView", () => ({
   BattleView: vi.fn(() => <div data-testid="mock-battle-view">Mocked BattleView</div>),
 }));
 
-describe("BattleRoute", () => {
-  it("renders invalid ID when no battleId is present", () => {
-    render(
+async function renderBattleRoute({
+  initialEntry,
+  routePath,
+  locale = "en",
+}: {
+  initialEntry: string;
+  routePath: string;
+  locale?: "en" | "zh";
+}) {
+  const i18n = await createTestI18n(locale);
+
+  return render(
+    <TestI18nProvider i18n={i18n}>
       <MemoryRouter 
-        initialEntries={["/battle/"]}
+        initialEntries={[initialEntry]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <Routes>
-          <Route path="/battle/" element={<BattleRoute />} />
+          <Route path={routePath} element={<BattleRoute />} />
         </Routes>
       </MemoryRouter>
-    );
+    </TestI18nProvider>
+  );
+}
 
-    expect(screen.getByText("Invalid battle ID")).toBeDefined();
+describe("BattleRoute", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
-  it("passes battleId from URL to BattleView", () => {
+  it("renders localized invalid ID when no battleId is present", async () => {
+    await renderBattleRoute({ initialEntry: "/battle/", routePath: "/battle/", locale: "zh" });
+
+    expect(screen.getByText("无效的对战 ID")).toBeDefined();
+  });
+
+  it("passes battleId from URL to BattleView", async () => {
     const testBattleId = "test-battle-123";
-    render(
-      <MemoryRouter 
-        initialEntries={[`/battle/${testBattleId}`]}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-      >
-        <Routes>
-          <Route path="/battle/:battleId" element={<BattleRoute />} />
-        </Routes>
-      </MemoryRouter>
-    );
+    await renderBattleRoute({ initialEntry: `/battle/${testBattleId}`, routePath: "/battle/:battleId" });
 
     expect(screen.getByTestId("mock-battle-view")).toBeDefined();
     expect(BattleView).toHaveBeenCalledWith(
@@ -45,17 +57,8 @@ describe("BattleRoute", () => {
     );
   });
 
-  it("passes 'new' battleId to BattleView when visiting /battle/new", () => {
-    render(
-      <MemoryRouter 
-        initialEntries={[`/battle/new`]}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-      >
-        <Routes>
-          <Route path="/battle/:battleId" element={<BattleRoute />} />
-        </Routes>
-      </MemoryRouter>
-    );
+  it("passes 'new' battleId to BattleView when visiting /battle/new", async () => {
+    await renderBattleRoute({ initialEntry: "/battle/new", routePath: "/battle/:battleId" });
 
     expect(screen.getByTestId("mock-battle-view")).toBeDefined();
     expect(BattleView).toHaveBeenCalledWith(

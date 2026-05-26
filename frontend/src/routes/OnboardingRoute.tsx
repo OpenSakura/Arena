@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { apiGet, apiPut } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -26,13 +27,14 @@ const EXPERIENCE_ROLES = ["translator", "editor", "qc", "tl"] as const;
 type ExperienceRole = (typeof EXPERIENCE_ROLES)[number];
 
 export default function OnboardingRoute() {
+  const { t } = useTranslation();
   const { authStatus, sessionError } = useAuthHeaders();
   const hasSessionError = sessionError !== null;
   const canSave = authStatus === "authenticated" && !hasSessionError;
-  const authNoticeTitle = hasSessionError ? "Session expired" : "Login required to save";
+  const authNoticeTitle = hasSessionError ? t("onboarding.authNotice.expiredTitle") : t("onboarding.authNotice.requiredTitle");
   const authNoticeBody = hasSessionError
-    ? "Your session expired before we could load or save your profile. Sign in again to save profile info, create battles, view battles, and vote. You can still browse the leaderboard while signed out."
-    : "You can browse the leaderboard without logging in, but creating battles, viewing battles, and voting require a login. Profile info is stored for logged-in users only.";
+    ? t("onboarding.authNotice.expiredBody")
+    : t("onboarding.authNotice.requiredBody");
 
   const [displayName, setDisplayName] = useState("");
   const [uiLanguage, setUiLanguage] = useState("en");
@@ -86,7 +88,7 @@ export default function OnboardingRoute() {
         setConsentResearch(Boolean(consents?.research_use));
       } catch (err) {
         if (cancelled) return;
-        setErrorText(err instanceof Error ? err.message : "Failed to load profile");
+        setErrorText(err instanceof Error ? err.message : t("onboarding.save.loadError"));
       } finally {
         if (!cancelled) setLoadingProfile(false);
       }
@@ -128,7 +130,7 @@ export default function OnboardingRoute() {
       const res = parseMeResponse(await apiPut("/me/profile", payload));
       setSavedAt((res.profile?.completed_at as string) ?? new Date().toISOString());
     } catch (err) {
-      setErrorText(err instanceof Error ? err.message : "Failed to save profile");
+      setErrorText(err instanceof Error ? err.message : t("onboarding.save.saveError"));
     } finally {
       setSaving(false);
     }
@@ -145,9 +147,9 @@ export default function OnboardingRoute() {
           </svg>
         </div>
         <div>
-          <h2 className="heading-gradient text-3xl">Profile</h2>
+          <h2 className="heading-gradient text-3xl">{t("onboarding.title")}</h2>
           <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-            Add a little context about your language background. This helps with offline analysis and filtering.
+            {t("onboarding.description")}
           </p>
         </div>
       </div>
@@ -157,7 +159,7 @@ export default function OnboardingRoute() {
         <div className="glass-panel p-6">
           <div className="flex items-center gap-3">
             <div className="h-4 w-4 rounded-full shimmer bg-muted/60" />
-            <span className="text-sm text-muted-foreground">Checking login...</span>
+            <span className="text-sm text-muted-foreground">{t("onboarding.checkingLogin")}</span>
           </div>
         </div>
       ) : !canSave ? (
@@ -186,20 +188,20 @@ export default function OnboardingRoute() {
                 <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
                 <circle cx="12" cy="7" r="4" />
               </svg>
-              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Identity</span>
+              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t("onboarding.identity.title")}</span>
             </div>
 
             {/* Display name */}
             <div className="grid gap-2">
               <label className="label-premium" htmlFor="display-name">
-                Display name (optional)
+                {t("onboarding.identity.displayName")}
               </label>
               <input
                 id="display-name"
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
                 disabled={!canSave}
-                placeholder="e.g., N1 translator"
+                placeholder={t("onboarding.identity.displayNamePlaceholder")}
                 className="input-premium"
               />
             </div>
@@ -215,14 +217,14 @@ export default function OnboardingRoute() {
                 <path d="M9 20h6" />
                 <path d="M12 4v16" />
               </svg>
-              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Language Preferences</span>
+              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t("onboarding.languagePrefs.title")}</span>
             </div>
 
             {/* UI language + ZH variant */}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="grid gap-2">
                 <label className="label-premium" htmlFor="ui-language">
-                  UI language
+                  {t("onboarding.languagePrefs.uiLanguage")}
                 </label>
                 <select
                   id="ui-language"
@@ -231,15 +233,15 @@ export default function OnboardingRoute() {
                   disabled={!canSave}
                   className="input-premium"
                 >
-                  <option value="en">English</option>
-                  <option value="zh">Chinese</option>
-                  <option value="ja">Japanese</option>
+                  <option value="en">{t("onboarding.languagePrefs.uiLangOptions.en")}</option>
+                  <option value="zh">{t("onboarding.languagePrefs.uiLangOptions.zh")}</option>
+                  <option value="ja">{t("onboarding.languagePrefs.uiLangOptions.ja")}</option>
                 </select>
               </div>
 
               <div className="grid gap-2">
                 <label className="label-premium" htmlFor="zh-variant">
-                  Chinese variant
+                  {t("onboarding.languagePrefs.zhVariant")}
                 </label>
                 <select
                   id="zh-variant"
@@ -248,9 +250,9 @@ export default function OnboardingRoute() {
                   disabled={!canSave}
                   className="input-premium"
                 >
-                  <option value="zh-Hans">Simplified (zh-Hans)</option>
-                  <option value="zh-Hant">Traditional (zh-Hant)</option>
-                  <option value="unknown">Unknown</option>
+                  <option value="zh-Hans">{t("onboarding.languagePrefs.zhVariantOptions.zh-Hans")}</option>
+                  <option value="zh-Hant">{t("onboarding.languagePrefs.zhVariantOptions.zh-Hant")}</option>
+                  <option value="unknown">{t("onboarding.languagePrefs.zhVariantOptions.unknown")}</option>
                 </select>
               </div>
             </div>
@@ -266,14 +268,14 @@ export default function OnboardingRoute() {
                 <line x1="12" y1="20" x2="12" y2="4" />
                 <line x1="6" y1="20" x2="6" y2="14" />
               </svg>
-              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Experience</span>
+              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t("onboarding.experience.title")}</span>
             </div>
 
             {/* JLPT + Experience years */}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 mb-5">
               <div className="grid gap-2">
                 <label className="label-premium" htmlFor="jlpt">
-                  Japanese proficiency (self-reported)
+                  {t("onboarding.experience.jlpt")}
                 </label>
                 <select
                   id="jlpt"
@@ -284,7 +286,7 @@ export default function OnboardingRoute() {
                 >
                   {JLPT_LEVELS.map((lvl) => (
                     <option key={lvl} value={lvl}>
-                      {lvl}
+                      {lvl === "unknown" ? t("onboarding.languagePrefs.zhVariantOptions.unknown") : lvl}
                     </option>
                   ))}
                 </select>
@@ -292,7 +294,7 @@ export default function OnboardingRoute() {
 
               <div className="grid gap-2">
                 <label className="label-premium" htmlFor="experience-years">
-                  JP-&gt;ZH experience (years)
+                  {t("onboarding.experience.years")}
                 </label>
                 <select
                   id="experience-years"
@@ -303,7 +305,7 @@ export default function OnboardingRoute() {
                 >
                   {EXPERIENCE_YEARS.map((y) => (
                     <option key={y} value={y}>
-                      {y}
+                      {y === "unknown" ? t("onboarding.languagePrefs.zhVariantOptions.unknown") : y}
                     </option>
                   ))}
                 </select>
@@ -312,7 +314,7 @@ export default function OnboardingRoute() {
 
             {/* Roles */}
             <div className="grid gap-3">
-              <div className="label-premium">Roles</div>
+              <div className="label-premium">{t("onboarding.experience.roles")}</div>
               <div className="flex flex-wrap gap-2">
                 {EXPERIENCE_ROLES.map((role) => {
                   const active = experienceRoles.includes(role);
@@ -328,7 +330,7 @@ export default function OnboardingRoute() {
                           : "border-border bg-foreground/5 text-muted-foreground hover:bg-foreground/10 hover:text-foreground hover:border-foreground/15"
                       } ${!canSave ? "cursor-not-allowed" : "cursor-pointer"}`}
                     >
-                      {role}
+                      {t(`onboarding.experience.roleOptions.${role}` as const)}
                     </button>
                   );
                 })}
@@ -344,7 +346,7 @@ export default function OnboardingRoute() {
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-primary/60" aria-hidden>
                 <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
               </svg>
-              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Consent</span>
+              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t("onboarding.consent.title")}</span>
             </div>
 
             <label className="flex items-start gap-3 cursor-pointer group">
@@ -356,7 +358,7 @@ export default function OnboardingRoute() {
                 className="mt-0.5 h-4 w-4 rounded border-border accent-primary"
               />
               <span className="text-sm text-muted-foreground leading-relaxed group-hover:text-foreground/80 transition-colors">
-                Allow using my profile answers for offline filtering/research.
+                {t("onboarding.consent.research")}
               </span>
             </label>
           </div>
@@ -369,13 +371,13 @@ export default function OnboardingRoute() {
               disabled={!canSave || saving}
               className="rounded-full px-6 shadow-lg shadow-primary/20 hover:shadow-primary/30 hover:scale-[1.01] transition-all"
             >
-              {saving ? "Saving..." : "Save profile"}
+              {saving ? t("onboarding.save.saving") : t("onboarding.save.button")}
             </Button>
 
             {loadingProfile ? (
               <span className="text-sm text-muted-foreground flex items-center gap-2">
                 <span className="inline-block h-1.5 w-1.5 rounded-full bg-primary/60 shimmer" />
-                Loading...
+                {t("onboarding.save.loading")}
               </span>
             ) : null}
             {savedAt ? (
@@ -383,7 +385,7 @@ export default function OnboardingRoute() {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden>
                   <polyline points="20 6 9 17 4 12" />
                 </svg>
-                Saved successfully
+                {t("onboarding.save.success")}
               </span>
             ) : null}
           </div>
