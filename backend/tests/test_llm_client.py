@@ -728,7 +728,47 @@ def test_async_openai_reserved_params_cannot_override_required_fields(
     assert kwargs["model"] == "test-model"
     assert kwargs["messages"] == _BASE_KWARGS["messages"]
     assert kwargs["stream"] is False
-    assert kwargs["temperature"] == 0
+    assert kwargs["extra_body"] == {"temperature": 0}
+
+
+def test_async_openai_unknown_params_route_through_extra_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_async_openai(monkeypatch)
+
+    async def _run() -> dict[str, object]:
+        client = LLMClient()
+        _FakeAsyncOpenAI.responses.append(_SdkObject({"choices": []}))
+        await client.chat_completion(
+            **_BASE_KWARGS,
+            params={"reasoning": {"effort": "medium"}, "provider": {"order": ["x"]}},
+        )
+        return _FakeAsyncOpenAI.created[0].last_create_kwargs
+
+    kwargs = asyncio.run(_run())
+
+    assert "reasoning" not in kwargs
+    assert "provider" not in kwargs
+    assert kwargs["extra_body"] == {
+        "reasoning": {"effort": "medium"},
+        "provider": {"order": ["x"]},
+    }
+
+
+def test_async_openai_extra_body_is_none_when_no_params(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_async_openai(monkeypatch)
+
+    async def _run() -> dict[str, object]:
+        client = LLMClient()
+        _FakeAsyncOpenAI.responses.append(_SdkObject({"choices": []}))
+        await client.chat_completion(**_BASE_KWARGS)
+        return _FakeAsyncOpenAI.created[0].last_create_kwargs
+
+    kwargs = asyncio.run(_run())
+
+    assert kwargs["extra_body"] is None
 
 
 def test_redaction_removes_api_key_authorization_prompt_and_completion() -> None:

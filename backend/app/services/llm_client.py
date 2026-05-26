@@ -401,7 +401,7 @@ class LLMClient:
             "messages": messages,
             "stream": True,
         }
-        request.update(self._sanitize_params(params))
+        extra_body = self._sanitize_params(params) or None
 
         if total_timeout_seconds is None:
             total_timeout_seconds = timeout_seconds * 3
@@ -417,6 +417,7 @@ class LLMClient:
                 extra_headers=(
                     _headers_with_trace_context(dict(extra_headers or {})) or None
                 ),
+                extra_body=extra_body,
             )
             async for sdk_chunk in stream:
                 chunk_payload = _sdk_object_to_dict(sdk_chunk)
@@ -563,7 +564,7 @@ class LLMClient:
             "messages": messages,
             "stream": False,
         }
-        request.update(self._sanitize_params(params))
+        extra_body = self._sanitize_params(params) or None
 
         async def _create_completion() -> Any:
             client = await self._get_openai_client(base_url=base_url, api_key=api_key)
@@ -572,6 +573,7 @@ class LLMClient:
                 extra_headers=(
                     _headers_with_trace_context(dict(extra_headers or {})) or None
                 ),
+                extra_body=extra_body,
                 timeout=request_timeout,
             )
 
