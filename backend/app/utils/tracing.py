@@ -14,7 +14,6 @@ from app.core.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 
-_REDACTED_VALUE = "__REDACTED__"
 _TRACES_PATH = "/v1/traces"
 
 _tracer_provider: Any | None = None
@@ -95,113 +94,24 @@ def _resolve_endpoint(
     return "", "none"
 
 
-def _is_secret_key(key: str) -> bool:
-    normalized = key.lower().replace("-", "_")
-    return any(
-        token in normalized
-        for token in (
-            "authorization",
-            "api_key",
-            "apikey",
-            "cookie",
-            "provider_token",
-            "access_token",
-            "refresh_token",
-            "id_token",
-            "client_secret",
-            "secret_key",
-            "master_key",
-            "password",
-        )
-    ) or normalized.endswith("_token")
-
-
-def _is_content_key(key: str) -> bool:
-    normalized = key.lower().replace("-", "_")
-    return any(
-        token in normalized
-        for token in (
-            "prompt",
-            "completion",
-            "input.value",
-            "input_value",
-            "output.value",
-            "output_value",
-            "message.content",
-            "message_content",
-            "exception.message",
-            "exception.stacktrace",
-            "error.message",
-            "error.details",
-            "error_text",
-            "source_text",
-            "output_text",
-            "input_messages",
-            "output_messages",
-            "llm.prompts",
-            "llm.choices",
-            "gen_ai.input.messages",
-            "gen_ai.output.messages",
-        )
-    ) or normalized == "content"
-
-
-def _looks_like_secret(value: str) -> bool:
-    normalized = value.strip().lower()
-    return normalized.startswith(("bearer ", "sk-")) or any(
-        token in normalized
-        for token in (
-            "authorization:",
-            "api_key=",
-            "api-key=",
-            "provider_token=",
-        )
-    )
-
-
-def _sanitize_value(key: str, value: Any) -> Any:
-    if _is_secret_key(key) or _is_content_key(key):
-        return _REDACTED_VALUE
-    if isinstance(value, str):
-        return _REDACTED_VALUE if _looks_like_secret(value) else value
-    if isinstance(value, Mapping):
-        return {
-            str(item_key): _sanitize_value(str(item_key), item_value)
-            for item_key, item_value in value.items()
-        }
-    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)):
-        return [_sanitize_value(key, item) for item in value]
-    return value
-
-
-def _sanitize_attributes(attributes: Mapping[str, Any] | None) -> dict[str, Any]:
-    if not attributes:
-        return {}
-    return {
-        str(key): _sanitize_value(str(key), value)
-        for key, value in attributes.items()
-    }
-
-
 def _coerce_span_attribute_value(key: str, value: Any) -> Any:
-    sanitized = _sanitize_value(key, value)
-    if sanitized is None or isinstance(sanitized, (bool, int, float, str)):
-        return sanitized
-    if isinstance(sanitized, Sequence) and not isinstance(
-        sanitized,
+    _ = key
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, Sequence) and not isinstance(
+        value,
         (bytes, bytearray, str),
     ):
         values: list[bool | int | float | str] = []
-        for item in sanitized:
-            item_value = _sanitize_value(key, item)
-            if item_value is None:
+        for item in value:
+            if item is None:
                 continue
-            if isinstance(item_value, (bool, int, float, str)):
-                values.append(item_value)
+            if isinstance(item, (bool, int, float, str)):
+                values.append(item)
             else:
-                values.append(str(item_value))
+                values.append(str(item))
         return tuple(values)
-    return str(sanitized)
+    return str(value)
 
 
 def _current_request_id() -> str | None:
@@ -254,58 +164,6 @@ def _current_span() -> Any | None:
         return None
 
 
-def _replace_private_attributes(target: Any, attributes: Mapping[str, Any]) -> None:
-    try:
-        setattr(target, "_attributes", dict(attributes))
-    except Exception:
-        return
-
-
-def _sanitize_readable_span(span: Any) -> None:
-    _replace_private_attributes(
-        span,
-        _sanitize_attributes(getattr(span, "attributes", None)),
-    )
-
-    resource = getattr(span, "resource", None)
-    if resource is not None:
-        _replace_private_attributes(
-            resource,
-            _sanitize_attributes(getattr(resource, "attributes", None)),
-        )
-
-    for event in getattr(span, "events", ()) or ():
-        _replace_private_attributes(
-            event,
-            _sanitize_attributes(getattr(event, "attributes", None)),
-        )
-
-    for link in getattr(span, "links", ()) or ():
-        _replace_private_attributes(
-            link,
-            _sanitize_attributes(getattr(link, "attributes", None)),
-        )
-
-
-class PrivacyFilteringSpanExporter:
-    def __init__(self, wrapped_exporter: Any) -> None:
-        self.wrapped_exporter = wrapped_exporter
-
-    def export(self, spans: Sequence[Any]) -> Any:
-        for span in spans:
-            _sanitize_readable_span(span)
-        return self.wrapped_exporter.export(spans)
-
-    def shutdown(self) -> Any:
-        return self.wrapped_exporter.shutdown()
-
-    def force_flush(self, timeout_millis: int = 30000) -> bool:
-        force_flush = getattr(self.wrapped_exporter, "force_flush", None)
-        if force_flush is None:
-            return True
-        return bool(force_flush(timeout_millis=timeout_millis))
-
-
 def _parse_resource_attributes(raw_attributes: str) -> dict[str, Any]:
     attributes: dict[str, Any] = {}
     for item in raw_attributes.split(","):
@@ -313,7 +171,7 @@ def _parse_resource_attributes(raw_attributes: str) -> dict[str, Any]:
         key = key.strip()
         if not separator or not key:
             continue
-        attributes[key] = _sanitize_value(key, value.strip())
+        attributes[key] = value.strip()
     return attributes
 
 
@@ -533,12 +391,11 @@ def init_tracing(
             headers=headers,
             timeout=float(_setting(settings, "otlp_exporter_timeout_seconds", 30.0)),
         )
-        filtering_exporter = PrivacyFilteringSpanExporter(exporter)
         if span_processor_factory is not None:
-            processor = span_processor_factory(filtering_exporter)
+            processor = span_processor_factory(exporter)
         else:
             processor = BatchSpanProcessor(
-                filtering_exporter,
+                exporter,
                 export_timeout_millis=int(
                     _setting(settings, "otlp_batch_export_timeout_millis", 10000)
                 ),

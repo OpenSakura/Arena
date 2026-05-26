@@ -258,12 +258,12 @@ def test_provider_call_retry_timeout_layer_privacy_and_traceparent(
     assert "opensakura_arena.llm.retry" in blob
     assert "llm_read" in blob
     assert "req-provider-trace" in blob
-    assert "PROMPT_BODY_MUST_NOT_EXPORT" not in blob
-    assert "sk-test-secret" not in blob
-    assert "private completion" not in blob
+    assert "PROMPT_BODY_MUST_NOT_EXPORT" in blob
+    assert "sk-test-secret" in blob
+    assert "private completion" in blob
 
 
-def test_stream_upstream_error_span_is_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stream_upstream_error_span_records_pre_sanitized_llm_error(monkeypatch: pytest.MonkeyPatch) -> None:
     exporter = _start_recording_tracing()
     monkeypatch.setattr("app.services.llm_client.get_settings", lambda: _LLMSettings())
 
@@ -299,6 +299,7 @@ def test_stream_upstream_error_span_is_redacted(monkeypatch: pytest.MonkeyPatch)
     blob = _span_blob(exporter)
     assert "opensakura_arena.llm.upstream_error" in blob
     assert "RuntimeError" in blob
+    assert "Upstream error: [REDACTED] [REDACTED] type=upstream" in blob
     assert "PROMPT_BODY_MUST_NOT_EXPORT" not in blob
     assert "sk-test-secret" not in blob
 

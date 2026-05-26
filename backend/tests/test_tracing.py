@@ -211,7 +211,7 @@ def test_endpoint_precedence_and_http_base_path_normalization() -> None:
     assert calls[-1]["endpoint"] == "http://base.example:4318/v1/traces"
 
 
-def test_auth_header_is_passed_to_exporter_without_span_leakage() -> None:
+def test_auth_header_is_passed_to_exporter_and_not_added_to_spans() -> None:
     exporter = _RecordingExporter()
     factory, calls = _factory_for(exporter)
 
@@ -234,12 +234,16 @@ def test_auth_header_is_passed_to_exporter_without_span_leakage() -> None:
     assert "visible" in exported
 
 
-def test_span_helpers_add_request_id_context_and_sanitize_events() -> None:
+def test_span_helpers_add_request_id_context_and_export_events() -> None:
     exporter = _RecordingExporter()
     factory, _calls = _factory_for(exporter)
 
     assert tracing.init_tracing(
-        settings=_settings(otlp_endpoint="http://collector.example:4318"),
+        settings=_settings(
+            otlp_endpoint="http://collector.example:4318",
+            openinference_hide_inputs=True,
+            openinference_hide_outputs=True,
+        ),
         span_exporter_factory=factory,
         span_processor_factory=_simple_processor,
         instrument_openai=False,
@@ -253,7 +257,7 @@ def test_span_helpers_add_request_id_context_and_sanitize_events() -> None:
             tracing.add_span_event(
                 "helper.event",
                 {
-                    "source_text": "SECRET_SOURCE_TEXT",
+                    "source_text": "SOURCE_TEXT_VISIBLE_WITH_NORMAL_SPANS",
                     "safe.event": "event-visible",
                 },
             )
@@ -264,7 +268,7 @@ def test_span_helpers_add_request_id_context_and_sanitize_events() -> None:
     assert "req-helper" in exported
     assert "visible" in exported
     assert "event-visible" in exported
-    assert "SECRET_SOURCE_TEXT" not in exported
+    assert "SOURCE_TEXT_VISIBLE_WITH_NORMAL_SPANS" in exported
 
 
 def test_exporter_setup_failure_is_non_fatal() -> None:
@@ -333,7 +337,7 @@ def test_openai_instrumentation_failure_is_non_fatal(monkeypatch) -> None:
     assert tracing.is_tracing_enabled() is True
 
 
-def test_privacy_filter_removes_prompt_completion_and_secret_values() -> None:
+def test_custom_export_filter_is_not_applied_to_span_attributes() -> None:
     exporter = _RecordingExporter()
     factory, _calls = _factory_for(exporter)
 
@@ -345,36 +349,35 @@ def test_privacy_filter_removes_prompt_completion_and_secret_values() -> None:
     )
 
     with tracing.create_span(
-        "privacy",
+        "normal_spans",
         {
-            "llm.prompt": "SECRET_PROMPT_BODY",
-            "llm.completion": "SECRET_COMPLETION_BODY",
-            "openai.api_key": "sk-secret-api-key",
-            "authorization": "Bearer SECRET_AUTH_HEADER",
-            "cookie": "session=SECRET_COOKIE",
-            "provider_token": "SECRET_PROVIDER_TOKEN",
+            "llm.prompt": "PROMPT_BODY_VISIBLE_WITH_NORMAL_SPANS",
+            "llm.completion": "COMPLETION_BODY_VISIBLE_WITH_NORMAL_SPANS",
+            "llm.token_count.completion": 12,
+            "openai.api_key": "sk-visible-in-normal-spans",
             "safe.attribute": "visible-value",
         },
     ):
         tracing.add_span_event(
-            "privacy.event",
+            "normal.event",
             {
-                "message.content": "SECRET_PROMPT_BODY",
-                "completion": "SECRET_COMPLETION_BODY",
-                "api_key": "sk-secret-api-key",
+                "message.content": "MESSAGE_CONTENT_VISIBLE_WITH_NORMAL_SPANS",
+                "completion": "EVENT_COMPLETION_VISIBLE_WITH_NORMAL_SPANS",
                 "safe.event": "event-visible",
             },
         )
 
     exported = _span_blob(exporter)
-    assert "SECRET_PROMPT_BODY" not in exported
-    assert "SECRET_COMPLETION_BODY" not in exported
-    assert "sk-secret-api-key" not in exported
-    assert "SECRET_AUTH_HEADER" not in exported
-    assert "SECRET_COOKIE" not in exported
-    assert "SECRET_PROVIDER_TOKEN" not in exported
+    assert "PROMPT_BODY_VISIBLE_WITH_NORMAL_SPANS" in exported
+    assert "COMPLETION_BODY_VISIBLE_WITH_NORMAL_SPANS" in exported
+    assert "llm.token_count.completion" in exported
+    assert "12" in exported
+    assert "sk-visible-in-normal-spans" in exported
+    assert "MESSAGE_CONTENT_VISIBLE_WITH_NORMAL_SPANS" in exported
+    assert "EVENT_COMPLETION_VISIBLE_WITH_NORMAL_SPANS" in exported
     assert "visible-value" in exported
     assert "event-visible" in exported
+    assert "__REDACTED__" not in exported
 
 
 def test_openai_sdk_spans_do_not_export_prompt_completion_or_api_key() -> None:
