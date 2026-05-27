@@ -36,12 +36,16 @@ TEMPERATURE = 0.6
 # Main OpenAI reasoning models. The gateway encodes reasoning effort via a
 # ``-<effort>`` suffix on the model name.  Mini/nano variants are kept as a
 # single entry per the seeding spec.
+#
+# gpt-5 accepts ``minimal`` as its lowest effort; gpt-5.1+ renamed that tier
+# to ``none`` upstream and 400 on ``minimal``. The channel suffix is kept in
+# sync with the actual upstream effort value so the model name is honest.
 GPT_REASONING_EFFORTS: dict[str, list[str]] = {
     "gpt-5": ["minimal", "low", "medium", "high"],
-    "gpt-5.1": ["minimal", "low", "medium", "high"],
-    "gpt-5.2": ["minimal", "low", "medium", "high", "xhigh"],
-    "gpt-5.4": ["minimal", "low", "medium", "high", "xhigh"],
-    "gpt-5.5": ["minimal", "low", "medium", "high", "xhigh"],
+    "gpt-5.1": ["none", "low", "medium", "high"],
+    "gpt-5.2": ["none", "low", "medium", "high", "xhigh"],
+    "gpt-5.4": ["none", "low", "medium", "high", "xhigh"],
+    "gpt-5.5": ["none", "low", "medium", "high", "xhigh"],
 }
 
 
