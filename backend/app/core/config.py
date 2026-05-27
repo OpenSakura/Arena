@@ -151,6 +151,13 @@ class Settings(BaseSettings):
     # only a fallback for stale "running" battles left by a prior process).
     battle_running_wait_timeout_seconds: int = 600
 
+    # Battle prepopulation pool controls.
+    battle_prepopulation_max_job_size: int = 50
+    battle_prepopulation_job_timeout_seconds: int = 900
+    battle_prepopulation_enabled: bool = True
+    battle_pool_user_recycle_after_hours: int = 24
+    battle_pool_assignment_ttl_seconds: int = 900
+
     # Leaderboard refresh background job.
     leaderboard_refresh_enabled: bool = True
     leaderboard_refresh_interval_seconds: int = 300

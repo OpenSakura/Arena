@@ -70,6 +70,7 @@ export const zhResource = {
     admin: "管理",
     adminModels: "模型",
     adminTasks: "任务",
+    adminBattlePrepopulation: "对战预生成",
     adminServiceAccounts: "服务账号",
     notFound: "页面不存在",
     authError: "认证错误",
@@ -228,6 +229,7 @@ export const zhResource = {
     statusFailed: "失败",
     statusError: "错误",
     statusLoading: "加载中…",
+    prepopulationPreparing: "正在准备池中对战…",
     adminRevealButton: "揭晓模型",
     adminRevealAria: "揭晓 {{title}} 的身份",
     rubric: {
@@ -344,6 +346,7 @@ export const zhResource = {
       tabs: {
         models: "模型",
         tasks: "任务",
+        battlePrepopulation: "对战预生成",
         serviceAccounts: "服务账号"
       },
       guards: {
@@ -446,6 +449,51 @@ export const zhResource = {
         selectJsonlFirst: "请先选择 .jsonl 文件",
         invalidJsonSyntax: "JSON 语法无效",
         expectedJsonObject: "需要 JSON 对象"
+      }
+    },
+    battlePrepopulation: {
+      title: "对战预生成",
+      description: "提前生成池中对战，让用户开始对战更快。",
+      stats: {
+        availableAdmin: "可用的管理预生成对战",
+        availableRecycled: "可用的回收对战",
+        availableTotal: "可用总数",
+        generating: "生成中",
+        failed: "失败",
+        votedConsumed: "已投票并消耗",
+        total: "总数",
+        maxJobSize: "最大任务规模",
+        latestJob: "最新任务"
+      },
+      form: {
+        amountLabel: "生成数量",
+        model1Label: "模型 1",
+        model2Label: "模型 2",
+        modelEmptyOption: "任意模型",
+        modelSelectionHelp: "不选择模型则自动配对；选择一个模型则与任意其他模型配对；选择两个模型则固定对局。所选模型的顺序仅限制对局组合，对战双方的位置在服务端随机决定。",
+        noModelConstraint: "不限制模型",
+        oneModelConstraint: "限制一个模型",
+        twoModelConstraint: "限制两个模型",
+        submit: "预生成对战",
+        submitting: "预生成中…"
+      },
+      errors: {
+        invalidAmount: "请输入有效数量。",
+        invalidModelSelection: "请选择零个、一个或两个模型。",
+        failedToLoad: "加载对战预生成数据失败",
+        failedToSubmit: "提交对战预生成失败"
+      },
+      jobs: {
+        title: "近期任务",
+        empty: "暂无预生成任务。",
+        none: "无",
+        failedCount: "{{count}} 失败",
+        headers: {
+          id: "ID",
+          status: "状态",
+          progress: "进度",
+          failed: "失败"
+        }
       }
     },
     modelRegistry: {

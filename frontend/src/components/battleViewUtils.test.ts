@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { apiGet, apiPost } from "../lib/api";
-import { asRecord, buildBattleAuthHeaders, loadOrCreateBattle, mergeBattleDelta } from "./battleViewUtils";
+import {
+  asRecord,
+  buildBattleAuthHeaders,
+  loadOrCreateBattle,
+  mergeBattleDelta,
+} from "./battleViewUtils";
 
 vi.mock("../lib/api", () => ({
   apiGet: vi.fn(),

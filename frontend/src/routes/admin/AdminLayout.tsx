@@ -9,6 +9,7 @@ const ADMIN_TABS = [
   { id: "models", href: "/admin/models", labelKey: "admin.layout.tabs.models" },
   { id: "tasks", href: "/admin/tasks", labelKey: "admin.layout.tabs.tasks" },
   { id: "serviceAccounts", href: "/admin/service-accounts", labelKey: "admin.layout.tabs.serviceAccounts" },
+  { id: "battlePrepopulation", href: "/admin/battle-prepopulation", labelKey: "admin.layout.tabs.battlePrepopulation" },
 ] as const;
 
 export function AdminLayout({ children }: { children?: ReactNode }) {

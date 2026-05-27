@@ -13,6 +13,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api.routes import (
+    admin_battle_prepopulation,
     admin_exports,
     admin_leaderboard,
     admin_models,
@@ -41,4 +42,5 @@ api_router.include_router(admin_models.router)
 api_router.include_router(admin_service_accounts.router)
 api_router.include_router(admin_tasks.router)
 api_router.include_router(admin_exports.router)
+api_router.include_router(admin_battle_prepopulation.router)
 api_router.include_router(admin_leaderboard.router)

@@ -48,6 +48,13 @@ class BattleRevealPublic(BaseModel):
     B: ModelRevealPublic
 
 
+class BattlePrepopulationPublic(BaseModel):
+    source: Literal["live", "admin_pre_generated", "user_recycled"]
+    pooled: bool
+    display_delay_ms: int | None = None
+    backend_gated_replay: bool = False
+
+
 class BattlePublic(BaseModel):
     id: str
     task_id: str
@@ -61,3 +68,4 @@ class BattlePublic(BaseModel):
     run_a: RunPublic | None = None
     run_b: RunPublic | None = None
     admin_reveal: BattleRevealPublic | None = None
+    prepopulation: BattlePrepopulationPublic | None = None

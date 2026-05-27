@@ -11,6 +11,7 @@ Notes:
 
 from app.models.auth_session import AuthSession, OAuthLoginState
 from app.models.battle import Battle, Run
+from app.models.battle_prepopulation import BattlePrepopulationJob
 from app.models.model_registry import Model
 from app.models.rating import ModelRating
 from app.models.service_account import ServiceAccount, ServiceAccountToken
@@ -20,6 +21,7 @@ from app.models.vote import Vote
 
 __all__ = [
     "Battle",
+    "BattlePrepopulationJob",
     "AuthSession",
     "Model",
     "ModelRating",

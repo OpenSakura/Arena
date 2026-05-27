@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Literal, cast
 import uuid
@@ -56,6 +57,8 @@ def _settings(**overrides: object) -> SimpleNamespace:
     base: dict[str, object] = {
         "auth_vote_submit_rate_limit_window_seconds": 60,
         "anon_rate_limit_bucket_seconds": 10,
+        "battle_pool_user_recycle_after_hours": 9999,
+        "battle_pool_assignment_ttl_seconds": 900,
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -75,6 +78,9 @@ class _RowsResult:
     def all(self) -> list[object]:
         return list(self._rows)
 
+    def scalar_one_or_none(self) -> object | None:
+        return self._rows[0] if self._rows else None
+
 
 class _VoteDB:
     def __init__(
@@ -85,12 +91,14 @@ class _VoteDB:
         flush_error: Exception | None = None,
         commit_error: Exception | None = None,
         model_lookup: dict[uuid.UUID, object] | None = None,
+        existing_votes: Sequence[object] | None = None,
     ) -> None:
         self._battle = battle
         self._runs = list(runs)
         self._flush_error = flush_error
         self._commit_error = commit_error
         self._model_lookup = model_lookup or {}
+        self._existing_votes = list(existing_votes or [])
         self.added: list[object] = []
         self.vote_row: Vote | None = None
         self.flush_calls = 0
@@ -111,6 +119,8 @@ class _VoteDB:
 
     def execute(self, _stmt: object) -> _RowsResult:
         self.execute_calls += 1
+        if "votes" in str(_stmt).lower():
+            return _RowsResult(list(self._existing_votes))
         return _RowsResult(self._runs)
 
     def add(self, row: object) -> None:
@@ -157,11 +167,27 @@ def _battle_and_runs(
         id=battle_id,
         status=status,
         metadata_json={"requester_user_id": requester_user_id or str(_CREATOR_USER_ID)},
+        requester_service_account_id=None,
+        created_at=datetime(2026, 5, 26, 12, 0, tzinfo=timezone.utc),
     )
     runs = [
         SimpleNamespace(side="A", model_id=model_a_id, output_text="Translation A"),
         SimpleNamespace(side="B", model_id=model_b_id, output_text=side_b_output),
     ]
+    return battle, runs, model_a_id, model_b_id
+
+
+def _pool_battle_and_runs() -> tuple[SimpleNamespace, list[SimpleNamespace], uuid.UUID, uuid.UUID]:
+    creator_id = str(uuid.uuid4())
+    battle, runs, model_a_id, model_b_id = _battle_and_runs(
+        requester_user_id=creator_id,
+    )
+    battle.metadata_json.update(
+        {
+            "pre_generated": True,
+            "prepopulation_job_id": str(uuid.uuid4()),
+        }
+    )
     return battle, runs, model_a_id, model_b_id
 
 
@@ -273,10 +299,22 @@ def test_build_vote_submit_response_raises_when_model_lookup_fails() -> None:
     assert exc_info.value.detail == "Model not found"
 
 
+def test_find_any_battle_vote_uses_battle_lookup() -> None:
+    battle_id = uuid.uuid4()
+    matching_vote = SimpleNamespace(battle_id=battle_id)
+    db = _VoteDB(
+        battle=None,
+        runs=[],
+        existing_votes=[SimpleNamespace(battle_id=uuid.uuid4()), matching_vote],
+    )
+
+    assert votes.find_any_battle_vote(db, battle_id=battle_id) is matching_vote  # type: ignore[arg-type]
+
+
 def test_resolve_duplicate_vote_conflict_raises_500_when_vote_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(votes, "find_existing_battle_vote", lambda *_a, **_kw: None)
+    monkeypatch.setattr(votes, "find_any_battle_vote", lambda *_a, **_kw: None)
 
     with pytest.raises(HTTPException) as exc_info:
         votes._resolve_duplicate_vote_conflict(
@@ -293,12 +331,12 @@ def test_resolve_duplicate_vote_conflict_raises_500_when_vote_missing(
     assert exc_info.value.detail == "Failed to persist vote"
 
 
-def test_resolve_duplicate_vote_conflict_raises_409_for_mismatched_winner(
+def test_resolve_duplicate_vote_conflict_raises_409_for_existing_vote(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         votes,
-        "find_existing_battle_vote",
+        "find_any_battle_vote",
         lambda *_a, **_kw: SimpleNamespace(id=uuid.uuid4(), winner="B", revealed=True),
     )
 
@@ -314,69 +352,43 @@ def test_resolve_duplicate_vote_conflict_raises_409_for_mismatched_winner(
         )
 
     assert exc_info.value.status_code == 409
-    assert exc_info.value.detail == "Vote already revealed and cannot be changed"
+    assert exc_info.value.detail == "Battle already has a vote"
 
 
-def test_resolve_duplicate_vote_conflict_returns_existing_vote_response(
+def test_resolve_duplicate_vote_conflict_rejects_same_winner_existing_vote(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    battle_id = uuid.uuid4()
-    model_a_id = uuid.uuid4()
-    model_b_id = uuid.uuid4()
     existing_vote = SimpleNamespace(
         id=uuid.uuid4(),
         winner="A",
-        revealed=False,
+        revealed=True,
         rubric=None,
         comment=None,
     )
     monkeypatch.setattr(
         votes,
-        "find_existing_battle_vote",
+        "find_any_battle_vote",
         lambda *_a, **_kw: existing_vote,
     )
 
-    commit_calls: list[None] = []
-    db = SimpleNamespace(commit=lambda: commit_calls.append(None))
-    expected_reveal = {
-        "A": {"model_id": str(model_a_id), "display_name": "Model A"},
-        "B": {"model_id": str(model_b_id), "display_name": "Model B"},
-    }
-    monkeypatch.setattr(
-        votes,
-        "_build_vote_submit_response",
-        lambda *_a, **_kw: VoteSubmitResponse(
-            vote_id=str(existing_vote.id),
-            battle_id=str(battle_id),
+    with pytest.raises(HTTPException) as exc_info:
+        votes._resolve_duplicate_vote_conflict(
+            db=object(),  # type: ignore[arg-type]
+            response=Response(),
+            battle_id=uuid.uuid4(),
             winner="A",
-            reveal=expected_reveal,
-        ),
-    )
+            requester_identity=RequesterIdentity(voter_user_id=uuid.uuid4()),
+            model_a_id=uuid.uuid4(),
+            model_b_id=uuid.uuid4(),
+        )
 
-    response = votes._resolve_duplicate_vote_conflict(
-        db=db,  # type: ignore[arg-type]
-        response=Response(),
-        battle_id=battle_id,
-        winner="A",
-        requester_identity=RequesterIdentity(voter_user_id=uuid.uuid4()),
-        model_a_id=model_a_id,
-        model_b_id=model_b_id,
-    )
-
-    assert response.vote_id == str(existing_vote.id)
-    assert response.battle_id == str(battle_id)
-    assert response.winner == "A"
-    assert response.reveal == expected_reveal
-    assert existing_vote.revealed is True
-    assert len(commit_calls) == 1
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "Battle already has a vote"
 
 
-def test_resolve_duplicate_vote_conflict_updates_payload_and_commits(
+def test_resolve_duplicate_vote_conflict_rejects_unrevealed_existing_vote_without_update(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    battle_id = uuid.uuid4()
-    model_a_id = uuid.uuid4()
-    model_b_id = uuid.uuid4()
     existing_vote = SimpleNamespace(
         id=uuid.uuid4(),
         winner="A",
@@ -386,46 +398,29 @@ def test_resolve_duplicate_vote_conflict_updates_payload_and_commits(
     )
     monkeypatch.setattr(
         votes,
-        "find_existing_battle_vote",
+        "find_any_battle_vote",
         lambda *_a, **_kw: existing_vote,
     )
 
-    commit_calls: list[None] = []
-    db = SimpleNamespace(commit=lambda: commit_calls.append(None))
-    expected_reveal = {
-        "A": {"model_id": str(model_a_id), "display_name": "Model A"},
-        "B": {"model_id": str(model_b_id), "display_name": "Model B"},
-    }
-    monkeypatch.setattr(
-        votes,
-        "_build_vote_submit_response",
-        lambda *_a, **_kw: VoteSubmitResponse(
-            vote_id=str(existing_vote.id),
-            battle_id=str(battle_id),
+    with pytest.raises(HTTPException) as exc_info:
+        votes._resolve_duplicate_vote_conflict(
+            db=object(),  # type: ignore[arg-type]
+            response=Response(),
+            battle_id=uuid.uuid4(),
             winner="B",
-            reveal=expected_reveal,
-        ),
-    )
+            rubric={"tags": ["fluency"]},
+            comment="new",
+            requester_identity=RequesterIdentity(voter_user_id=uuid.uuid4()),
+            model_a_id=uuid.uuid4(),
+            model_b_id=uuid.uuid4(),
+        )
 
-    response = votes._resolve_duplicate_vote_conflict(
-        db=db,  # type: ignore[arg-type]
-        response=Response(),
-        battle_id=battle_id,
-        winner="B",
-        rubric={"tags": ["fluency"]},
-        comment="new",
-        requester_identity=RequesterIdentity(voter_user_id=uuid.uuid4()),
-        model_a_id=model_a_id,
-        model_b_id=model_b_id,
-    )
-
-    assert response.winner == "B"
-    assert response.reveal == expected_reveal
-    assert existing_vote.winner == "B"
-    assert existing_vote.rubric == {"tags": ["fluency"]}
-    assert existing_vote.comment == "new"
-    assert existing_vote.revealed is True
-    assert len(commit_calls) == 1
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "Battle already has a vote"
+    assert existing_vote.winner == "A"
+    assert existing_vote.rubric == {"tags": ["accuracy"]}
+    assert existing_vote.comment == "old"
+    assert existing_vote.revealed is False
 
 
 def test_submit_vote_rejects_invalid_battle_id() -> None:
@@ -526,7 +521,7 @@ def test_submit_vote_rejects_vote_when_selected_side_has_no_output(
             SimpleNamespace(side="B", model_id=model_b_id, output_text=None),
         ],
     )
-    monkeypatch.setattr(votes, "find_existing_battle_vote", lambda *_a, **_kw: None)
+    monkeypatch.setattr(votes, "find_any_battle_vote", lambda *_a, **_kw: None)
 
     with pytest.raises(HTTPException) as exc_info:
         votes.submit_vote(
@@ -551,7 +546,7 @@ def test_submit_vote_rejects_authenticated_non_creator_before_reveal(
 
     monkeypatch.setattr(
         votes,
-        "find_existing_battle_vote",
+        "find_any_battle_vote",
         lambda *_a, **_kw: pytest.fail("vote lookup must not run before auth"),
     )
     monkeypatch.setattr(
@@ -576,6 +571,282 @@ def test_submit_vote_rejects_authenticated_non_creator_before_reveal(
     assert db.commit_calls == 0
 
 
+def test_submit_vote_allows_non_creator_for_pool_eligible_unvoted_battle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    voter_id = str(uuid.uuid4())
+    battle, runs, model_a_id, model_b_id = _pool_battle_and_runs()
+    battle.metadata_json["pooled_replay"] = {
+        "backend_gated": True,
+        "display_delay_ms": 12_345,
+        "assigned_user_id": voter_id,
+        "source": "admin_pre_generated",
+        "unlocked": True,
+    }
+    db = _VoteDB(
+        battle=battle,
+        runs=runs,
+        model_lookup={
+            model_a_id: SimpleNamespace(id=model_a_id, display_name="Model A"),
+            model_b_id: SimpleNamespace(id=model_b_id, display_name="Model B"),
+        },
+    )
+
+    monkeypatch.setattr(votes, "find_any_battle_vote", lambda *_a, **_kw: None)
+    monkeypatch.setattr(votes, "_enforce_auth_vote_rate_limit", lambda **_kw: None)
+
+    response = votes.submit_vote(
+        battle_id=str(battle.id),
+        payload=VoteCreate(winner="A"),
+        response=Response(),
+        db=db,  # type: ignore[arg-type]
+        principal=_authenticated_principal(user_id=voter_id),
+        settings=_settings(battle_pool_user_recycle_after_hours=24),  # type: ignore[arg-type]
+    )
+
+    assert response.winner == "A"
+    assert db.vote_row is not None
+    assert db.vote_row.battle_id == battle.id
+    assert db.commit_calls == 1
+
+
+def test_submit_vote_rejects_unassigned_pool_battle_before_reveal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    battle, runs, _, _ = _pool_battle_and_runs()
+    db = _VoteDB(battle=battle, runs=runs)
+
+    monkeypatch.setattr(
+        votes,
+        "find_any_battle_vote",
+        lambda *_a, **_kw: pytest.fail("unassigned pool replay must fail before vote lookup"),
+    )
+    monkeypatch.setattr(
+        votes,
+        "_enforce_auth_vote_rate_limit",
+        lambda **_kw: pytest.fail("unassigned pool replay must fail before rate limit"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        votes.submit_vote(
+            battle_id=str(battle.id),
+            payload=VoteCreate(winner="A"),
+            response=Response(),
+            db=db,  # type: ignore[arg-type]
+            principal=_authenticated_principal(user_id=str(uuid.uuid4())),
+            settings=_settings(battle_pool_user_recycle_after_hours=24),  # type: ignore[arg-type]
+        )
+
+    assert exc_info.value.status_code == 409
+    assert db.added == []
+    assert db.flush_calls == 0
+    assert db.commit_calls == 0
+
+
+def test_submit_vote_rejects_expired_locked_pool_replay_before_reveal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    voter_id = str(uuid.uuid4())
+    now = datetime(2026, 5, 26, 12, 0, tzinfo=timezone.utc)
+    battle, runs, _, _ = _pool_battle_and_runs()
+    battle.metadata_json["pooled_replay"] = {
+        "backend_gated": True,
+        "display_delay_ms": 12_345,
+        "assigned_user_id": voter_id,
+        "assigned_at": (now - timedelta(hours=1)).isoformat(),
+        "expires_at": (now - timedelta(seconds=1)).isoformat(),
+        "source": "admin_pre_generated",
+        "unlocked": False,
+    }
+    db = _VoteDB(battle=battle, runs=runs)
+
+    monkeypatch.setattr(
+        votes,
+        "find_any_battle_vote",
+        lambda *_a, **_kw: pytest.fail("expired locked replay must fail before vote lookup"),
+    )
+    monkeypatch.setattr(
+        votes,
+        "_enforce_auth_vote_rate_limit",
+        lambda **_kw: pytest.fail("expired locked replay must fail before rate limit"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        votes.submit_vote(
+            battle_id=str(battle.id),
+            payload=VoteCreate(winner="A"),
+            response=Response(),
+            db=db,  # type: ignore[arg-type]
+            principal=_authenticated_principal(user_id=voter_id),
+            settings=_settings(battle_pool_user_recycle_after_hours=24),  # type: ignore[arg-type]
+        )
+
+    assert exc_info.value.status_code == 409
+    assert db.added == []
+    assert db.flush_calls == 0
+    assert db.commit_calls == 0
+
+
+def test_submit_vote_rejects_locked_backend_gated_pooled_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    voter_id = str(uuid.uuid4())
+    battle, runs, _, _ = _pool_battle_and_runs()
+    battle.metadata_json["pooled_replay"] = {
+        "backend_gated": True,
+        "display_delay_ms": 12_345,
+        "assigned_user_id": voter_id,
+    }
+    db = _VoteDB(battle=battle, runs=runs)
+
+    monkeypatch.setattr(
+        votes,
+        "find_any_battle_vote",
+        lambda *_a, **_kw: pytest.fail("locked replay must fail before vote lookup"),
+    )
+    monkeypatch.setattr(
+        votes,
+        "_enforce_auth_vote_rate_limit",
+        lambda **_kw: pytest.fail("locked replay must fail before rate limit"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        votes.submit_vote(
+            battle_id=str(battle.id),
+            payload=VoteCreate(winner="A"),
+            response=Response(),
+            db=db,  # type: ignore[arg-type]
+            principal=_authenticated_principal(user_id=voter_id),
+            settings=_settings(battle_pool_user_recycle_after_hours=24),  # type: ignore[arg-type]
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == (
+        "Battle replay is still streaming; wait for replay to complete before voting"
+    )
+    assert db.added == []
+    assert db.flush_calls == 0
+    assert db.commit_calls == 0
+
+
+def test_submit_vote_allows_unlocked_backend_gated_pooled_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    voter_id = str(uuid.uuid4())
+    battle, runs, model_a_id, model_b_id = _pool_battle_and_runs()
+    battle.metadata_json["pooled_replay"] = {
+        "backend_gated": True,
+        "display_delay_ms": 12_345,
+        "assigned_user_id": voter_id,
+        "unlocked": True,
+    }
+    db = _VoteDB(
+        battle=battle,
+        runs=runs,
+        model_lookup={
+            model_a_id: SimpleNamespace(id=model_a_id, display_name="Model A"),
+            model_b_id: SimpleNamespace(id=model_b_id, display_name="Model B"),
+        },
+    )
+
+    monkeypatch.setattr(votes, "find_any_battle_vote", lambda *_a, **_kw: None)
+    monkeypatch.setattr(votes, "_enforce_auth_vote_rate_limit", lambda **_kw: None)
+
+    response = votes.submit_vote(
+        battle_id=str(battle.id),
+        payload=VoteCreate(winner="B"),
+        response=Response(),
+        db=db,  # type: ignore[arg-type]
+        principal=_authenticated_principal(user_id=voter_id),
+        settings=_settings(battle_pool_user_recycle_after_hours=24),  # type: ignore[arg-type]
+    )
+
+    assert response.winner == "B"
+    assert response.reveal == {
+        "A": {"model_id": str(model_a_id), "display_name": "Model A"},
+        "B": {"model_id": str(model_b_id), "display_name": "Model B"},
+    }
+    assert db.vote_row is not None
+    assert db.vote_row.battle_id == battle.id
+    assert db.commit_calls == 1
+
+
+def test_submit_vote_rejects_unlocked_pool_replay_assigned_to_other_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    battle, runs, _, _ = _pool_battle_and_runs()
+    battle.metadata_json["pooled_replay"] = {
+        "backend_gated": True,
+        "display_delay_ms": 12_345,
+        "assigned_user_id": str(uuid.uuid4()),
+        "source": "admin_pre_generated",
+        "unlocked": True,
+    }
+    db = _VoteDB(battle=battle, runs=runs)
+
+    monkeypatch.setattr(
+        votes,
+        "find_any_battle_vote",
+        lambda *_a, **_kw: pytest.fail("other user's replay must fail before vote lookup"),
+    )
+    monkeypatch.setattr(
+        votes,
+        "_enforce_auth_vote_rate_limit",
+        lambda **_kw: pytest.fail("other user's replay must fail before rate limit"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        votes.submit_vote(
+            battle_id=str(battle.id),
+            payload=VoteCreate(winner="A"),
+            response=Response(),
+            db=db,  # type: ignore[arg-type]
+            principal=_authenticated_principal(user_id=str(uuid.uuid4())),
+            settings=_settings(battle_pool_user_recycle_after_hours=24),  # type: ignore[arg-type]
+        )
+
+    assert exc_info.value.status_code == 403
+    assert db.added == []
+    assert db.commit_calls == 0
+
+
+def test_submit_vote_rejects_non_creator_for_pool_battle_after_any_vote(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    battle, runs, _, _ = _pool_battle_and_runs()
+    db = _VoteDB(
+        battle=battle,
+        runs=runs,
+        existing_votes=[SimpleNamespace(battle_id=battle.id)],
+    )
+
+    monkeypatch.setattr(
+        votes,
+        "find_any_battle_vote",
+        lambda *_a, **_kw: pytest.fail("vote lookup must not run after pool auth denial"),
+    )
+    monkeypatch.setattr(
+        votes,
+        "_enforce_auth_vote_rate_limit",
+        lambda **_kw: pytest.fail("rate limit must not run after pool auth denial"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        votes.submit_vote(
+            battle_id=str(battle.id),
+            payload=VoteCreate(winner="A"),
+            response=Response(),
+            db=db,  # type: ignore[arg-type]
+            principal=_authenticated_principal(user_id=str(uuid.uuid4())),
+            settings=_settings(),  # type: ignore[arg-type]
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Only the battle creator or an admin may vote on this battle"
+    assert db.added == []
+    assert db.commit_calls == 0
+
+
 def test_submit_vote_allows_admin_non_creator(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -591,7 +862,7 @@ def test_submit_vote_allows_admin_non_creator(
         },
     )
     admin_group_name = "arena-admins"
-    monkeypatch.setattr(votes, "find_existing_battle_vote", lambda *_a, **_kw: None)
+    monkeypatch.setattr(votes, "find_any_battle_vote", lambda *_a, **_kw: None)
     monkeypatch.setattr(votes, "_enforce_auth_vote_rate_limit", lambda **_kw: None)
     monkeypatch.setattr(
         battles,
@@ -622,66 +893,65 @@ def test_submit_vote_allows_admin_non_creator(
     assert db.commit_calls == 1
 
 
-def test_submit_vote_returns_existing_vote_response(
+@pytest.mark.parametrize(
+    ("payload_winner", "existing_winner"),
+    [("A", "A"), ("B", "A")],
+)
+def test_submit_vote_rejects_same_voter_second_vote(
     monkeypatch: pytest.MonkeyPatch,
+    payload_winner: Literal["A", "B"],
+    existing_winner: Literal["A", "B"],
 ) -> None:
-    battle, runs, model_a_id, model_b_id = _battle_and_runs()
+    battle, runs, _, _ = _battle_and_runs()
     principal = _authenticated_principal()
     existing_vote = SimpleNamespace(
         id=uuid.uuid4(),
-        winner="A",
-        revealed=False,
+        battle_id=battle.id,
+        winner=existing_winner,
+        revealed=True,
         rubric=None,
         comment=None,
     )
-    captured: dict[str, object] = {}
-
-    def fake_find(
-        _db: object, *, battle_id: uuid.UUID, requester_identity: RequesterIdentity
-    ):
-        captured["battle_id"] = battle_id
-        captured["requester_identity"] = requester_identity
-        return existing_vote
-
-    monkeypatch.setattr(votes, "find_existing_battle_vote", fake_find)
+    db = _VoteDB(battle=battle, runs=runs, existing_votes=[existing_vote])
     monkeypatch.setattr(
         votes,
         "_enforce_auth_vote_rate_limit",
         lambda **_kw: pytest.fail("Rate-limit checks should not run"),
     )
 
-    response = votes.submit_vote(
-        battle_id=str(battle.id),
-        payload=VoteCreate(winner="A"),
-        response=Response(),
-        db=_VoteDB(
-            battle=battle,
-            runs=runs,
-            model_lookup={
-                model_a_id: SimpleNamespace(id=model_a_id, display_name="Model A"),
-                model_b_id: SimpleNamespace(id=model_b_id, display_name="Model B"),
-            },
-        ),  # type: ignore[arg-type]
-        principal=principal,
-        settings=_settings(),  # type: ignore[arg-type]
-    )
+    with pytest.raises(HTTPException) as exc_info:
+        votes.submit_vote(
+            battle_id=str(battle.id),
+            payload=VoteCreate(winner=payload_winner),
+            response=Response(),
+            db=db,  # type: ignore[arg-type]
+            principal=principal,
+            settings=_settings(),  # type: ignore[arg-type]
+        )
 
-    assert response.reveal is not None
-    assert response.winner == "A"
-    assert captured["battle_id"] == battle.id
-    requester_identity = captured["requester_identity"]
-    assert isinstance(requester_identity, RequesterIdentity)
-    assert requester_identity.voter_user_id == uuid.UUID(principal.user_id)
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "Battle already has a vote"
+    assert db.added == []
+    assert db.commit_calls == 0
 
 
-def test_submit_vote_rejects_conflicting_existing_revealed_vote(
+def test_submit_vote_rejects_different_human_second_vote(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    battle, runs, _, _ = _battle_and_runs()
+    second_user_id = str(uuid.uuid4())
+    battle, runs, _, _ = _battle_and_runs(requester_user_id=second_user_id)
+    existing_vote = SimpleNamespace(
+        id=uuid.uuid4(),
+        battle_id=battle.id,
+        winner="B",
+        revealed=True,
+        voter_user_id=uuid.uuid4(),
+    )
+    db = _VoteDB(battle=battle, runs=runs, existing_votes=[existing_vote])
     monkeypatch.setattr(
         votes,
-        "find_existing_battle_vote",
-        lambda *_a, **_kw: SimpleNamespace(id=uuid.uuid4(), winner="B", revealed=True),
+        "_enforce_auth_vote_rate_limit",
+        lambda **_kw: pytest.fail("duplicate vote must not rate limit"),
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -689,13 +959,46 @@ def test_submit_vote_rejects_conflicting_existing_revealed_vote(
             battle_id=str(battle.id),
             payload=VoteCreate(winner="A"),
             response=Response(),
-            db=_VoteDB(battle=battle, runs=runs),  # type: ignore[arg-type]
-            principal=_authenticated_principal(),
+            db=db,  # type: ignore[arg-type]
+            principal=_authenticated_principal(user_id=second_user_id),
             settings=_settings(),  # type: ignore[arg-type]
         )
 
     assert exc_info.value.status_code == 409
-    assert exc_info.value.detail == "Vote already revealed and cannot be changed"
+    assert exc_info.value.detail == "Battle already has a vote"
+
+
+def test_submit_vote_rejects_human_after_bot_second_vote(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    human_user_id = str(uuid.uuid4())
+    battle, runs, _, _ = _battle_and_runs(requester_user_id=human_user_id)
+    existing_vote = SimpleNamespace(
+        id=uuid.uuid4(),
+        battle_id=battle.id,
+        winner="A",
+        revealed=True,
+        service_account_id=uuid.uuid4(),
+    )
+    db = _VoteDB(battle=battle, runs=runs, existing_votes=[existing_vote])
+    monkeypatch.setattr(
+        votes,
+        "_enforce_auth_vote_rate_limit",
+        lambda **_kw: pytest.fail("duplicate vote must not rate limit"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        votes.submit_vote(
+            battle_id=str(battle.id),
+            payload=VoteCreate(winner="B"),
+            response=Response(),
+            db=db,  # type: ignore[arg-type]
+            principal=_authenticated_principal(user_id=human_user_id),
+            settings=_settings(),  # type: ignore[arg-type]
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "Battle already has a vote"
 
 
 def test_submit_vote_records_vote_and_uses_human_auth_rate_limit_key(
@@ -713,7 +1016,7 @@ def test_submit_vote_records_vote_and_uses_human_auth_rate_limit_key(
     principal = _authenticated_principal()
     limiter = _CaptureRateLimiter()
 
-    monkeypatch.setattr(votes, "find_existing_battle_vote", lambda *_a, **_kw: None)
+    monkeypatch.setattr(votes, "find_any_battle_vote", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         votes, "_get_auth_vote_submit_rate_limiter", lambda: limiter
     )
@@ -765,7 +1068,7 @@ def test_submit_vote_persists_bot_metadata_and_safe_attribution(
     )
     limiter = _CaptureRateLimiter()
 
-    monkeypatch.setattr(votes, "find_existing_battle_vote", lambda *_a, **_kw: None)
+    monkeypatch.setattr(votes, "find_any_battle_vote", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         votes, "_get_auth_vote_submit_rate_limiter", lambda: limiter
     )
@@ -805,7 +1108,7 @@ def test_submit_vote_rejects_human_bot_metadata_without_writing(
     db = _VoteDB(battle=battle, runs=runs)
     monkeypatch.setattr(
         votes,
-        "find_existing_battle_vote",
+        "find_any_battle_vote",
         lambda *_a, **_kw: pytest.fail("human bot_metadata must fail before lookup"),
     )
     monkeypatch.setattr(
@@ -840,7 +1143,7 @@ def test_submit_vote_rejects_under_scoped_bot_without_writing(
     principal = _bot_principal(user_id=bot_user_id, scopes=("battle:read",))
     monkeypatch.setattr(
         votes,
-        "find_existing_battle_vote",
+        "find_any_battle_vote",
         lambda *_a, **_kw: pytest.fail("under-scoped bot must fail before lookup"),
     )
 
@@ -883,7 +1186,7 @@ def test_submit_vote_rejects_malformed_bot_principal_without_writing(
     )
     monkeypatch.setattr(
         votes,
-        "find_existing_battle_vote",
+        "find_any_battle_vote",
         lambda *_a, **_kw: pytest.fail("malformed bot must fail before lookup"),
     )
     monkeypatch.setattr(
@@ -933,7 +1236,7 @@ def test_enforce_auth_vote_rate_limit_uses_bot_token_fallback(
     assert f"auth_vote_submit:user:{bot_user_id}" not in limiter.keys
 
 
-def test_submit_vote_returns_existing_bot_vote_without_metadata_override(
+def test_submit_vote_rejects_bot_second_vote_without_metadata_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bot_user_id = str(uuid.uuid4())
@@ -949,6 +1252,7 @@ def test_submit_vote_returns_existing_bot_vote_without_metadata_override(
     )
     existing_vote = SimpleNamespace(
         id=uuid.uuid4(),
+        battle_id=battle.id,
         winner="A",
         revealed=True,
         rubric={"tags": ["accuracy"]},
@@ -960,6 +1264,7 @@ def test_submit_vote_returns_existing_bot_vote_without_metadata_override(
     db = _VoteDB(
         battle=battle,
         runs=runs,
+        existing_votes=[existing_vote],
         model_lookup={
             model_a_id: SimpleNamespace(id=model_a_id, display_name="Model A"),
             model_b_id: SimpleNamespace(id=model_b_id, display_name="Model B"),
@@ -968,162 +1273,146 @@ def test_submit_vote_returns_existing_bot_vote_without_metadata_override(
     route_response = Response()
 
     monkeypatch.setattr(
-        votes, "find_existing_battle_vote", lambda *_a, **_kw: existing_vote
-    )
-    monkeypatch.setattr(
         votes,
         "_enforce_auth_vote_rate_limit",
         lambda **_kw: pytest.fail("duplicate vote must not rate limit"),
     )
 
-    response = votes.submit_vote(
-        battle_id=str(battle.id),
-        payload=VoteCreate(
-            winner="A",
-            comment="new",
-            bot_metadata={"external_run_id": "replacement"},
-        ),
-        response=route_response,
-        db=db,  # type: ignore[arg-type]
-        principal=principal,
-        settings=_settings(),  # type: ignore[arg-type]
-    )
+    with pytest.raises(HTTPException) as exc_info:
+        votes.submit_vote(
+            battle_id=str(battle.id),
+            payload=VoteCreate(
+                winner="A",
+                comment="new",
+                bot_metadata={"external_run_id": "replacement"},
+            ),
+            response=route_response,
+            db=db,  # type: ignore[arg-type]
+            principal=principal,
+            settings=_settings(),  # type: ignore[arg-type]
+        )
 
-    assert route_response.status_code == 200
-    assert response.vote_id == str(existing_vote.id)
-    assert response.voter_actor_type == "bot"
-    assert response.service_account_id == str(service_account_id)
-    assert response.service_account_name == "Auto Judge"
-    assert response.service_account_token_id == str(service_account_token_id)
-    assert response.bot_metadata == {"external_run_id": "original"}
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "Battle already has a vote"
     assert existing_vote.comment == "existing"
     assert existing_vote.bot_metadata == {"external_run_id": "original"}
     assert db.commit_calls == 0
 
 
-def test_submit_vote_resolves_duplicate_conflict_after_flush_error(
+def test_submit_vote_rejects_duplicate_conflict_after_flush_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    battle, runs, model_a_id, model_b_id = _battle_and_runs()
+    battle, runs, _, _ = _battle_and_runs()
+    existing_vote = SimpleNamespace(id=uuid.uuid4(), battle_id=battle.id, winner="A")
     db = _VoteDB(
         battle=battle,
         runs=runs,
         flush_error=_integrity_error("duplicate key"),
-    )
-    expected = _vote_submit_response(
-        vote_id=uuid.uuid4(),
-        battle_id=battle.id,
-        winner="A",
-        model_a_id=model_a_id,
-        model_b_id=model_b_id,
+        existing_votes=[existing_vote],
     )
 
-    monkeypatch.setattr(votes, "find_existing_battle_vote", lambda *_a, **_kw: None)
+    lookup_calls = 0
+
+    def fake_find_any(_db: object, *, battle_id: uuid.UUID) -> object | None:
+        nonlocal lookup_calls
+        lookup_calls += 1
+        if lookup_calls == 1:
+            return None
+        return existing_vote
+
+    monkeypatch.setattr(votes, "find_any_battle_vote", fake_find_any)
     monkeypatch.setattr(votes, "_enforce_auth_vote_rate_limit", lambda **_kw: None)
-    monkeypatch.setattr(
-        votes, "_resolve_duplicate_vote_conflict", lambda *_a, **_kw: expected
-    )
 
-    response = votes.submit_vote(
-        battle_id=str(battle.id),
-        payload=VoteCreate(winner="A"),
-        response=Response(),
-        db=db,  # type: ignore[arg-type]
-        principal=_authenticated_principal(),
-        settings=_settings(),  # type: ignore[arg-type]
-    )
+    with pytest.raises(HTTPException) as exc_info:
+        votes.submit_vote(
+            battle_id=str(battle.id),
+            payload=VoteCreate(winner="A"),
+            response=Response(),
+            db=db,  # type: ignore[arg-type]
+            principal=_authenticated_principal(),
+            settings=_settings(),  # type: ignore[arg-type]
+        )
 
-    assert response is expected
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "Battle already has a vote"
     assert db.flush_calls == 1
     assert db.rollback_calls == 1
     assert db.commit_calls == 0
 
 
-def test_submit_vote_resolves_duplicate_conflict_after_commit_error(
+def test_submit_vote_rejects_duplicate_conflict_after_commit_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    battle, runs, model_a_id, model_b_id = _battle_and_runs()
+    battle, runs, _, _ = _battle_and_runs()
+    existing_vote = SimpleNamespace(id=uuid.uuid4(), battle_id=battle.id, winner="tie")
     db = _VoteDB(
         battle=battle,
         runs=runs,
         commit_error=_integrity_error("duplicate key"),
-    )
-    expected = _vote_submit_response(
-        vote_id=uuid.uuid4(),
-        battle_id=battle.id,
-        winner="tie",
-        model_a_id=model_a_id,
-        model_b_id=model_b_id,
+        existing_votes=[existing_vote],
     )
 
-    monkeypatch.setattr(votes, "find_existing_battle_vote", lambda *_a, **_kw: None)
+    lookup_calls = 0
+
+    def fake_find_any(_db: object, *, battle_id: uuid.UUID) -> object | None:
+        nonlocal lookup_calls
+        lookup_calls += 1
+        if lookup_calls == 1:
+            return None
+        return existing_vote
+
+    monkeypatch.setattr(votes, "find_any_battle_vote", fake_find_any)
     monkeypatch.setattr(votes, "_enforce_auth_vote_rate_limit", lambda **_kw: None)
-    monkeypatch.setattr(
-        votes, "_resolve_duplicate_vote_conflict", lambda *_a, **_kw: expected
-    )
 
-    response = votes.submit_vote(
-        battle_id=str(battle.id),
-        payload=VoteCreate(winner="tie"),
-        response=Response(),
-        db=db,  # type: ignore[arg-type]
-        principal=_authenticated_principal(),
-        settings=_settings(),  # type: ignore[arg-type]
-    )
+    with pytest.raises(HTTPException) as exc_info:
+        votes.submit_vote(
+            battle_id=str(battle.id),
+            payload=VoteCreate(winner="tie"),
+            response=Response(),
+            db=db,  # type: ignore[arg-type]
+            principal=_authenticated_principal(),
+            settings=_settings(),  # type: ignore[arg-type]
+        )
 
-    assert response is expected
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "Battle already has a vote"
     assert db.flush_calls == 1
     assert db.commit_calls == 1
     assert db.rollback_calls == 1
 
 
-def test_submit_vote_reveals_existing_unrevealed_vote_and_updates_payload(
+def test_submit_vote_rejects_unrevealed_existing_vote_without_update(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    battle, runs, model_a_id, model_b_id = _battle_and_runs()
+    battle, runs, _, _ = _battle_and_runs()
     principal = _authenticated_principal()
     existing_vote = SimpleNamespace(
         id=uuid.uuid4(),
+        battle_id=battle.id,
         winner="A",
         revealed=False,
         rubric=None,
         comment=None,
     )
-    db = _VoteDB(
-        battle=battle,
-        runs=runs,
-        model_lookup={
-            model_a_id: SimpleNamespace(id=model_a_id, display_name="Alpha"),
-            model_b_id: SimpleNamespace(id=model_b_id, display_name="Beta"),
-        },
-    )
-
-    monkeypatch.setattr(
-        votes,
-        "find_existing_battle_vote",
-        lambda *_a, **_kw: existing_vote,
-    )
+    db = _VoteDB(battle=battle, runs=runs, existing_votes=[existing_vote])
     monkeypatch.setattr(
         votes,
         "_enforce_auth_vote_rate_limit",
         lambda **_kw: pytest.fail("Rate-limit checks should not run"),
     )
 
-    response = votes.submit_vote(
-        battle_id=str(battle.id),
-        payload=VoteCreate(winner="B", comment="new"),
-        response=Response(),
-        db=db,  # type: ignore[arg-type]
-        principal=principal,
-        settings=_settings(),  # type: ignore[arg-type]
-    )
+    with pytest.raises(HTTPException) as exc_info:
+        votes.submit_vote(
+            battle_id=str(battle.id),
+            payload=VoteCreate(winner="B", comment="new"),
+            response=Response(),
+            db=db,  # type: ignore[arg-type]
+            principal=principal,
+            settings=_settings(),  # type: ignore[arg-type]
+        )
 
-    assert existing_vote.winner == "B"
-    assert existing_vote.comment == "new"
-    assert existing_vote.revealed is True
-    assert response.vote_id == str(existing_vote.id)
-    assert response.winner == "B"
-    assert response.reveal == {
-        "A": {"model_id": str(model_a_id), "display_name": "Alpha"},
-        "B": {"model_id": str(model_b_id), "display_name": "Beta"},
-    }
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "Battle already has a vote"
+    assert existing_vote.winner == "A"
+    assert existing_vote.comment is None
+    assert existing_vote.revealed is False

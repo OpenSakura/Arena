@@ -123,7 +123,7 @@ def test_observe_running_battle_replays_terminal_state_without_mutating_battle(
         if load_calls < 3:
             return SimpleNamespace(status="running"), []
         return (
-            SimpleNamespace(status="completed"),
+            SimpleNamespace(status="completed", metadata_json=None),
             [
                 SimpleNamespace(
                     id=run_id,
@@ -372,6 +372,69 @@ def test_load_battle_and_runs_returns_detached_safe_snapshots() -> None:
             error_text=None,
         )
     ]
+
+
+def test_mark_pooled_replay_unlocked_requires_matching_assignment() -> None:
+    orchestrator = BattleOrchestrator()
+    battle_id = uuid.uuid4()
+    battle_row = SimpleNamespace(
+        id=battle_id,
+        metadata_json={
+            "pooled_replay": {
+                "backend_gated": True,
+                "display_delay_ms": 0,
+                "assigned_user_id": "new-user",
+                "assigned_at": "2026-05-27T12:05:00+00:00",
+                "unlocked": False,
+            }
+        },
+    )
+    commits = 0
+
+    class _FakeDB:
+        def get(self, model: type[object], key: uuid.UUID) -> object | None:
+            assert model is orchestrator_module.Battle
+            assert key == battle_id
+            return battle_row
+
+        def add(self, _row: object) -> None:
+            return None
+
+        def commit(self) -> None:
+            nonlocal commits
+            commits += 1
+
+        def rollback(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    orchestrator._SessionLocal = lambda: _FakeDB()  # type: ignore[assignment]
+
+    orchestrator._mark_pooled_replay_unlocked(
+        battle_id=battle_id,
+        replay_policy=orchestrator_module._PooledReplayPolicy(
+            display_delay_ms=0,
+            assigned_user_id="old-user",
+            assigned_at="2026-05-27T12:00:00+00:00",
+        ),
+    )
+
+    assert battle_row.metadata_json["pooled_replay"]["unlocked"] is False
+    assert commits == 0
+
+    orchestrator._mark_pooled_replay_unlocked(
+        battle_id=battle_id,
+        replay_policy=orchestrator_module._PooledReplayPolicy(
+            display_delay_ms=0,
+            assigned_user_id="new-user",
+            assigned_at="2026-05-27T12:05:00+00:00",
+        ),
+    )
+
+    assert battle_row.metadata_json["pooled_replay"]["unlocked"] is True
+    assert commits == 1
 
 
 def test_stream_battle_disconnect_detaches_runner(
@@ -1918,6 +1981,205 @@ def test_replay_finished_runs_emits_terminal_event_for_completed_battle(
     events = [e for e, _ in emitted]
     assert events == ["run.delta", "run.delta", "battle.completed"]
     assert emitted[-1][1] == {"battle_id": str(battle_id), "replay": True}
+
+
+def test_replay_finished_runs_delays_and_paces_pooled_completed_battle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = BattleOrchestrator()
+    battle_id = uuid.uuid4()
+    run_a_id = uuid.uuid4()
+    run_b_id = uuid.uuid4()
+    sleeps: list[float] = []
+    emitted: list[tuple[str, object]] = []
+
+    async def record_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    async def emit(event: str, data: object) -> None:
+        emitted.append((event, data))
+
+    monkeypatch.setattr(orchestrator_module.asyncio, "sleep", record_sleep)
+
+    asyncio.run(
+        orchestrator._replay_finished_runs(
+            battle_id=battle_id,
+            runs=cast(
+                list[Run],
+                [
+                    SimpleNamespace(
+                        id=run_a_id,
+                        side="A",
+                        output_text="abcdef",
+                        error_text=None,
+                    ),
+                    SimpleNamespace(
+                        id=run_b_id,
+                        side="B",
+                        output_text="uvwxyz",
+                        error_text=None,
+                    ),
+                ],
+            ),
+            emit=emit,
+            final_event="battle.completed",
+            replay_policy=orchestrator_module._PooledReplayPolicy(
+                display_delay_ms=12_345,
+                assigned_user_id=None,
+                assigned_at=None,
+            ),
+        )
+    )
+
+    assert sleeps[0] == 12.345
+    assert sleeps[1:] == [orchestrator_module.POOLED_REPLAY_DELTA_INTERVAL_SECONDS] * 2
+    assert [event for event, _ in emitted] == [
+        "run.delta",
+        "run.delta",
+        "run.delta",
+        "run.delta",
+        "battle.completed",
+    ]
+    assert [cast(dict[str, object], data)["text_delta"] for event, data in emitted if event == "run.delta"] == [
+        "abcd",
+        "uvwx",
+        "ef",
+        "yz",
+    ]
+    assert [cast(dict[str, object], data)["chunk_index"] for event, data in emitted if event == "run.delta"] == [0, 0, 1, 1]
+    assert emitted[-1] == ("battle.completed", {"battle_id": str(battle_id), "replay": True})
+
+
+def test_stream_battle_completed_pooled_replay_yields_before_replay_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = BattleOrchestrator()
+    battle_id = uuid.uuid4()
+    run_a_id = uuid.uuid4()
+    run_b_id = uuid.uuid4()
+    interval_sleep_started = asyncio.Event()
+    release_interval_sleep = asyncio.Event()
+    unlock_calls: list[uuid.UUID] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "_load_battle_and_runs",
+        lambda _battle_id: (
+            SimpleNamespace(
+                id=battle_id,
+                status="completed",
+                metadata_json={
+                    "pooled_replay": {"backend_gated": True, "display_delay_ms": 0}
+                },
+            ),
+            [
+                RunSnapshot(
+                    id=run_a_id,
+                    battle_id=battle_id,
+                    side="A",
+                    model_id=uuid.uuid4(),
+                    output_text="abcde",
+                ),
+                RunSnapshot(
+                    id=run_b_id,
+                    battle_id=battle_id,
+                    side="B",
+                    model_id=uuid.uuid4(),
+                    output_text="vwxyz",
+                ),
+            ],
+        ),
+    )
+
+    async def blocking_interval_sleep(seconds: float) -> None:
+        assert seconds == orchestrator_module.POOLED_REPLAY_DELTA_INTERVAL_SECONDS
+        interval_sleep_started.set()
+        await release_interval_sleep.wait()
+
+    monkeypatch.setattr(orchestrator_module.asyncio, "sleep", blocking_interval_sleep)
+    def mark_unlocked(*, battle_id: uuid.UUID, replay_policy: object | None = None) -> None:
+        _ = replay_policy
+        unlock_calls.append(battle_id)
+
+    monkeypatch.setattr(orchestrator, "_mark_pooled_replay_unlocked", mark_unlocked)
+
+    async def exercise() -> None:
+        stream = cast(AsyncGenerator[bytes, None], orchestrator.stream_battle(battle_id))
+        first = await asyncio.wait_for(anext(stream), timeout=0.2)
+        second = await asyncio.wait_for(anext(stream), timeout=0.2)
+        assert b"event: run.delta" in first
+        assert b"event: run.delta" in second
+        assert b'"text_delta": "abcd"' in first
+        assert b'"text_delta": "vwxy"' in second
+        await asyncio.wait_for(interval_sleep_started.wait(), timeout=0.2)
+        assert unlock_calls == []
+
+        release_interval_sleep.set()
+        remaining = [await asyncio.wait_for(anext(stream), timeout=0.2) for _ in range(3)]
+        assert b"event: battle.completed" in remaining[-1]
+        with pytest.raises(StopAsyncIteration):
+            await anext(stream)
+
+    asyncio.run(exercise())
+    assert unlock_calls == [battle_id]
+
+
+def test_stream_battle_disconnect_before_terminal_does_not_unlock_pooled_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = BattleOrchestrator()
+    battle_id = uuid.uuid4()
+    release_interval_sleep = asyncio.Event()
+    unlock_calls: list[uuid.UUID] = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "_load_battle_and_runs",
+        lambda _battle_id: (
+            SimpleNamespace(
+                id=battle_id,
+                status="completed",
+                metadata_json={
+                    "pooled_replay": {"backend_gated": True, "display_delay_ms": 0}
+                },
+            ),
+            [
+                RunSnapshot(
+                    id=uuid.uuid4(),
+                    battle_id=battle_id,
+                    side="A",
+                    model_id=uuid.uuid4(),
+                    output_text="abcde",
+                ),
+                RunSnapshot(
+                    id=uuid.uuid4(),
+                    battle_id=battle_id,
+                    side="B",
+                    model_id=uuid.uuid4(),
+                    output_text="vwxyz",
+                ),
+            ],
+        ),
+    )
+
+    async def blocking_interval_sleep(_seconds: float) -> None:
+        await release_interval_sleep.wait()
+
+    monkeypatch.setattr(orchestrator_module.asyncio, "sleep", blocking_interval_sleep)
+    def mark_unlocked(*, battle_id: uuid.UUID, replay_policy: object | None = None) -> None:
+        _ = replay_policy
+        unlock_calls.append(battle_id)
+
+    monkeypatch.setattr(orchestrator, "_mark_pooled_replay_unlocked", mark_unlocked)
+
+    async def exercise() -> None:
+        stream = cast(AsyncGenerator[bytes, None], orchestrator.stream_battle(battle_id))
+        first = await asyncio.wait_for(anext(stream), timeout=0.2)
+        assert b"event: run.delta" in first
+        await asyncio.wait_for(stream.aclose(), timeout=0.2)
+
+    asyncio.run(exercise())
+    assert unlock_calls == []
 
 
 def test_replay_finished_runs_emits_error_events_for_failed_battle() -> None:

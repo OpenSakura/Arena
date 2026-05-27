@@ -104,6 +104,22 @@ function createBattle(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function createPooledBattle(displayDelayMs: number, overrides: Record<string, unknown> = {}) {
+  const prepopulation = {
+    source: "admin_pre_generated",
+    pooled: true,
+    display_delay_ms: displayDelayMs,
+    backend_gated_replay: true,
+    ...((overrides.prepopulation as Record<string, unknown> | undefined) ?? {}),
+  };
+
+  return createBattle({
+    id: "battle-pooled",
+    prepopulation,
+    ...Object.fromEntries(Object.entries(overrides).filter(([key]) => key !== "prepopulation")),
+  });
+}
+
 function HookProbe({
   battleId,
   resultRef,
@@ -257,6 +273,130 @@ describe("useBattle", () => {
 
     await waitFor(() => {
       expect(mockedLoadOrCreateBattle).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("pooled backend replay", () => {
+    async function flushBootstrap() {
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    }
+
+    it("streams completed pooled battle outputs from backend SSE after immediate source hydration", async () => {
+      mockedUseArenaAuth.mockReturnValue(createAuthState());
+      mockedLoadOrCreateBattle.mockResolvedValueOnce(createPooledBattle(12_000));
+      let releaseStream: (() => void) | null = null;
+      const streamRelease = new Promise<void>((resolve) => {
+        releaseStream = resolve;
+      });
+      mockedStreamSSE.mockImplementationOnce(async function* () {
+        await streamRelease;
+        yield {
+          event: "run.delta",
+          data: { side: "A", text_delta: "Al", replay: true, chunk_index: 0 },
+        };
+        yield {
+          event: "run.delta",
+          data: { side: "B", text_delta: "Be", replay: true, chunk_index: 0 },
+        };
+        yield {
+          event: "run.delta",
+          data: { side: "A", text_delta: "pha", replay: true, chunk_index: 1 },
+        };
+        yield {
+          event: "run.delta",
+          data: { side: "B", text_delta: "ta", replay: true, chunk_index: 1 },
+        };
+        yield { event: "battle.completed", data: { battle_id: "battle-pooled", replay: true } };
+      });
+
+      const view = renderUseBattle({ battleId: "new" });
+      const resultRef = view.resultRef;
+
+      await flushBootstrap();
+
+      expect(mockedLoadOrCreateBattle).toHaveBeenCalledWith("new");
+      expect(navigateMock).toHaveBeenCalledWith("/battle/battle-pooled");
+
+      view.rerender(
+        <TestI18nProvider i18n={testI18nInstance}>
+          <HookProbe battleId="battle-pooled" resultRef={resultRef} />
+        </TestI18nProvider>
+      );
+
+      await waitFor(() => {
+        expect(resultRef.current?.state.resolvedBattleId).toBe("battle-pooled");
+        expect(resultRef.current?.state.jpSource).toBe("JP source");
+        expect(resultRef.current?.state.status).toBe("streaming");
+        expect(resultRef.current?.state.outA).toBe("");
+        expect(resultRef.current?.state.outB).toBe("");
+      });
+
+      releaseStream?.();
+
+      await waitFor(() => {
+        expect(resultRef.current?.state.status).toBe("done");
+      });
+
+      expect(resultRef.current?.state.outA).toBe("Alpha");
+      expect(resultRef.current?.state.outB).toBe("Beta");
+      expect(mockedStreamSSE).toHaveBeenCalledTimes(1);
+    });
+
+    it("loads live prepopulation metadata with a null display delay without backend replay", async () => {
+      mockedUseArenaAuth.mockReturnValue(createAuthState());
+      const liveBattle = createBattle({
+        id: "battle-live-metadata",
+        prepopulation: {
+          source: "live",
+          pooled: false,
+          display_delay_ms: null,
+          backend_gated_replay: false,
+        },
+      });
+      mockedLoadOrCreateBattle.mockResolvedValueOnce(liveBattle);
+
+      const view = renderUseBattle({ battleId: "new" });
+
+      await flushBootstrap();
+
+      expect(navigateMock).toHaveBeenCalledWith("/battle/battle-live-metadata");
+
+      view.rerender(
+        <TestI18nProvider i18n={testI18nInstance}>
+          <HookProbe battleId="battle-live-metadata" resultRef={view.resultRef} />
+        </TestI18nProvider>
+      );
+      await flushBootstrap();
+
+      expect(view.resultRef.current?.state.resolvedBattleId).toBe("battle-live-metadata");
+      expect(view.resultRef.current?.state.status).toBe("done");
+      expect(mockedStreamSSE).not.toHaveBeenCalled();
+    });
+
+    it("dispatches live bootstrap responses immediately without backend replay", async () => {
+      mockedUseArenaAuth.mockReturnValue(createAuthState());
+      const liveBattle = createBattle({ id: "battle-live" });
+      mockedLoadOrCreateBattle.mockResolvedValueOnce(liveBattle);
+
+      const view = renderUseBattle({ battleId: "new" });
+
+      await flushBootstrap();
+
+      expect(navigateMock).toHaveBeenCalledWith("/battle/battle-live");
+
+      view.rerender(
+        <TestI18nProvider i18n={testI18nInstance}>
+          <HookProbe battleId="battle-live" resultRef={view.resultRef} />
+        </TestI18nProvider>
+      );
+      await flushBootstrap();
+
+      expect(view.resultRef.current?.state.resolvedBattleId).toBe("battle-live");
+      expect(view.resultRef.current?.state.status).toBe("done");
+      expect(mockedStreamSSE).not.toHaveBeenCalled();
     });
   });
 

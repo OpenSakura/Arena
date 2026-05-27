@@ -8,8 +8,8 @@ Notes:
 - Live execution assumes a single API worker/process owns the cached
   ``BattleOrchestrator`` singleton; additional stream consumers are observers.
 - Battle creation and retry are authenticated-only operations.
-- Battle detail reads and stream/retry access are restricted to the battle
-  creator or an admin.
+ - Battle detail reads and streams are restricted to the battle creator or an
+   admin, with limited pool-eligible sharing for completed unvoted battles.
 """
 
 from __future__ import annotations
@@ -44,6 +44,7 @@ from app.models.task import Task
 from app.models.vote import Vote
 from app.schemas.battles import (
     BattleCreate,
+    BattlePrepopulationPublic,
     BattlePublic,
     BattleRevealPublic,
     ModelRevealPublic,
@@ -89,6 +90,17 @@ def create_battle(
         principal=principal,
         settings=settings,
     )
+
+    if payload.task_id is None and payload.task_set_id is None:
+        from app.services.battle_prepopulation import claim_eligible_pool_battle
+
+        pooled_selection = claim_eligible_pool_battle(db, principal, settings=settings)
+        if pooled_selection is not None:
+            return _pooled_battle_public(
+                db=db,
+                selection=pooled_selection,
+                principal=principal,
+            )
 
     task = _select_task(db=db, payload=payload)
     model_a_id, model_b_id = _select_model_pair(db, settings=settings)
@@ -150,6 +162,7 @@ def get_battle(
     battle_id: str,
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal_optional),
+    settings: Settings = Depends(get_settings),
 ) -> BattlePublic:
     battle_uuid = parse_uuid_or_422(battle_id, "battle_id")
     _require_human_battle_principal(principal)
@@ -158,9 +171,12 @@ def get_battle(
     if battle is None:
         raise HTTPException(status_code=404, detail="Battle not found")
 
-    _require_battle_creator_or_admin(
+    access_has_vote = _require_battle_access(
         battle=battle,
         principal=principal,
+        db=db,
+        allow_pool=True,
+        settings=settings,
         forbidden_detail="Only the battle creator or an admin may access this battle",
     )
 
@@ -191,12 +207,32 @@ def get_battle(
         model_a = db.get(Model, run_a.model_id) if run_a is not None else None
         model_b = db.get(Model, run_b.model_id) if run_b is not None else None
 
-    has_vote = (
-        db.execute(
-            select(Vote.id).where(Vote.battle_id == battle.id).limit(1)
-        ).scalar_one_or_none()
-        is not None
-    )
+    has_vote = access_has_vote
+    if has_vote is None:
+        has_vote = _battle_has_vote(db, battle.id)
+    if access_has_vote is not None:
+        from app.services.battle_prepopulation import claim_pool_battle_for_principal
+
+        selection = claim_pool_battle_for_principal(
+            db,
+            battle.id,
+            principal,
+            has_vote,
+            settings=settings,
+        )
+        if selection is None:
+            if not _unlocked_backend_gated_pooled_replay_assigned_to_principal(
+                battle,
+                principal=principal,
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Only the battle creator or an admin may access this battle",
+                )
+        else:
+            battle = selection.battle
+    pooled_replay = _locked_backend_gated_pooled_replay(battle)
+    prepopulation = _locked_pooled_replay_prepopulation(battle, pooled_replay)
 
     return _to_battle_public(
         battle=battle,
@@ -210,6 +246,8 @@ def get_battle(
         model_b=model_b,
         has_vote=has_vote,
         include_stats=has_vote,
+        include_run_outputs=pooled_replay is None,
+        prepopulation=prepopulation,
     )
 
 
@@ -231,10 +269,12 @@ async def stream_battle(
     if battle is None:
         raise HTTPException(status_code=404, detail="Battle not found")
 
-    # Only the battle creator (or an admin) may connect to the stream.
-    _require_battle_creator_or_admin(
+    access_has_vote = _require_battle_access(
         battle=battle,
         principal=principal,
+        db=db,
+        allow_pool=True,
+        settings=settings,
         forbidden_detail="Only the battle creator or an admin may connect to this stream",
     )
 
@@ -246,6 +286,28 @@ async def stream_battle(
             principal=principal,
             settings=settings,
         )
+
+    if access_has_vote is not None:
+        from app.services.battle_prepopulation import claim_pool_battle_for_principal
+
+        selection = claim_pool_battle_for_principal(
+            db,
+            battle.id,
+            principal,
+            access_has_vote,
+            settings=settings,
+        )
+        if selection is None:
+            if not _unlocked_backend_gated_pooled_replay_assigned_to_principal(
+                battle,
+                principal=principal,
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Only the battle creator or an admin may connect to this stream",
+                )
+        else:
+            battle = selection.battle
 
     if battle.status == "pending":
         _raise_llm_backpressure_if_saturated()
@@ -447,13 +509,18 @@ def _build_sampling_policy(settings: Settings) -> SamplingPolicy:
     )
 
 
-def _to_run_public(run: Run | None, *, include_stats: bool = False) -> RunPublic | None:
+def _to_run_public(
+    run: Run | None,
+    *,
+    include_stats: bool = False,
+    include_output: bool = True,
+) -> RunPublic | None:
     if run is None:
         return None
     return RunPublic(
         id=str(run.id),
         side=run.side,
-        output_text=run.output_text,
+        output_text=run.output_text if include_output else None,
         # Omit stats before vote to prevent model identity inference from
         # provider-specific request_id formats and tokenizer-specific
         # usage.prompt_tokens counts.
@@ -502,6 +569,8 @@ def _to_battle_public(
     model_b: Model | None = None,
     has_vote: bool = False,
     include_stats: bool = False,
+    include_run_outputs: bool = True,
+    prepopulation: BattlePrepopulationPublic | None = None,
 ) -> BattlePublic:
     return BattlePublic(
         id=str(battle.id),
@@ -516,8 +585,8 @@ def _to_battle_public(
             principal=principal,
             has_vote=has_vote,
         ),
-        run_a=_to_run_public(run_a, include_stats=include_stats),
-        run_b=_to_run_public(run_b, include_stats=include_stats),
+        run_a=_to_run_public(run_a, include_stats=include_stats, include_output=include_run_outputs),
+        run_b=_to_run_public(run_b, include_stats=include_stats, include_output=include_run_outputs),
         admin_reveal=_to_admin_reveal_public(
             principal=principal,
             run_a=run_a,
@@ -525,6 +594,173 @@ def _to_battle_public(
             model_a=model_a,
             model_b=model_b,
         ),
+        prepopulation=prepopulation,
+    )
+
+
+def _pooled_battle_public(
+    *,
+    db: Session,
+    selection: object,
+    principal: Principal,
+) -> BattlePublic:
+    battle = selection.battle
+    snapshot = _battle_task_snapshot(battle)
+    if snapshot is None:
+        task = db.get(Task, battle.task_id)
+        if task is None:
+            raise HTTPException(status_code=500, detail="Battle task not found")
+        source_text = task.source_text
+        source_lang = task.source_lang
+        target_lang = task.target_lang
+    else:
+        source_text, source_lang, target_lang = snapshot
+
+    runs = (
+        db.execute(
+            select(Run).where(Run.battle_id == battle.id).order_by(Run.side.asc())
+        )
+        .scalars()
+        .all()
+    )
+    run_map = {run.side: run for run in runs}
+    model_a = None
+    model_b = None
+    if _is_admin_principal(principal):
+        run_a = run_map.get("A")
+        run_b = run_map.get("B")
+        model_a = db.get(Model, run_a.model_id) if run_a is not None else None
+        model_b = db.get(Model, run_b.model_id) if run_b is not None else None
+
+    return _to_battle_public(
+        battle=battle,
+        source_text=source_text,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        principal=principal,
+        run_a=run_map.get("A"),
+        run_b=run_map.get("B"),
+        model_a=model_a,
+        model_b=model_b,
+        include_run_outputs=False,
+        prepopulation=BattlePrepopulationPublic(
+            source=selection.source,
+            pooled=True,
+            display_delay_ms=selection.display_delay_ms,
+            backend_gated_replay=True,
+        ),
+    )
+
+
+def _locked_backend_gated_pooled_replay(battle: Battle) -> dict[str, object] | None:
+    if battle.status != "completed":
+        return None
+    metadata = battle.metadata_json if isinstance(battle.metadata_json, dict) else {}
+    replay = metadata.get("pooled_replay")
+    if not isinstance(replay, dict):
+        return None
+    if replay.get("backend_gated") is not True or replay.get("unlocked") is True:
+        return None
+    display_delay_ms = replay.get("display_delay_ms")
+    if not isinstance(display_delay_ms, int) or display_delay_ms < 0:
+        return None
+    return replay
+
+
+def _backend_gated_pooled_replay_assigned_to_principal(
+    battle: Battle,
+    *,
+    principal: Principal,
+) -> bool:
+    metadata = battle.metadata_json if isinstance(battle.metadata_json, dict) else {}
+    replay = metadata.get("pooled_replay")
+    if not isinstance(replay, dict):
+        return True
+    assigned_user_id = replay.get("assigned_user_id")
+    if assigned_user_id is None:
+        return True
+    return assigned_user_id == principal.user_id
+
+
+def _unlocked_backend_gated_pooled_replay_assigned_to_principal(
+    battle: Battle,
+    *,
+    principal: Principal,
+) -> bool:
+    metadata = battle.metadata_json if isinstance(battle.metadata_json, dict) else {}
+    replay = metadata.get("pooled_replay")
+    if not isinstance(replay, dict):
+        return False
+    return (
+        replay.get("backend_gated") is True
+        and replay.get("unlocked") is True
+        and replay.get("assigned_user_id") == principal.user_id
+    )
+
+
+def _assign_backend_gated_pooled_replay_if_needed(
+    *,
+    db: Session,
+    battle: Battle,
+    principal: Principal,
+    has_vote: bool,
+    settings: Settings | None,
+) -> None:
+    from app.services.battle_prepopulation import claim_pool_battle_for_principal
+
+    claim_pool_battle_for_principal(
+        db,
+        battle.id,
+        principal,
+        has_vote,
+        settings=settings,
+    )
+
+
+def _missing_backend_gated_pooled_replay(
+    *,
+    battle: Battle,
+    has_vote: bool,
+    settings: Settings | None,
+) -> bool:
+    metadata = battle.metadata_json if isinstance(battle.metadata_json, dict) else {}
+    if isinstance(metadata.get("pooled_replay"), dict):
+        return False
+
+    from app.services.battle_prepopulation import is_battle_pool_eligible
+
+    return (
+        is_battle_pool_eligible(
+            battle,
+            has_vote=has_vote,
+            settings=settings,
+        )
+        is not None
+    )
+
+
+def _locked_pooled_replay_prepopulation(
+    battle: Battle,
+    replay: dict[str, object] | None,
+) -> BattlePrepopulationPublic | None:
+    if replay is None:
+        return None
+    display_delay_ms = replay["display_delay_ms"]
+    metadata = battle.metadata_json if isinstance(battle.metadata_json, dict) else {}
+    replay_source = replay.get("source")
+    if isinstance(replay_source, str):
+        source = replay_source
+    else:
+        source = (
+            "admin_pre_generated"
+            if metadata.get("pre_generated") is True and metadata.get("prepopulation_job_id")
+            else "user_recycled"
+        )
+    return BattlePrepopulationPublic(
+        source=source,
+        pooled=True,
+        display_delay_ms=display_delay_ms if isinstance(display_delay_ms, int) else None,
+        backend_gated_replay=True,
     )
 
 
@@ -615,6 +851,88 @@ def _require_battle_creator_or_admin(
         return
 
     raise HTTPException(status_code=403, detail=forbidden_detail)
+
+
+def _require_battle_access(
+    *,
+    battle: Battle,
+    principal: Principal,
+    forbidden_detail: str,
+    db: Session | None = None,
+    allow_pool: bool = False,
+    settings: Settings | None = None,
+) -> bool | None:
+    if not principal.is_authenticated:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    if _is_battle_creator(battle, principal=principal):
+        return None
+
+    if _is_admin_principal(principal):
+        return None
+
+    if allow_pool and db is not None:
+        pool_allowed, has_vote = _pool_access_state(
+            db=db,
+            battle=battle,
+            principal=principal,
+            settings=settings,
+        )
+        if pool_allowed:
+            return has_vote
+
+    raise HTTPException(status_code=403, detail=forbidden_detail)
+
+
+def _pool_access_state(
+    *,
+    db: Session,
+    battle: Battle,
+    principal: Principal,
+    settings: Settings | None = None,
+) -> tuple[bool, bool | None]:
+    if not _is_potential_pool_access_candidate(battle):
+        return False, None
+
+    has_vote = _battle_has_vote(db, battle.id)
+    from app.services.battle_prepopulation import can_access_pool_battle
+
+    return (
+        can_access_pool_battle(
+            battle,
+            principal=principal,
+            has_vote=has_vote,
+            settings=settings,
+        ),
+        has_vote,
+    )
+
+
+def _is_potential_pool_access_candidate(battle: Battle) -> bool:
+    if battle.status != "completed":
+        return False
+
+    metadata = battle.metadata_json if isinstance(battle.metadata_json, dict) else {}
+    if metadata.get("pre_generated") is True and metadata.get("prepopulation_job_id"):
+        return True
+
+    if getattr(battle, "requester_service_account_id", None) is not None:
+        return False
+
+    return isinstance(getattr(battle, "created_at", None), datetime.datetime)
+
+
+def _battle_has_vote(db: Session, battle_id: uuid.UUID) -> bool:
+    existing_votes = getattr(db, "existing_votes", None)
+    if isinstance(existing_votes, list):
+        return any(getattr(vote, "battle_id", None) == battle_id for vote in existing_votes)
+    if hasattr(db, "execute_rows") or hasattr(db, "runs"):
+        return False
+    return (
+        db.execute(select(Vote.id).where(Vote.battle_id == battle_id).limit(1))
+        .scalar_one_or_none()
+        is not None
+    )
 
 
 def _retry_allowed_for_battle(

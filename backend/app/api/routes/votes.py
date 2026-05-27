@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.api.routes.battles import (
     _is_admin_principal,
-    _require_battle_creator_or_admin,
+    _require_battle_access,
 )
 from app.core.csrf import require_csrf_for_session
 from app.core.config import Settings, get_settings
@@ -38,7 +38,10 @@ from app.models.service_account import ServiceAccount
 from app.models.vote import Vote
 from app.schemas.votes import VoteCreate, VoteSubmitResponse
 from app.utils.id import parse_uuid_or_422
-from app.utils.requester_identity import RequesterIdentity, find_existing_battle_vote
+from app.utils.requester_identity import (
+    RequesterIdentity,
+    find_any_battle_vote,
+)
 from app.utils.rate_limit import (
     RollingWindowRateLimiter,
     build_auth_rate_limit_key,
@@ -104,14 +107,30 @@ def submit_vote(
     if battle is None:
         raise HTTPException(status_code=404, detail="Battle not found")
 
-    _require_battle_creator_or_admin(
+    access_has_vote = _require_battle_access(
         battle=battle,
         principal=principal,
+        db=db,
+        allow_pool=not is_bot_vote,
+        settings=settings,
         forbidden_detail="Only the battle creator or an admin may vote on this battle",
     )
 
     if battle.status != "completed":
         raise HTTPException(status_code=409, detail="Battle is not ready for voting")
+
+    from app.services.battle_prepopulation import backend_gated_pooled_replay_blocks_vote
+
+    if backend_gated_pooled_replay_blocks_vote(
+        battle,
+        principal=principal,
+        has_vote=access_has_vote,
+        settings=settings,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Battle replay is still streaming; wait for replay to complete before voting",
+        )
 
     runs = (
         db.execute(
@@ -149,60 +168,8 @@ def submit_vote(
 
     requester_identity = RequesterIdentity(voter_user_id=voter_user_id)
 
-    existing_vote = find_existing_battle_vote(
-        db,
-        battle_id=battle_uuid,
-        requester_identity=requester_identity,
-    )
-    if existing_vote is not None:
-        response.status_code = 200
-
-        if existing_vote.revealed:
-            # Vote has been revealed — no more changes allowed.
-            if existing_vote.winner != winner:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Vote already revealed and cannot be changed",
-                )
-            return _build_vote_submit_response(
-                db,
-                vote_id=existing_vote.id,
-                battle_id=battle_uuid,
-                winner=existing_vote.winner,
-                model_a_id=run_a.model_id,
-                model_b_id=run_b.model_id,
-                vote=existing_vote,
-                principal=principal,
-            )
-
-        # Compatibility-safe path: unrevealed historical votes are updated,
-        # then revealed immediately to match the current contract.
-        if existing_vote.winner != winner:
-            existing_vote.winner = winner
-        if existing_vote.rubric != rubric:
-            existing_vote.rubric = rubric
-        if existing_vote.comment != payload.comment:
-            existing_vote.comment = payload.comment
-        if is_bot_vote:
-            if existing_vote.service_account_id != service_account_id:
-                existing_vote.service_account_id = service_account_id
-            if existing_vote.service_account_token_id != service_account_token_id:
-                existing_vote.service_account_token_id = service_account_token_id
-            if existing_vote.bot_metadata != bot_metadata:
-                existing_vote.bot_metadata = bot_metadata
-        existing_vote.revealed = True
-        db.commit()
-
-        return _build_vote_submit_response(
-            db,
-            vote_id=existing_vote.id,
-            battle_id=battle_uuid,
-            winner=existing_vote.winner,
-            model_a_id=run_a.model_id,
-            model_b_id=run_b.model_id,
-            vote=existing_vote,
-            principal=principal,
-        )
+    if find_any_battle_vote(db, battle_id=battle_uuid) is not None:
+        raise HTTPException(status_code=409, detail="Battle already has a vote")
 
     _enforce_auth_vote_rate_limit(
         voter_user_id=voter_user_id,
@@ -297,56 +264,11 @@ def _resolve_duplicate_vote_conflict(
     bot_metadata: dict[str, Any] | None = None,
     principal: Principal | None = None,
 ) -> VoteSubmitResponse:
-    existing_vote = find_existing_battle_vote(
-        db,
-        battle_id=battle_id,
-        requester_identity=requester_identity,
-    )
+    existing_vote = find_any_battle_vote(db, battle_id=battle_id)
     if existing_vote is None:
         raise HTTPException(status_code=500, detail="Failed to persist vote")
 
-    response.status_code = 200
-
-    if existing_vote.revealed and existing_vote.winner != winner:
-        raise HTTPException(
-            status_code=409,
-            detail="Vote already revealed and cannot be changed",
-        )
-
-    # Persist the latest payload for unrevealed conflicts so that a
-    # duplicate-key race does not silently discard the caller's data.
-    if not existing_vote.revealed:
-        if existing_vote.winner != winner:
-            existing_vote.winner = winner
-        if existing_vote.rubric != rubric:
-            existing_vote.rubric = rubric
-        if existing_vote.comment != comment:
-            existing_vote.comment = comment
-        if service_account_id is not None:
-            if existing_vote.service_account_id != service_account_id:
-                existing_vote.service_account_id = service_account_id
-            if existing_vote.service_account_token_id != service_account_token_id:
-                existing_vote.service_account_token_id = service_account_token_id
-            if existing_vote.bot_metadata != bot_metadata:
-                existing_vote.bot_metadata = bot_metadata
-        existing_vote.revealed = True
-
-    # Commit explicitly so that identity upgrades and payload updates are
-    # durably persisted regardless of whether the caller's session teardown
-    # auto-commit fires (e.g. if the handler raises after this point or the
-    # get_db() auto-commit semantics change).
-    db.commit()
-
-    return _build_vote_submit_response(
-        db,
-        vote_id=existing_vote.id,
-        battle_id=battle_id,
-        winner=existing_vote.winner,
-        model_a_id=model_a_id,
-        model_b_id=model_b_id,
-        vote=existing_vote,
-        principal=principal,
-    )
+    raise HTTPException(status_code=409, detail="Battle already has a vote")
 
 
 def _build_vote_submit_response(

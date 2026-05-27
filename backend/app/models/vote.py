@@ -34,12 +34,12 @@ class Vote(Base):
     __table_args__ = (
         CheckConstraint("winner IN ('A', 'B', 'tie')", name="ck_votes_winner"),
         Index(
-            "uq_votes_battle_voter_user",
+            "uq_votes_battle_id",
             "battle_id",
-            "voter_user_id",
             unique=True,
         ),
         Index("ix_votes_battle_id", "battle_id"),
+        Index("ix_votes_battle_voter_user", "battle_id", "voter_user_id"),
         Index("ix_votes_voter_user_id", "voter_user_id"),
         Index("ix_votes_service_account_id", "service_account_id"),
         Index("ix_votes_service_account_token_id", "service_account_token_id"),

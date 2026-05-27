@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import cast
 import uuid
@@ -63,6 +64,8 @@ class _QueueDB:
         self._result_sets = [list(items) for items in result_sets]
         self._get_map = get_map or {}
         self.statements: list[object] = []
+        self.added: list[object] = []
+        self.commit_calls = 0
 
     def get(self, model: type[object], key: uuid.UUID) -> object | None:
         return self._get_map.get((model, key))
@@ -71,6 +74,12 @@ class _QueueDB:
         self.statements.append(stmt)
         assert self._result_sets, "Unexpected execute() call"
         return _Result(self._result_sets.pop(0))
+
+    def add(self, item: object) -> None:
+        self.added.append(item)
+
+    def commit(self) -> None:
+        self.commit_calls += 1
 
 
 def _task() -> SimpleNamespace:
@@ -109,6 +118,9 @@ def _settings(**overrides: object) -> SimpleNamespace:
         "turnstile_secret_key": None,
         "turnstile_verify_url": "https://turnstile.example/siteverify",
         "leaderboard_refresh_daily_vote_cap": 0,
+        "battle_pool_user_recycle_after_hours": 24,
+        "battle_pool_assignment_ttl_seconds": 900,
+        "auth_battle_stream_rate_limit_window_seconds": 60,
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -374,6 +386,34 @@ def _creator_principal_and_battle(
     return principal, battle
 
 
+def _completed_pool_battle(
+    *,
+    creator_id: str | None = None,
+    voted: bool = False,
+) -> SimpleNamespace:
+    metadata: dict[str, object] = {
+        "requester_user_id": creator_id or str(uuid.uuid4()),
+        "pre_generated": True,
+        "prepopulation_job_id": str(uuid.uuid4()),
+        "task_snapshot": {
+            "source_text": "JP text",
+            "source_lang": "ja",
+            "target_lang": "zh",
+        },
+    }
+    if voted:
+        metadata["consumed_marker"] = True
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        task_id=uuid.uuid4(),
+        mode="jp2zh_ab",
+        status="completed",
+        metadata_json=metadata,
+        requester_service_account_id=None,
+        created_at=datetime(2026, 5, 26, 12, 0, tzinfo=timezone.utc),
+    )
+
+
 def _bot_principal() -> Principal:
     return Principal(
         is_authenticated=True,
@@ -472,7 +512,7 @@ def test_human_battle_stream_pre_execution_queue_full_returns_backpressure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     principal, battle = _creator_principal_and_battle(status="pending")
-    db = _QueueDB([], get_map={(battles.Battle, battle.id): battle})
+    db = _QueueDB([[]], get_map={(battles.Battle, battle.id): battle})
 
     class _Queue:
         def stats(self) -> dict[str, int | bool]:
@@ -503,6 +543,132 @@ def test_human_battle_stream_pre_execution_queue_full_returns_backpressure(
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail == "LLM backpressure, please retry"
     assert exc_info.value.headers == {"Retry-After": "1"}
+
+
+def test_human_battle_stream_route_allows_completed_pool_replay(monkeypatch: pytest.MonkeyPatch) -> None:
+    principal, battle = _creator_principal_and_battle(
+        status="completed",
+        metadata_json={
+            "requester_user_id": "different-user",
+            "pre_generated": True,
+            "prepopulation_job_id": str(uuid.uuid4()),
+            "pooled_replay": {
+                "backend_gated": True,
+                "display_delay_ms": 12_345,
+                "assigned_user_id": None,
+            },
+        },
+    )
+    battle.metadata_json["pooled_replay"]["assigned_user_id"] = principal.user_id
+    db = _QueueDB([[]], get_map={(battles.Battle, battle.id): battle})
+    calls: list[tuple[uuid.UUID, str | None]] = []
+
+    class _Orchestrator:
+        async def stream_battle(self, battle_id: uuid.UUID, *, request_id: str | None = None) -> AsyncIterator[bytes]:
+            calls.append((battle_id, request_id))
+            yield b"event: battle.completed\ndata: {}\n\n"
+
+    monkeypatch.setattr(battles, "_enforce_auth_battle_stream_rate_limit", lambda **_: None)
+
+    response = asyncio.run(
+        battles.stream_battle(
+            str(battle.id),
+            request=_request(),
+            db=db,  # type: ignore[arg-type]
+            orchestrator=cast(battles.BattleOrchestrator, _Orchestrator()),
+            principal=principal,
+            settings=cast(Settings, _settings()),
+        )
+    )
+
+    assert response.media_type == "text/event-stream"
+    assert calls == []
+
+
+def test_human_battle_stream_response_iterator_invokes_orchestrator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    principal, battle = _creator_principal_and_battle(
+        status="completed",
+        metadata_json={
+            "requester_user_id": "different-user",
+            "pre_generated": True,
+            "prepopulation_job_id": str(uuid.uuid4()),
+            "pooled_replay": {
+                "backend_gated": True,
+                "display_delay_ms": 12_345,
+                "assigned_user_id": None,
+            },
+        },
+    )
+    battle.metadata_json["pooled_replay"]["assigned_user_id"] = principal.user_id
+    db = _QueueDB([[]], get_map={(battles.Battle, battle.id): battle})
+    calls: list[tuple[uuid.UUID, str | None]] = []
+
+    class _Orchestrator:
+        async def stream_battle(
+            self, battle_id: uuid.UUID, *, request_id: str | None = None
+        ) -> AsyncIterator[bytes]:
+            calls.append((battle_id, request_id))
+            yield b"event: battle.completed\ndata: {}\n\n"
+
+    monkeypatch.setattr(battles, "_enforce_auth_battle_stream_rate_limit", lambda **_: None)
+
+    async def exercise() -> list[bytes]:
+        response = await battles.stream_battle(
+            str(battle.id),
+            request=_request(),
+            db=db,  # type: ignore[arg-type]
+            orchestrator=cast(battles.BattleOrchestrator, _Orchestrator()),
+            principal=principal,
+            settings=cast(Settings, _settings()),
+        )
+        return [chunk async for chunk in response.body_iterator]
+
+    chunks = asyncio.run(exercise())
+
+    assert calls == [(battle.id, None)]
+    assert chunks == [b"event: battle.completed\ndata: {}\n\n"]
+
+
+def test_stream_battle_rate_limit_does_not_assign_pool_replay(monkeypatch: pytest.MonkeyPatch) -> None:
+    principal, battle = _creator_principal_and_battle(
+        status="completed",
+        metadata_json={
+            "requester_user_id": "different-user",
+            "pre_generated": True,
+            "prepopulation_job_id": str(uuid.uuid4()),
+            "task_snapshot": {
+                "source_text": "JP text",
+                "source_lang": "ja",
+                "target_lang": "zh",
+            },
+        },
+    )
+    battle.requester_service_account_id = None
+    battle.created_at = datetime(2026, 5, 26, 12, 0, tzinfo=timezone.utc)
+    db = _QueueDB([[]], get_map={(battles.Battle, battle.id): battle})
+
+    def _rate_limited(**_kw: object) -> None:
+        raise HTTPException(status_code=429, detail="Too many battle stream requests")
+
+    monkeypatch.setattr(battles, "_enforce_auth_battle_stream_rate_limit", _rate_limited)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            battles.stream_battle(
+                str(battle.id),
+                request=_request(),
+                db=db,  # type: ignore[arg-type]
+                orchestrator=object(),  # type: ignore[arg-type]
+                principal=principal,
+                settings=cast(Settings, _settings()),
+            )
+        )
+
+    assert exc_info.value.status_code == 429
+    assert "pooled_replay" not in battle.metadata_json
+    assert db.commit_calls == 0
 
 
 def test_enforce_daily_vote_cap_allows_when_disabled() -> None:
@@ -662,6 +828,302 @@ def test_get_battle_rejects_authenticated_non_creator_non_admin() -> None:
         exc_info.value.detail
         == "Only the battle creator or an admin may access this battle"
     )
+
+
+def test_get_battle_allows_non_creator_for_pool_eligible_unvoted_battle() -> None:
+    battle = _completed_pool_battle()
+    runs = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="A",
+            output_text="Alpha",
+            stats={"request_id": "req-a"},
+            error_text=None,
+        ),
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="B",
+            output_text="Beta",
+            stats={"request_id": "req-b"},
+            error_text=None,
+        ),
+    ]
+    db = _QueueDB(
+        [[], [*runs]],
+        get_map={(battles.Battle, battle.id): battle},
+    )
+
+    response = battles.get_battle(
+        str(battle.id),
+        db=db,  # type: ignore[arg-type]
+        principal=cast(
+            Principal,
+            _principal(authenticated=True, user_id=str(uuid.uuid4())),
+        ),
+        settings=cast(Settings, _settings()),
+    )
+
+    assert response.id == str(battle.id)
+    assert response.status == "completed"
+    assert response.run_a is not None
+    assert response.run_a.output_text is None
+    assert response.run_a.stats is None
+    assert response.run_b is not None
+    assert response.run_b.output_text is None
+    assert response.admin_reveal is None
+    assert response.prepopulation is not None
+    assert response.prepopulation.backend_gated_replay is True
+    assert battle.metadata_json["pooled_replay"]["assigned_user_id"] is not None
+    assert battle.metadata_json["pooled_replay"]["assigned_at"] is not None
+    assert battle.metadata_json["pooled_replay"]["expires_at"] is not None
+
+
+def test_get_battle_rejects_pool_battle_assigned_to_different_user() -> None:
+    assigned_user_id = str(uuid.uuid4())
+    now = datetime(2027, 5, 26, 12, 0, tzinfo=timezone.utc)
+    battle = _completed_pool_battle()
+    battle.metadata_json["pooled_replay"] = {
+        "backend_gated": True,
+        "display_delay_ms": 12_345,
+        "assigned_user_id": assigned_user_id,
+        "assigned_at": (now - timedelta(minutes=1)).isoformat(),
+        "expires_at": (now + timedelta(minutes=10)).isoformat(),
+        "source": "admin_pre_generated",
+        "unlocked": False,
+    }
+    db = _QueueDB([[]], get_map={(battles.Battle, battle.id): battle})
+
+    with pytest.raises(HTTPException) as exc_info:
+        battles.get_battle(
+            str(battle.id),
+            db=db,  # type: ignore[arg-type]
+            principal=cast(
+                Principal,
+                _principal(authenticated=True, user_id=str(uuid.uuid4())),
+            ),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+def test_get_battle_rejects_raced_pool_claim_without_leaking_outputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    battle = _completed_pool_battle()
+    runs = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="A",
+            output_text="Alpha",
+            stats={"request_id": "req-a"},
+            error_text=None,
+        ),
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="B",
+            output_text="Beta",
+            stats={"request_id": "req-b"},
+            error_text=None,
+        ),
+    ]
+    db = _QueueDB([[], [*runs]], get_map={(battles.Battle, battle.id): battle})
+
+    def _lose_claim(*_args: object, **_kwargs: object) -> object | None:
+        battle.metadata_json["pooled_replay"] = {
+            "backend_gated": True,
+            "display_delay_ms": 12_345,
+            "assigned_user_id": str(uuid.uuid4()),
+        }
+        return None
+
+    import app.services.battle_prepopulation as battle_prepopulation
+
+    monkeypatch.setattr(
+        battle_prepopulation,
+        "claim_pool_battle_for_principal",
+        _lose_claim,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        battles.get_battle(
+            str(battle.id),
+            db=db,  # type: ignore[arg-type]
+            principal=cast(
+                Principal,
+                _principal(authenticated=True, user_id=str(uuid.uuid4())),
+            ),
+            settings=cast(Settings, _settings()),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+def test_get_battle_hides_locked_backend_gated_pooled_outputs() -> None:
+    principal = cast(
+        Principal,
+        _principal(authenticated=True, user_id=str(uuid.uuid4())),
+    )
+    battle = _completed_pool_battle()
+    now = datetime(2027, 5, 26, 12, 0, tzinfo=timezone.utc)
+    battle.metadata_json["pooled_replay"] = {
+        "backend_gated": True,
+        "display_delay_ms": 12_345,
+        "assigned_user_id": principal.user_id,
+        "assigned_at": (now - timedelta(minutes=1)).isoformat(),
+        "expires_at": (now + timedelta(minutes=10)).isoformat(),
+        "source": "admin_pre_generated",
+        "unlocked": False,
+    }
+    runs = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="A",
+            output_text="Alpha",
+            stats={"request_id": "req-a"},
+            error_text=None,
+        ),
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="B",
+            output_text="Beta",
+            stats={"request_id": "req-b"},
+            error_text=None,
+        ),
+    ]
+    db = _QueueDB([[], [*runs]], get_map={(battles.Battle, battle.id): battle})
+
+    response = battles.get_battle(
+        str(battle.id),
+        db=db,  # type: ignore[arg-type]
+        principal=principal,
+        settings=cast(Settings, _settings()),
+    )
+
+    assert response.source_text == "JP text"
+    assert response.run_a is not None
+    assert response.run_a.output_text is None
+    assert response.run_b is not None
+    assert response.run_b.output_text is None
+    assert response.prepopulation is not None
+    assert response.prepopulation.backend_gated_replay is True
+    assert response.prepopulation.display_delay_ms == 12_345
+    assert response.prepopulation.source == "admin_pre_generated"
+
+
+def test_get_battle_hydrates_unlocked_backend_gated_pooled_outputs() -> None:
+    principal = cast(
+        Principal,
+        _principal(authenticated=True, user_id=str(uuid.uuid4())),
+    )
+    battle = _completed_pool_battle()
+    battle.metadata_json["pooled_replay"] = {
+        "backend_gated": True,
+        "display_delay_ms": 12_345,
+        "assigned_user_id": principal.user_id,
+        "source": "admin_pre_generated",
+        "unlocked": True,
+    }
+    runs = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="A",
+            output_text="Alpha",
+            stats={"request_id": "req-a"},
+            error_text=None,
+        ),
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="B",
+            output_text="Beta",
+            stats={"request_id": "req-b"},
+            error_text=None,
+        ),
+    ]
+    db = _QueueDB([[], [*runs]], get_map={(battles.Battle, battle.id): battle})
+
+    response = battles.get_battle(
+        str(battle.id),
+        db=db,  # type: ignore[arg-type]
+        principal=principal,
+        settings=cast(Settings, _settings()),
+    )
+
+    assert response.run_a is not None
+    assert response.run_a.output_text == "Alpha"
+    assert response.run_b is not None
+    assert response.run_b.output_text == "Beta"
+    assert response.prepopulation is None
+
+
+def test_get_battle_reclaims_expired_pool_assignment_and_hides_outputs() -> None:
+    now = datetime(2026, 5, 26, 12, 0, tzinfo=timezone.utc)
+    principal = cast(
+        Principal,
+        _principal(authenticated=True, user_id=str(uuid.uuid4())),
+    )
+    battle = _completed_pool_battle()
+    old_user_id = str(uuid.uuid4())
+    battle.metadata_json["pooled_replay"] = {
+        "backend_gated": True,
+        "display_delay_ms": 12_345,
+        "assigned_user_id": old_user_id,
+        "assigned_at": (now - timedelta(hours=1)).isoformat(),
+        "expires_at": (now - timedelta(seconds=1)).isoformat(),
+        "source": "admin_pre_generated",
+        "unlocked": False,
+    }
+    runs = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="A",
+            output_text="Alpha",
+            stats={"request_id": "req-a"},
+            error_text=None,
+        ),
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            side="B",
+            output_text="Beta",
+            stats={"request_id": "req-b"},
+            error_text=None,
+        ),
+    ]
+    db = _QueueDB([[], [*runs]], get_map={(battles.Battle, battle.id): battle})
+
+    response = battles.get_battle(
+        str(battle.id),
+        db=db,  # type: ignore[arg-type]
+        principal=principal,
+        settings=cast(Settings, _settings()),
+    )
+
+    replay = battle.metadata_json["pooled_replay"]
+    assert replay["assigned_user_id"] == principal.user_id
+    assert replay["assigned_user_id"] != old_user_id
+    assert response.run_a is not None
+    assert response.run_a.output_text is None
+    assert response.prepopulation is not None
+
+
+def test_get_battle_rejects_non_creator_for_pool_battle_after_vote() -> None:
+    battle = _completed_pool_battle()
+    db = _QueueDB(
+        [[uuid.uuid4()]],
+        get_map={(battles.Battle, battle.id): battle},
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        battles.get_battle(
+            str(battle.id),
+            db=db,  # type: ignore[arg-type]
+            principal=cast(
+                Principal,
+                _principal(authenticated=True, user_id=str(uuid.uuid4())),
+            ),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Only the battle creator or an admin may access this battle"
 
 
 def test_get_battle_allows_creator_and_keeps_run_stats_hidden_before_vote() -> None:
@@ -1233,6 +1695,8 @@ def test_turnstile_missing_token_is_rejected() -> None:
 def test_create_battle_records_authenticated_requester_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    service = __import__("app.services.battle_prepopulation", fromlist=["select_eligible_pool_battle"])
+    monkeypatch.setattr(service, "select_eligible_pool_battle", lambda *_a, **_kw: None)
     monkeypatch.setattr(battles, "_enforce_auth_battle_rate_limit", lambda **_kw: None)
     monkeypatch.setattr(battles, "_enforce_daily_vote_cap", lambda **_kw: None)
 

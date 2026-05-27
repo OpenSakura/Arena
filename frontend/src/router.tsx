@@ -5,6 +5,7 @@ import { AdminLayout } from "./routes/admin/AdminLayout";
 import AdminModelsRoute from "./routes/admin/AdminModelsRoute";
 import AdminTasksRoute from "./routes/admin/AdminTasksRoute";
 import AdminServiceAccountsRoute from "./routes/admin/AdminServiceAccountsRoute";
+import AdminBattlePrepopulationRoute from "./routes/admin/AdminBattlePrepopulationRoute";
 import HomePage from "./routes/HomePage";
 import BattleRoute from "./routes/BattleRoute";
 import LeaderboardRoute from "./routes/LeaderboardRoute";
@@ -49,6 +50,7 @@ export const router = createBrowserRouter([
           { path: "models", element: <AdminModelsRoute />, handle: { titleKey: "routes.adminModels" } },
           { path: "tasks", element: <AdminTasksRoute />, handle: { titleKey: "routes.adminTasks" } },
           { path: "service-accounts", element: <AdminServiceAccountsRoute />, handle: { titleKey: "routes.adminServiceAccounts" } },
+          { path: "battle-prepopulation", element: <AdminBattlePrepopulationRoute />, handle: { titleKey: "routes.adminBattlePrepopulation" } },
         ],
       },
     ],

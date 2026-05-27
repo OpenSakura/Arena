@@ -70,6 +70,7 @@ export const enResource = {
     admin: "Admin",
     adminModels: "Models",
     adminTasks: "Tasks",
+    adminBattlePrepopulation: "Battle Prepopulation",
     adminServiceAccounts: "Service Accounts",
     notFound: "Page not found",
     authError: "Authentication error",
@@ -228,6 +229,7 @@ export const enResource = {
     statusFailed: "Failed",
     statusError: "Error",
     statusLoading: "Loading...",
+    prepopulationPreparing: "Preparing a pooled battle...",
     adminRevealButton: "Reveal model",
     adminRevealAria: "Reveal {{title}} identity",
     rubric: {
@@ -344,6 +346,7 @@ export const enResource = {
       tabs: {
         models: "Models",
         tasks: "Tasks",
+        battlePrepopulation: "Battle Prepopulation",
         serviceAccounts: "Service Accounts"
       },
       guards: {
@@ -446,6 +449,51 @@ export const enResource = {
         selectJsonlFirst: "Select a .jsonl file first",
         invalidJsonSyntax: "Invalid JSON syntax",
         expectedJsonObject: "Expected a JSON object"
+      }
+    },
+    battlePrepopulation: {
+      title: "Battle Prepopulation",
+      description: "Generate pooled battles in advance so users can start faster.",
+      stats: {
+        availableAdmin: "Available admin battles",
+        availableRecycled: "Available recycled battles",
+        availableTotal: "Total available",
+        generating: "Generating",
+        failed: "Failed",
+        votedConsumed: "Voted and consumed",
+        total: "Total",
+        maxJobSize: "Max job size",
+        latestJob: "Latest job"
+      },
+      form: {
+        amountLabel: "Battles to generate",
+        model1Label: "Model 1",
+        model2Label: "Model 2",
+        modelEmptyOption: "Any model",
+        modelSelectionHelp: "Select no models for automatic pairing, one model to pair against any other model, or two models for a fixed matchup. Selected model order only constrains the matchup; battle sides are randomized server-side.",
+        noModelConstraint: "No model constraint",
+        oneModelConstraint: "One model constraint",
+        twoModelConstraint: "Two model constraint",
+        submit: "Prepopulate battles",
+        submitting: "Prepopulating..."
+      },
+      errors: {
+        invalidAmount: "Enter a valid amount.",
+        invalidModelSelection: "Select zero, one, or two models.",
+        failedToLoad: "Failed to load battle prepopulation data",
+        failedToSubmit: "Failed to prepopulate battles"
+      },
+      jobs: {
+        title: "Recent jobs",
+        empty: "No prepopulation jobs yet.",
+        none: "none",
+        failedCount: "{{count}} failed",
+        headers: {
+          id: "ID",
+          status: "Status",
+          progress: "Progress",
+          failed: "Failed"
+        }
       }
     },
     modelRegistry: {

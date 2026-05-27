@@ -83,6 +83,8 @@ MAX_REPLAY_DELTA_CHARS = 32_000
 MAX_LIVE_HISTORY_BYTES = 512_000
 SYNC_DISPLAY_DELTA_CHARS = 4
 SYNC_REMAINING_DELTA_MIN_INTERVAL_SECONDS = 0.05
+POOLED_REPLAY_DELTA_CHARS = 4
+POOLED_REPLAY_DELTA_INTERVAL_SECONDS = 0.15
 MAX_RESPONSE_FULL_CHUNKS = 512
 MAX_RESPONSE_FULL_CHUNK_BYTES = 64_000
 MAX_RESPONSE_FULL_TOTAL_BYTES = 1_000_000
@@ -155,6 +157,36 @@ def _iter_text_chunks(text: str, chunk_chars: int) -> Iterator[str]:
     chunk_chars = max(int(chunk_chars), 1)
     for start in range(0, len(text), chunk_chars):
         yield text[start : start + chunk_chars]
+
+
+@dataclass(slots=True, frozen=True)
+class _PooledReplayPolicy:
+    display_delay_ms: int
+    assigned_user_id: str | None
+    assigned_at: str | None
+
+
+def _pooled_replay_policy(metadata: dict[str, object] | None) -> _PooledReplayPolicy | None:
+    if not isinstance(metadata, dict):
+        return None
+
+    replay = metadata.get("pooled_replay")
+    if not isinstance(replay, dict) or replay.get("backend_gated") is not True:
+        return None
+    if replay.get("unlocked") is True:
+        return None
+
+    display_delay_ms = replay.get("display_delay_ms")
+    if not isinstance(display_delay_ms, int) or display_delay_ms < 0:
+        return None
+
+    assigned_user_id = replay.get("assigned_user_id")
+    assigned_at = replay.get("assigned_at")
+    return _PooledReplayPolicy(
+        display_delay_ms=display_delay_ms,
+        assigned_user_id=assigned_user_id if isinstance(assigned_user_id, str) else None,
+        assigned_at=assigned_at if isinstance(assigned_at, str) else None,
+    )
 
 
 def _llm_queue_error_text(exc: LLMQueueFullError | LLMQueueWaitTimeoutError) -> str:
@@ -414,9 +446,41 @@ class BattleOrchestrator:
     ) -> AsyncIterator[bytes]:
         queue: StreamQueue = asyncio.Queue()
         observer_task: asyncio.Task[None] | None = None
+        finished_replay_task: asyncio.Task[None] | None = None
+        finished_replay_terminal = asyncio.Event()
 
         async def emit(event: str, data: object) -> None:
             await queue.put(sse_event(event=event, data=data))
+
+        async def run_finished_replay(
+            *,
+            runs: Sequence[RunSnapshot],
+            final_event: str,
+            replay_policy: _PooledReplayPolicy | None = None,
+            unlock_when_completed: bool = False,
+        ) -> None:
+            async def replay_emit(event: str, data: object) -> None:
+                await emit(event, data)
+                if event == final_event:
+                    finished_replay_terminal.set()
+
+            try:
+                await self._replay_finished_runs(
+                    battle_id=battle_id,
+                    runs=runs,
+                    emit=replay_emit,
+                    final_event=final_event,
+                    replay_policy=replay_policy,
+                )
+                if unlock_when_completed:
+                    await asyncio.to_thread(
+                        lambda: self._mark_pooled_replay_unlocked(
+                            battle_id=battle_id,
+                            replay_policy=replay_policy,
+                        )
+                    )
+            finally:
+                await queue.put(None)
 
         battle, runs = await asyncio.to_thread(
             lambda: self._load_battle_and_runs(battle_id)
@@ -436,21 +500,22 @@ class BattleOrchestrator:
             )
             await queue.put(None)
         elif battle.status == "completed":
-            await self._replay_finished_runs(
-                battle_id=battle_id,
-                runs=runs,
-                emit=emit,
-                final_event="battle.completed",
+            replay_policy = _pooled_replay_policy(battle.metadata_json)
+            finished_replay_task = asyncio.create_task(
+                run_finished_replay(
+                    runs=runs,
+                    final_event="battle.completed",
+                    replay_policy=replay_policy,
+                    unlock_when_completed=replay_policy is not None,
+                )
             )
-            await queue.put(None)
         elif battle.status == "failed":
-            await self._replay_finished_runs(
-                battle_id=battle_id,
-                runs=runs,
-                emit=emit,
-                final_event="battle.failed",
+            finished_replay_task = asyncio.create_task(
+                run_finished_replay(
+                    runs=runs,
+                    final_event="battle.failed",
+                )
             )
-            await queue.put(None)
         else:
             observer_task = await self._attach_live_battle_stream(
                 battle_id=battle_id,
@@ -472,6 +537,21 @@ class BattleOrchestrator:
                 battle_id=battle_id,
                 subscriber=queue,
             )
+
+            if finished_replay_task is not None:
+                if finished_replay_task.done():
+                    self._log_background_runner_failure(
+                        task=finished_replay_task, battle_id=battle_id
+                    )
+                elif finished_replay_terminal.is_set():
+                    await finished_replay_task
+                    self._log_background_runner_failure(
+                        task=finished_replay_task, battle_id=battle_id
+                    )
+                else:
+                    finished_replay_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await finished_replay_task
 
             if observer_task is not None:
                 if task_done:
@@ -755,6 +835,7 @@ class BattleOrchestrator:
                 runs=runs,
                 emit=emit,
                 final_event="battle.completed",
+                replay_policy=_pooled_replay_policy(battle.metadata_json),
             )
             return
 
@@ -936,7 +1017,17 @@ class BattleOrchestrator:
         runs: Sequence[RunSnapshot | Run],
         emit: EmitFn,
         final_event: str,
+        replay_policy: _PooledReplayPolicy | None = None,
     ) -> None:
+        if replay_policy is not None and final_event == "battle.completed":
+            await self._replay_pooled_finished_runs(
+                battle_id=battle_id,
+                runs=runs,
+                emit=emit,
+                replay_policy=replay_policy,
+            )
+            return
+
         for run in runs:
             if run.output_text:
                 for chunk_index, chunk in enumerate(
@@ -968,6 +1059,52 @@ class BattleOrchestrator:
         if final_event == "battle.failed":
             payload["detail"] = "replay_failed"
         await emit(final_event, payload)
+
+    async def _replay_pooled_finished_runs(
+        self,
+        *,
+        battle_id: uuid.UUID,
+        runs: Sequence[RunSnapshot | Run],
+        emit: EmitFn,
+        replay_policy: _PooledReplayPolicy,
+    ) -> None:
+        if replay_policy.display_delay_ms > 0:
+            await asyncio.sleep(replay_policy.display_delay_ms / 1000)
+
+        positions = {run.id: 0 for run in runs}
+        chunk_indexes = {run.id: 0 for run in runs}
+
+        while True:
+            emitted_this_round = False
+            for run in runs:
+                text = run.output_text or ""
+                position = positions[run.id]
+                if position >= len(text):
+                    continue
+
+                next_position = min(position + POOLED_REPLAY_DELTA_CHARS, len(text))
+                chunk = text[position:next_position]
+                positions[run.id] = next_position
+                await emit(
+                    "run.delta",
+                    {
+                        "battle_id": str(battle_id),
+                        "run_id": str(run.id),
+                        "side": run.side,
+                        "text_delta": chunk,
+                        "replay": True,
+                        "chunk_index": chunk_indexes[run.id],
+                    },
+                )
+                chunk_indexes[run.id] += 1
+                emitted_this_round = True
+
+            if not emitted_this_round:
+                break
+
+            await asyncio.sleep(POOLED_REPLAY_DELTA_INTERVAL_SECONDS)
+
+        await emit("battle.completed", {"battle_id": str(battle_id), "replay": True})
 
     async def _observe_running_battle(
         self,
@@ -1010,6 +1147,7 @@ class BattleOrchestrator:
                     runs=runs,
                     emit=emit,
                     final_event="battle.completed",
+                    replay_policy=_pooled_replay_policy(getattr(battle, "metadata_json", None)),
                 )
                 return
 
@@ -1801,6 +1939,42 @@ class BattleOrchestrator:
             if battle is None:
                 return
             battle.status = status
+            db.add(battle)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def _mark_pooled_replay_unlocked(
+        self,
+        *,
+        battle_id: uuid.UUID,
+        replay_policy: _PooledReplayPolicy | None = None,
+    ) -> None:
+        db: Session = self._SessionLocal()
+        try:
+            battle = db.get(Battle, battle_id)
+            if battle is None:
+                return
+            metadata = battle.metadata_json if isinstance(battle.metadata_json, dict) else {}
+            replay = metadata.get("pooled_replay")
+            if not isinstance(replay, dict) or replay.get("backend_gated") is not True:
+                return
+            if replay_policy is not None:
+                if replay.get("assigned_user_id") != replay_policy.assigned_user_id:
+                    return
+                if replay.get("assigned_at") != replay_policy.assigned_at:
+                    return
+            battle.metadata_json = {
+                **metadata,
+                "pooled_replay": {
+                    **replay,
+                    "unlocked": True,
+                    "expires_at": None,
+                },
+            }
             db.add(battle)
             db.commit()
         except Exception:

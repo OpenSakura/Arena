@@ -10,7 +10,10 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 
 import { hasBattleSessionError, isBattleBootstrapReady } from "@/components/battleAuth";
-import { loadOrCreateBattle, mergeBattleDelta } from "@/components/battleViewUtils";
+import {
+  loadOrCreateBattle,
+  mergeBattleDelta,
+} from "@/components/battleViewUtils";
 import { getApiPrefix, apiPost } from "@/lib/api";
 import i18n from "i18next";
 import { streamSSE } from "@/lib/sse";
@@ -30,6 +33,14 @@ type BattleStatus =
   | "running";
 type Winner = "A" | "B" | "tie";
 type BattlePublicStatus = "pending" | "running" | "completed" | "failed";
+type BattlePrepopulationSource = "admin_pre_generated" | "user_recycled" | "live";
+
+export type BattlePrepopulationMetadata = {
+  source: BattlePrepopulationSource;
+  pooled: boolean;
+  display_delay_ms: number | null;
+  backend_gated_replay: boolean;
+};
 
 type RunPublic = {
   id: string;
@@ -51,6 +62,7 @@ type BattlePublic = {
   run_a: RunPublic | null;
   run_b: RunPublic | null;
   admin_reveal?: RevealData | null;
+  prepopulation?: BattlePrepopulationMetadata | null;
 };
 
 const redirectedBattleCache = new Map<string, BattlePublic>();
@@ -117,7 +129,7 @@ export type BattleState = {
 
 type Action =
   | { type: "RESET_BATTLE" }
-  | { type: "BOOTSTRAP_SUCCESS"; battle: BattlePublic }
+  | { type: "BOOTSTRAP_SUCCESS"; battle: BattlePublic; backendReplay?: boolean }
   | { type: "SYNC_BATTLE_PUBLIC"; battle: BattlePublic }
   | { type: "BOOTSTRAP_ERROR"; error: string }
   | { type: "SET_STATUS"; status: BattleStatus }
@@ -180,16 +192,20 @@ function battleReducer(state: BattleState, action: Action): BattleState {
       };
 
     case "BOOTSTRAP_SUCCESS": {
-      const battleStatus =
-        action.battle.status === "completed" ? "done" : action.battle.status;
+      const isBackendReplay = action.backendReplay === true;
+      const battleStatus = isBackendReplay
+        ? "streaming"
+        : action.battle.status === "completed"
+          ? "done"
+          : action.battle.status;
       return {
         ...state,
         resolvedBattleId: action.battle.id,
         jpSource: action.battle.source_text,
         jpSourceLang: (action.battle.source_lang ?? "ja").toUpperCase(),
         targetLang: (action.battle.target_lang ?? "zh").toUpperCase(),
-        outA: action.battle.run_a?.output_text ?? "",
-        outB: action.battle.run_b?.output_text ?? "",
+        outA: isBackendReplay ? "" : (action.battle.run_a?.output_text ?? ""),
+        outB: isBackendReplay ? "" : (action.battle.run_b?.output_text ?? ""),
         status: battleStatus,
         errorText: null,
         retryAllowed: action.battle.retry_allowed,
@@ -390,6 +406,31 @@ function isRunPublic(value: unknown): value is RunPublic {
   );
 }
 
+function isBattlePrepopulationSource(value: unknown): value is BattlePrepopulationSource {
+  return value === "admin_pre_generated" || value === "user_recycled" || value === "live";
+}
+
+function parseBattlePrepopulationMetadata(value: unknown): BattlePrepopulationMetadata | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  if (!isBattlePrepopulationSource(value.source)) {
+    return null;
+  }
+
+  return {
+    source: value.source,
+    pooled: value.pooled === true,
+    display_delay_ms: typeof value.display_delay_ms === "number" ? value.display_delay_ms : null,
+    backend_gated_replay: value.backend_gated_replay === true,
+  };
+}
+
+function shouldUseBackendReplay(battle: BattlePublic): boolean {
+  return battle.status === "completed" && battle.prepopulation?.backend_gated_replay === true;
+}
+
 function isBattlePublic(value: unknown): value is BattlePublic {
   if (!isRecord(value)) {
     return false;
@@ -415,7 +456,10 @@ function parseBattlePublic(value: unknown): BattlePublic {
   if (!isBattlePublic(value)) {
     throw new Error(i18n.t("battle.errors.invalidBattleResponse"));
   }
-  return value;
+  return {
+    ...value,
+    prepopulation: parseBattlePrepopulationMetadata(value.prepopulation),
+  };
 }
 
 function isRevealEntry(value: unknown): value is RevealData["A"] {
@@ -466,6 +510,7 @@ export function useBattle(battleId: string) {
 
   useEffect(() => {
     let cancelled = false;
+    const abortController = new AbortController();
     const bootstrapKey = battleId === "new" ? `new:${restartKey}` : `battle:${battleId}`;
 
     async function bootstrapBattle() {
@@ -491,6 +536,7 @@ export function useBattle(battleId: string) {
       const redirectedBattle = battleId === "new" ? null : redirectedBattleCache.get(battleId) ?? null;
       if (battleId !== "new" && redirectedBattle) {
         redirectedBattleCache.delete(battleId);
+
         bootstrapKeyRef.current = bootstrapKey;
         if (!isAuthed) {
           dispatch({ type: "BOOTSTRAP_ERROR", error: t("battle.errors.loginRequiredToView") });
@@ -502,15 +548,15 @@ export function useBattle(battleId: string) {
 
         replayPolicyRef.current = {
           A:
-            isFinished && Boolean(redirectedBattle.run_a?.output_text)
+            isFinished && Boolean(redirectedBattle.run_a?.output_text) && !shouldUseBackendReplay(redirectedBattle)
               ? "ignore"
               : "consume",
           B:
-            isFinished && Boolean(redirectedBattle.run_b?.output_text)
+            isFinished && Boolean(redirectedBattle.run_b?.output_text) && !shouldUseBackendReplay(redirectedBattle)
               ? "ignore"
               : "consume",
         };
-        dispatch({ type: "BOOTSTRAP_SUCCESS", battle: redirectedBattle });
+        dispatch({ type: "BOOTSTRAP_SUCCESS", battle: redirectedBattle, backendReplay: shouldUseBackendReplay(redirectedBattle) });
         return;
       }
 
@@ -528,24 +574,26 @@ export function useBattle(battleId: string) {
         if (cancelled) return;
 
         const isFinished = battle.status === "completed" || battle.status === "failed";
-
         if (!isAuthed) {
           dispatch({ type: "BOOTSTRAP_ERROR", error: t("battle.errors.loginRequiredToView") });
           return;
         }
 
-        replayPolicyRef.current = {
-          A: isFinished && Boolean(battle.run_a?.output_text) ? "ignore" : "consume",
-          B: isFinished && Boolean(battle.run_b?.output_text) ? "ignore" : "consume",
-        };
-
-        dispatch({ type: "BOOTSTRAP_SUCCESS", battle });
+        const needsBackendReplay = shouldUseBackendReplay(battle);
 
         if (battle.id !== battleId) {
           redirectedBattleCache.set(battle.id, battle);
           bootstrapKeyRef.current = `battle:${battle.id}`;
           navigate(`/battle/${encodeURIComponent(battle.id)}`);
+          return;
         }
+
+        replayPolicyRef.current = {
+          A: isFinished && Boolean(battle.run_a?.output_text) && !needsBackendReplay ? "ignore" : "consume",
+          B: isFinished && Boolean(battle.run_b?.output_text) && !needsBackendReplay ? "ignore" : "consume",
+        };
+
+        dispatch({ type: "BOOTSTRAP_SUCCESS", battle, backendReplay: needsBackendReplay });
       } catch (err) {
         if (cancelled) return;
         bootstrapKeyRef.current = null;
@@ -568,6 +616,7 @@ export function useBattle(battleId: string) {
     void bootstrapBattle();
     return () => {
       cancelled = true;
+      abortController.abort();
     };
   }, [
     authStatus,
