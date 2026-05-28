@@ -62,6 +62,7 @@ def require_csrf_for_session(
     if not verify_auth_session_csrf_token(
         auth_session,
         csrf_token=raw_csrf_token,
+        session_token=request.cookies.get(settings.auth_session_cookie_name),
         settings=settings,
     ):
         raise HTTPException(

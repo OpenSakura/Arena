@@ -668,7 +668,7 @@ def test_token_exchange_failure_clears_cookie_and_does_not_create_session(
         assert db.scalar(select(func.count()).select_from(AuthSession)) == 0
 
 
-def test_auth_session_endpoint_returns_profile_and_rotates_csrf(
+def test_auth_session_endpoint_returns_profile_and_stable_csrf(
     harness: _AuthHarness,
 ) -> None:
     harness.settings.auth_session_last_seen_min_interval_seconds = 0
@@ -693,13 +693,13 @@ def test_auth_session_endpoint_returns_profile_and_rotates_csrf(
     assert first_body["authenticated"] is True
     assert first_body["is_admin"] is True
     assert first_body["profile"]["display_name"] == "Aya"
-    assert first_body["csrf_token"] != second_body["csrf_token"]
+    assert first_body["csrf_token"] == second_body["csrf_token"]
     assert second_body["csrf_token"]
 
     with harness.session_factory() as db:
         row = db.get(AuthSession, created.session_id)
         assert row is not None
-        _assert_hmac(second_body["csrf_token"], row.csrf_token_hash)
+        _assert_hmac(first_body["csrf_token"], row.csrf_token_hash)
         assert row.last_seen_at > before_last_seen
         assert first_body["csrf_token"] not in _serialized_row(row)
         assert second_body["csrf_token"] not in _serialized_row(row)
@@ -743,7 +743,7 @@ def test_session_endpoint_rejects_missing_expired_and_revoked_sessions(
     )
 
 
-def test_logout_requires_latest_csrf_revokes_session_and_clears_cookie(
+def test_logout_accepts_stable_csrf_after_session_read_and_clears_cookie(
     harness: _AuthHarness,
 ) -> None:
     created = _create_user_session(harness)
@@ -756,13 +756,9 @@ def test_logout_requires_latest_csrf_revokes_session_and_clears_cookie(
             headers={"X-CSRF-Token": "wrong-token"},
         )
         second_csrf = client.get("/api/v1/auth/session").json()["csrf_token"]
-        stale = client.post(
+        earlier_token = client.post(
             "/api/v1/auth/logout",
             headers={"X-CSRF-Token": first_csrf},
-        )
-        latest = client.post(
-            "/api/v1/auth/logout",
-            headers={"X-CSRF-Token": second_csrf},
         )
         after_logout = client.get("/api/v1/auth/session")
 
@@ -770,11 +766,11 @@ def test_logout_requires_latest_csrf_revokes_session_and_clears_cookie(
     assert missing.json()["detail"] == "CSRF token required"
     assert wrong.status_code == 403
     assert wrong.json()["detail"] == "Invalid CSRF token"
-    assert stale.status_code == 403
-    assert latest.status_code == 200
-    assert latest.json() == {"ok": True, "authenticated": False, "logout_url": None}
+    assert first_csrf == second_csrf
+    assert earlier_token.status_code == 200
+    assert earlier_token.json() == {"ok": True, "authenticated": False, "logout_url": None}
     assert "Max-Age=0" in _single_set_cookie(
-        latest,
+        earlier_token,
         harness.settings.auth_session_cookie_name,
     )
     assert after_logout.json()["authenticated"] is False
@@ -783,6 +779,58 @@ def test_logout_requires_latest_csrf_revokes_session_and_clears_cookie(
         row = db.get(AuthSession, created.session_id)
         assert row is not None
         assert row.revoked_at is not None
+
+
+def test_session_csrf_response_works_for_existing_random_csrf_hash(
+    harness: _AuthHarness,
+) -> None:
+    created = _create_user_session(harness)
+    with harness.session_factory() as db:
+        row = db.get(AuthSession, created.session_id)
+        assert row is not None
+        previous_csrf = auth_session.rotate_auth_session_csrf_token(
+            db,
+            auth_session=row,
+            settings=harness.settings,
+        )
+        db.commit()
+
+    with TestClient(harness.app) as client:
+        client.cookies.set(harness.settings.auth_session_cookie_name, created.session_token)
+        session_response = client.get("/api/v1/auth/session")
+        returned_csrf = session_response.json()["csrf_token"]
+        previous_logout = client.post(
+            "/api/v1/auth/logout",
+            headers={"X-CSRF-Token": previous_csrf},
+        )
+
+    assert session_response.status_code == 200
+    assert returned_csrf != previous_csrf
+    assert previous_logout.status_code == 200
+
+    created = _create_user_session(harness)
+    with harness.session_factory() as db:
+        row = db.get(AuthSession, created.session_id)
+        assert row is not None
+        previous_csrf = auth_session.rotate_auth_session_csrf_token(
+            db,
+            auth_session=row,
+            settings=harness.settings,
+        )
+        db.commit()
+
+    with TestClient(harness.app) as client:
+        client.cookies.set(harness.settings.auth_session_cookie_name, created.session_token)
+        session_response = client.get("/api/v1/auth/session")
+        returned_csrf = session_response.json()["csrf_token"]
+        stable_logout = client.post(
+            "/api/v1/auth/logout",
+            headers={"X-CSRF-Token": returned_csrf},
+        )
+
+    assert session_response.status_code == 200
+    assert returned_csrf != previous_csrf
+    assert stable_logout.status_code == 200
 
 
 def test_logout_without_valid_session_is_safe_and_clears_stale_cookie(

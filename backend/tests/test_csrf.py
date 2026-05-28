@@ -149,15 +149,11 @@ def csrf_client(tmp_path) -> Iterator[_CsrfClient]:
         return {"ok": True}
 
     @app.get("/session-bootstrap")
-    def session_bootstrap(db: Session = Depends(get_db)) -> dict[str, str]:
-        row = db.get(AuthSession, created_session.session_id)
-        assert row is not None
-        raw_csrf = auth_session.rotate_auth_session_csrf_token(
-            db,
-            auth_session=row,
+    def session_bootstrap() -> dict[str, str]:
+        raw_csrf = auth_session.stable_auth_session_csrf_token(
+            created_session.session_token,
             settings=settings,
         )
-        db.commit()
         return {"csrf_token": raw_csrf}
 
     app.dependency_overrides[get_db] = override_db
@@ -253,7 +249,7 @@ def test_service_token_bypasses_csrf_header_requirement(
     assert response.json() == {"ok": True}
 
 
-def test_csrf_rotation_session_bootstrap_rejects_stale_token(
+def test_csrf_session_bootstrap_is_idempotent_and_keeps_first_token_valid(
     csrf_client: _CsrfClient,
 ) -> None:
     first_bootstrap = csrf_client.client.get("/session-bootstrap")
@@ -270,20 +266,20 @@ def test_csrf_rotation_session_bootstrap_rejects_stale_token(
     assert bootstrap_response.status_code == 200
     assert "set-cookie" not in bootstrap_response.headers
     second_token = bootstrap_response.json()["csrf_token"]
-    assert second_token != first_token
+    assert second_token == first_token
 
     with csrf_client.session_factory() as db:
         row = db.execute(select(AuthSession)).scalar_one()
-        _assert_hmac(second_token, row.csrf_token_hash)
+        _assert_hmac(first_token, row.csrf_token_hash)
         serialized_row = _serialized_row(row)
         assert first_token not in serialized_row
         assert second_token not in serialized_row
 
-    stale = csrf_client.client.post(
+    first_after_reload = csrf_client.client.post(
         "/protected",
         headers={"X-CSRF-Token": first_token},
     )
-    latest = csrf_client.client.post(
+    second_after_reload = csrf_client.client.post(
         "/protected",
         headers={"X-CSRF-Token": second_token},
     )
@@ -294,12 +290,41 @@ def test_csrf_rotation_session_bootstrap_rejects_stale_token(
         headers={"X-CSRF-Token": third_token},
     )
 
-    assert stale.status_code == 403
-    assert stale.json()["detail"] == "Invalid CSRF token"
-    assert latest.status_code == 200
+    assert first_after_reload.status_code == 200
+    assert second_after_reload.status_code == 200
     assert reload_bootstrap.status_code == 200
-    assert third_token != second_token
+    assert third_token == second_token
     assert latest_after_reload.status_code == 200
+
+
+def test_csrf_accepts_stable_bootstrap_for_existing_random_csrf_hash(
+    csrf_client: _CsrfClient,
+) -> None:
+    with csrf_client.session_factory() as db:
+        row = db.get(AuthSession, csrf_client.created_session.session_id)
+        assert row is not None
+        previous_csrf = auth_session.rotate_auth_session_csrf_token(
+            db,
+            auth_session=row,
+            settings=csrf_client.settings,
+        )
+        db.commit()
+
+    stable_bootstrap = csrf_client.client.get("/session-bootstrap")
+    stable_csrf = stable_bootstrap.json()["csrf_token"]
+    previous = csrf_client.client.post(
+        "/protected",
+        headers={"X-CSRF-Token": previous_csrf},
+    )
+    stable = csrf_client.client.post(
+        "/protected",
+        headers={"X-CSRF-Token": stable_csrf},
+    )
+
+    assert stable_bootstrap.status_code == 200
+    assert stable_csrf != previous_csrf
+    assert previous.status_code == 200
+    assert stable.status_code == 200
 
 
 def test_cors_preflight_accepts_csrf_and_authorization_headers(

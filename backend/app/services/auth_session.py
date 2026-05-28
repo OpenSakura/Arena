@@ -29,6 +29,7 @@ AUTH_SESSION_LAST_SEEN_MIN_INTERVAL_SECONDS = 60
 AUTH_SESSION_LAST_SEEN_LOCK_TIMEOUT_MS = 100
 AUTH_SESSION_LAST_SEEN_STATEMENT_TIMEOUT_MS = 500
 _AUTH_SESSION_TOUCH_TIMEOUT_SQLSTATES = frozenset({"55P03", "57014"})
+_AUTH_SESSION_CSRF_DERIVATION_CONTEXT = b"opensakura.auth-session.csrf-token.v1\x00"
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,20 @@ def hash_auth_token(
     return hmac.new(
         _auth_session_hash_key(settings=settings),
         token.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def stable_auth_session_csrf_token(
+    session_token: str | None,
+    *,
+    settings: _AuthSessionSettings | None = None,
+) -> str:
+    if not isinstance(session_token, str) or not session_token:
+        raise ValueError("Auth session token cannot be empty")
+    return hmac.new(
+        _auth_session_hash_key(settings=settings),
+        _AUTH_SESSION_CSRF_DERIVATION_CONTEXT + session_token.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
 
@@ -277,10 +292,14 @@ def create_auth_session(
     selected_settings = _selected_settings(settings)
     issued_at = _utc_now(now)
     session_token = generate_urlsafe_token()
+    csrf_token = stable_auth_session_csrf_token(
+        session_token,
+        settings=selected_settings,
+    )
     auth_session = AuthSession(
         session_token_hash=hash_auth_token(session_token, settings=selected_settings),
         csrf_token_hash=hash_auth_token(
-            generate_urlsafe_token(),
+            csrf_token,
             settings=selected_settings,
         ),
         user_id=user.id,
@@ -574,11 +593,30 @@ def verify_auth_session_csrf_token(
     auth_session: AuthSession,
     *,
     csrf_token: str | None,
+    session_token: str | None = None,
     settings: _AuthSessionSettings | None = None,
 ) -> bool:
-    return constant_time_verify_auth_token(
+    if constant_time_verify_auth_token(
         csrf_token,
         auth_session.csrf_token_hash,
+        settings=settings,
+    ):
+        return True
+    if session_token is None:
+        return False
+    try:
+        session_hash = hash_auth_token(session_token, settings=settings)
+        stable_csrf_hash = hash_auth_token(
+            stable_auth_session_csrf_token(session_token, settings=settings),
+            settings=settings,
+        )
+    except ValueError:
+        return False
+    if not hmac.compare_digest(session_hash, auth_session.session_token_hash):
+        return False
+    return constant_time_verify_auth_token(
+        csrf_token,
+        stable_csrf_hash,
         settings=settings,
     )
 

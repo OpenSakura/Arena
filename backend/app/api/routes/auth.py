@@ -24,8 +24,8 @@ from app.services.auth_session import (
     load_user_for_auth_session,
     refresh_auth_session_last_seen,
     revoke_auth_session,
-    rotate_auth_session_csrf_token,
     sanitize_return_to,
+    stable_auth_session_csrf_token,
     verify_auth_session_csrf_token,
 )
 from app.services.oidc_client import (
@@ -178,13 +178,14 @@ def get_session(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> AuthSessionResponse:
+    session_token = request.cookies.get(settings.auth_session_cookie_name)
     auth_session = load_auth_session(
         db,
-        session_token=request.cookies.get(settings.auth_session_cookie_name),
+        session_token=session_token,
         settings=settings,
     )
     if auth_session is None:
-        if request.cookies.get(settings.auth_session_cookie_name) is not None:
+        if session_token is not None:
             _clear_session_cookie(response, settings=settings)
         return _unauthenticated_session_response()
 
@@ -197,9 +198,8 @@ def get_session(
         )
 
     refresh_auth_session_last_seen(db, auth_session=auth_session, settings=settings)
-    csrf_token = rotate_auth_session_csrf_token(
-        db,
-        auth_session=auth_session,
+    csrf_token = stable_auth_session_csrf_token(
+        session_token,
         settings=settings,
     )
     profile = db.get(UserProfile, user.id)
@@ -240,6 +240,7 @@ def logout(
     if not verify_auth_session_csrf_token(
         auth_session,
         csrf_token=raw_csrf_token,
+        session_token=session_token,
         settings=settings,
     ):
         raise HTTPException(

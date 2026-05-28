@@ -147,8 +147,8 @@ key.
   - Check that the reverse proxy preserves cookies and routes `/api/v1` to the
     backend on the same origin.
 - `403 CSRF token required` or `403 Invalid CSRF token`:
-  - Reload the SPA so it can call `/api/v1/auth/session` and receive the latest
-    CSRF token, then retry the unsafe action.
+  - Reload the SPA so it can call `/api/v1/auth/session` and receive the
+    session's CSRF token, then retry the unsafe action.
 - `403 Admin access required` on backend admin endpoints:
   - Check that the configured group claim is present and contains the configured
     admin group.

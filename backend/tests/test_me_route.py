@@ -427,7 +427,7 @@ def test_admin_endpoint_accepts_admin_session_cookie_and_rejects_non_admin_cooki
     assert rejected.json()["detail"] == "Admin group membership required"
 
 
-def test_profile_update_with_session_cookie_requires_and_accepts_latest_csrf(
+def test_profile_update_with_session_cookie_requires_and_accepts_stable_csrf(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -495,12 +495,9 @@ def _make_session_me_context(
     app.include_router(me.router)
 
     @app.get("/session-bootstrap")
-    def session_bootstrap(db: Session = Depends(me.get_db)) -> dict[str, str]:
-        row = db.get(AuthSession, created.auth_session_id)
-        assert row is not None
-        raw_csrf = auth_session.rotate_auth_session_csrf_token(
-            db,
-            auth_session=row,
+    def session_bootstrap() -> dict[str, str]:
+        raw_csrf = auth_session.stable_auth_session_csrf_token(
+            created.session_token,
             settings=settings,
         )
         return {"csrf_token": raw_csrf}

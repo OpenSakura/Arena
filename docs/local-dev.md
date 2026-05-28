@@ -111,8 +111,8 @@ Auth notes:
 - All mutations and viewing, creating battles, viewing battles, submitting votes,
   and retrying battles, require authentication. Successful vote submission
   reveals model identities immediately.
-- Unsafe browser session requests must include the latest `X-CSRF-Token` returned
-  from `GET /api/v1/auth/session`.
+- Unsafe browser session requests must include the per-session `X-CSRF-Token`
+  returned from `GET /api/v1/auth/session`.
 
 ## Frontend
 
