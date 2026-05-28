@@ -85,6 +85,46 @@ class Battle(Base):
     )
 
 
+class BotPooledBattleClaim(Base):
+    __tablename__ = "bot_pooled_battle_claims"
+    __table_args__ = (
+        UniqueConstraint(
+            "service_account_id",
+            "idempotency_key",
+            name="uq_bot_pooled_battle_claim_service_idempotency",
+        ),
+        UniqueConstraint(
+            "battle_id",
+            name="uq_bot_pooled_battle_claim_battle_id",
+        ),
+        Index("ix_bot_pooled_battle_claims_service_account_id", "service_account_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    service_account_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("service_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    battle_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("battles.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class Run(Base):
     __tablename__ = "runs"
     __table_args__ = (

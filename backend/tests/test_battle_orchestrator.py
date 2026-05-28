@@ -417,7 +417,9 @@ def test_mark_pooled_replay_unlocked_requires_matching_assignment() -> None:
         replay_policy=orchestrator_module._PooledReplayPolicy(
             display_delay_ms=0,
             assigned_user_id="old-user",
+            assigned_service_account_id=None,
             assigned_at="2026-05-27T12:00:00+00:00",
+            consumer_type="human",
         ),
     )
 
@@ -429,7 +431,9 @@ def test_mark_pooled_replay_unlocked_requires_matching_assignment() -> None:
         replay_policy=orchestrator_module._PooledReplayPolicy(
             display_delay_ms=0,
             assigned_user_id="new-user",
+            assigned_service_account_id=None,
             assigned_at="2026-05-27T12:05:00+00:00",
+            consumer_type="human",
         ),
     )
 
@@ -2026,7 +2030,9 @@ def test_replay_finished_runs_delays_and_paces_pooled_completed_battle(
             replay_policy=orchestrator_module._PooledReplayPolicy(
                 display_delay_ms=12_345,
                 assigned_user_id=None,
+                assigned_service_account_id=None,
                 assigned_at=None,
+                consumer_type="human",
             ),
         )
     )

@@ -163,14 +163,20 @@ def _iter_text_chunks(text: str, chunk_chars: int) -> Iterator[str]:
 class _PooledReplayPolicy:
     display_delay_ms: int
     assigned_user_id: str | None
+    assigned_service_account_id: str | None
     assigned_at: str | None
+    consumer_type: str
 
 
-def _pooled_replay_policy(metadata: dict[str, object] | None) -> _PooledReplayPolicy | None:
+def _pooled_replay_policy(
+    metadata: dict[str, object] | None,
+    *,
+    consumer_type: str = "human",
+) -> _PooledReplayPolicy | None:
     if not isinstance(metadata, dict):
         return None
 
-    replay = metadata.get("pooled_replay")
+    replay = _pooled_replay_for_consumer(metadata, consumer_type)
     if not isinstance(replay, dict) or replay.get("backend_gated") is not True:
         return None
     if replay.get("unlocked") is True:
@@ -181,12 +187,35 @@ def _pooled_replay_policy(metadata: dict[str, object] | None) -> _PooledReplayPo
         return None
 
     assigned_user_id = replay.get("assigned_user_id")
+    assigned_service_account_id = replay.get("assigned_service_account_id")
     assigned_at = replay.get("assigned_at")
     return _PooledReplayPolicy(
         display_delay_ms=display_delay_ms,
         assigned_user_id=assigned_user_id if isinstance(assigned_user_id, str) else None,
+        assigned_service_account_id=(
+            assigned_service_account_id
+            if isinstance(assigned_service_account_id, str)
+            else None
+        ),
         assigned_at=assigned_at if isinstance(assigned_at, str) else None,
+        consumer_type=consumer_type if consumer_type == "bot" else "human",
     )
+
+
+def _pooled_replay_for_consumer(
+    metadata: dict[str, object],
+    consumer_type: str,
+) -> dict[str, Any] | None:
+    scoped = metadata.get("pooled_replays")
+    if isinstance(scoped, dict):
+        replay = scoped.get("bot" if consumer_type == "bot" else "human")
+        if isinstance(replay, dict):
+            return replay
+    if consumer_type != "bot":
+        replay = metadata.get("pooled_replay")
+        if isinstance(replay, dict):
+            return replay
+    return None
 
 
 def _llm_queue_error_text(exc: LLMQueueFullError | LLMQueueWaitTimeoutError) -> str:
@@ -1959,22 +1988,44 @@ class BattleOrchestrator:
             if battle is None:
                 return
             metadata = battle.metadata_json if isinstance(battle.metadata_json, dict) else {}
-            replay = metadata.get("pooled_replay")
+            replay = _pooled_replay_for_consumer(
+                metadata,
+                replay_policy.consumer_type if replay_policy is not None else "human",
+            )
             if not isinstance(replay, dict) or replay.get("backend_gated") is not True:
                 return
             if replay_policy is not None:
                 if replay.get("assigned_user_id") != replay_policy.assigned_user_id:
                     return
+                if (
+                    replay_policy.consumer_type == "bot"
+                    and replay.get("assigned_service_account_id")
+                    != replay_policy.assigned_service_account_id
+                ):
+                    return
                 if replay.get("assigned_at") != replay_policy.assigned_at:
                     return
-            battle.metadata_json = {
-                **metadata,
-                "pooled_replay": {
-                    **replay,
-                    "unlocked": True,
-                    "expires_at": None,
-                },
-            }
+            unlocked_replay = {**replay, "unlocked": True, "expires_at": None}
+            if replay_policy is not None and replay_policy.consumer_type == "bot":
+                scoped = metadata.get("pooled_replays")
+                scoped_replays = dict(scoped) if isinstance(scoped, dict) else {}
+                scoped_replays["bot"] = unlocked_replay
+                battle.metadata_json = {**metadata, "pooled_replays": scoped_replays}
+            else:
+                scoped = metadata.get("pooled_replays")
+                if isinstance(scoped, dict):
+                    scoped_replays = dict(scoped)
+                    scoped_replays["human"] = unlocked_replay
+                    battle.metadata_json = {
+                        **metadata,
+                        "pooled_replay": unlocked_replay,
+                        "pooled_replays": scoped_replays,
+                    }
+                else:
+                    battle.metadata_json = {
+                        **metadata,
+                        "pooled_replay": unlocked_replay,
+                    }
             db.add(battle)
             db.commit()
         except Exception:

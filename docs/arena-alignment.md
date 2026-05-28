@@ -191,12 +191,17 @@ Additional recommended fields:
 
 ### Run Reuse
 
-- Always regenerate outputs; do not reuse/dedupe identical runs.
+- Live battle execution should regenerate outputs for each newly created battle;
+  do not dedupe live runs just because the task/model pair is identical.
+- Pre-generated and recycled battle pools are the intentional exception: they
+  reuse completed run outputs through backend-gated replay so humans and bot
+  service accounts can judge the same battle without re-running models.
 
 Important nuance:
 
-- "Always regenerate" should still be compatible with idempotency. Prevent accidental double-run
-  for the same battle due to refresh/retry.
+- Live execution and pooled assignment should both remain idempotent. Prevent
+  accidental double-run or double-assignment for the same battle due to
+  refresh/retry.
 
 ### Exports
 

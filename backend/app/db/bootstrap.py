@@ -11,6 +11,8 @@ from sqlalchemy.engine import Connection
 
 _SCHEMA_BOOTSTRAP_LOCK_KEY = 0x4172656E6100_0002
 _VOTES_BATTLE_ID_UNIQUE_INDEX_NAME = "uq_votes_battle_id"
+_VOTES_HUMAN_BATTLE_ID_UNIQUE_INDEX_NAME = "uq_votes_human_battle_id"
+_VOTES_BOT_BATTLE_ID_UNIQUE_INDEX_NAME = "uq_votes_bot_battle_id"
 
 
 def bootstrap_schema() -> None:
@@ -68,9 +70,11 @@ def _ensure_votes_battle_id_unique_index(connection: Connection) -> None:
     if dialect_name == "postgresql":
         if not _postgres_table_exists(connection, "votes"):
             return
-        if _postgres_votes_battle_id_unique_index_exists(connection):
+        if _postgres_scoped_vote_unique_indexes_exist(connection):
+            connection.execute(text(f"DROP INDEX IF EXISTS {_VOTES_BATTLE_ID_UNIQUE_INDEX_NAME}"))
             return
-        _raise_for_duplicate_vote_battle_ids(connection)
+        _raise_for_duplicate_vote_battle_ids(connection, consumer_type="human")
+        _raise_for_duplicate_vote_battle_ids(connection, consumer_type="bot")
         connection.execute(
             text(
                 "ALTER TABLE votes DROP CONSTRAINT IF EXISTS "
@@ -81,7 +85,15 @@ def _ensure_votes_battle_id_unique_index(connection: Connection) -> None:
         connection.execute(
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS "
-                f"{_VOTES_BATTLE_ID_UNIQUE_INDEX_NAME} ON votes (battle_id)"
+                f"{_VOTES_HUMAN_BATTLE_ID_UNIQUE_INDEX_NAME} ON votes (battle_id) "
+                "WHERE service_account_id IS NULL"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                f"{_VOTES_BOT_BATTLE_ID_UNIQUE_INDEX_NAME} ON votes (battle_id) "
+                "WHERE service_account_id IS NOT NULL"
             )
         )
         _require_votes_battle_id_unique_index(connection)
@@ -90,25 +102,38 @@ def _ensure_votes_battle_id_unique_index(connection: Connection) -> None:
     if dialect_name == "sqlite":
         if not _sqlite_table_exists(connection, "votes"):
             return
-        if _sqlite_votes_battle_id_unique_index_exists(connection):
-            return
-        _raise_for_duplicate_vote_battle_ids(connection)
+        _raise_for_duplicate_vote_battle_ids(connection, consumer_type="human")
+        _raise_for_duplicate_vote_battle_ids(connection, consumer_type="bot")
         connection.execute(text(f"DROP INDEX IF EXISTS {_VOTES_BATTLE_ID_UNIQUE_INDEX_NAME}"))
         connection.execute(
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS "
-                f"{_VOTES_BATTLE_ID_UNIQUE_INDEX_NAME} ON votes (battle_id)"
+                f"{_VOTES_HUMAN_BATTLE_ID_UNIQUE_INDEX_NAME} ON votes (battle_id) "
+                "WHERE service_account_id IS NULL"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                f"{_VOTES_BOT_BATTLE_ID_UNIQUE_INDEX_NAME} ON votes (battle_id) "
+                "WHERE service_account_id IS NOT NULL"
             )
         )
         _require_votes_battle_id_unique_index(connection)
 
 
-def _raise_for_duplicate_vote_battle_ids(connection: Connection) -> None:
+def _raise_for_duplicate_vote_battle_ids(connection: Connection, *, consumer_type: str) -> None:
+    predicate = (
+        "service_account_id IS NOT NULL"
+        if consumer_type == "bot"
+        else "service_account_id IS NULL"
+    )
     duplicate_rows = connection.execute(
         text(
-            """
+            f"""
             SELECT battle_id, count(*) AS row_count
             FROM votes
+            WHERE {predicate}
             GROUP BY battle_id
             HAVING count(*) > 1
             ORDER BY battle_id
@@ -121,18 +146,32 @@ def _raise_for_duplicate_vote_battle_ids(connection: Connection) -> None:
 
     duplicates = ", ".join(f"{row[0]} ({row[1]} rows)" for row in duplicate_rows)
     raise RuntimeError(
-        "Cannot enforce global vote uniqueness because votes contains duplicate "
-        f"battle_id rows: {duplicates}. Consolidate or delete duplicate votes for "
-        "each battle, then restart the backend."
+        f"Cannot enforce {consumer_type} vote uniqueness because votes contains "
+        f"duplicate battle_id rows: {duplicates}. Consolidate or delete duplicate "
+        f"{consumer_type} votes for each battle, then restart the backend."
     )
 
 
 def _require_votes_battle_id_unique_index(connection: Connection) -> None:
     dialect_name = connection.dialect.name
     if dialect_name == "postgresql":
-        exists = _postgres_votes_battle_id_unique_index_exists(connection)
+        exists = _postgres_votes_battle_id_unique_index_exists(
+            connection,
+            _VOTES_HUMAN_BATTLE_ID_UNIQUE_INDEX_NAME,
+            "service_account_id IS NULL",
+        ) and _postgres_votes_battle_id_unique_index_exists(
+            connection,
+            _VOTES_BOT_BATTLE_ID_UNIQUE_INDEX_NAME,
+            "service_account_id IS NOT NULL",
+        )
     elif dialect_name == "sqlite":
-        exists = _sqlite_votes_battle_id_unique_index_exists(connection)
+        exists = _sqlite_votes_battle_id_unique_index_exists(
+            connection,
+            _VOTES_HUMAN_BATTLE_ID_UNIQUE_INDEX_NAME,
+        ) and _sqlite_votes_battle_id_unique_index_exists(
+            connection,
+            _VOTES_BOT_BATTLE_ID_UNIQUE_INDEX_NAME,
+        )
     else:
         exists = True
 
@@ -140,10 +179,20 @@ def _require_votes_battle_id_unique_index(connection: Connection) -> None:
         return
 
     raise RuntimeError(
-        "Cannot enforce global vote uniqueness because "
-        f"{_VOTES_BATTLE_ID_UNIQUE_INDEX_NAME} is not a valid unique index on "
-        "votes.battle_id. Recreate it as UNIQUE (battle_id), then restart the "
-        "backend."
+        "Cannot enforce vote uniqueness because scoped human and bot vote "
+        "unique indexes are missing or invalid. Recreate them, then restart the backend."
+    )
+
+
+def _postgres_scoped_vote_unique_indexes_exist(connection: Connection) -> bool:
+    return _postgres_votes_battle_id_unique_index_exists(
+        connection,
+        _VOTES_HUMAN_BATTLE_ID_UNIQUE_INDEX_NAME,
+        "service_account_id IS NULL",
+    ) and _postgres_votes_battle_id_unique_index_exists(
+        connection,
+        _VOTES_BOT_BATTLE_ID_UNIQUE_INDEX_NAME,
+        "service_account_id IS NOT NULL",
     )
 
 
@@ -177,7 +226,11 @@ def _postgres_column_exists(
     )
 
 
-def _postgres_votes_battle_id_unique_index_exists(connection: Connection) -> bool:
+def _postgres_votes_battle_id_unique_index_exists(
+    connection: Connection,
+    index_name: str,
+    predicate: str,
+) -> bool:
     return bool(
         connection.execute(
             text(
@@ -200,13 +253,13 @@ def _postgres_votes_battle_id_unique_index_exists(connection: Connection) -> boo
                       AND index_def.indisunique
                       AND index_def.indisvalid
                       AND index_def.indnatts = 1
-                      AND index_def.indpred IS NULL
+                      AND replace(replace(pg_get_expr(index_def.indpred, index_def.indrelid), '(', ''), ')', '') = :predicate
                       AND index_def.indexprs IS NULL
                       AND attribute.attname = 'battle_id'
                 )
                 """
             ),
-            {"index_name": _VOTES_BATTLE_ID_UNIQUE_INDEX_NAME},
+            {"index_name": index_name, "predicate": predicate},
         ).scalar_one()
     )
 
@@ -229,16 +282,19 @@ def _sqlite_table_exists(connection: Connection, table_name: str) -> bool:
     )
 
 
-def _sqlite_votes_battle_id_unique_index_exists(connection: Connection) -> bool:
+def _sqlite_votes_battle_id_unique_index_exists(
+    connection: Connection,
+    expected_index_name: str,
+) -> bool:
     indexes = connection.execute(text("PRAGMA index_list('votes')")).all()
     for index_row in indexes:
         index_name = index_row[1]
         is_unique = bool(index_row[2])
-        if index_name != _VOTES_BATTLE_ID_UNIQUE_INDEX_NAME or not is_unique:
+        if index_name != expected_index_name or not is_unique:
             continue
 
         columns = connection.execute(
-            text(f"PRAGMA index_info('{_VOTES_BATTLE_ID_UNIQUE_INDEX_NAME}')")
+            text(f"PRAGMA index_info('{index_name}')")
         ).all()
         return [column_row[2] for column_row in columns] == ["battle_id"]
     return False

@@ -72,3 +72,44 @@ def find_any_battle_vote(
         .order_by(Vote.created_at.asc(), Vote.id.asc())
     )
     return db.execute(stmt).scalars().first()
+
+
+def find_consumer_battle_vote(
+    db: Session,
+    *,
+    battle_id: uuid.UUID,
+    consumer_type: str,
+) -> Vote | None:
+    existing_votes = _existing_votes_from_stub(db)
+    normalized_consumer_type = "bot" if consumer_type == "bot" else "human"
+    if existing_votes is not None:
+        return cast(
+            Vote | None,
+            next(
+                (
+                    vote
+                    for vote in existing_votes
+                    if getattr(vote, "battle_id", None) == battle_id
+                    and _vote_matches_consumer(vote, normalized_consumer_type)
+                ),
+                None,
+            ),
+        )
+
+    stmt = (
+        select(Vote)
+        .where(Vote.battle_id == battle_id, _consumer_filter(normalized_consumer_type))
+        .order_by(Vote.created_at.asc(), Vote.id.asc())
+    )
+    return db.execute(stmt).scalars().first()
+
+
+def _vote_matches_consumer(vote: object, consumer_type: str) -> bool:
+    has_service_account = getattr(vote, "service_account_id", None) is not None
+    return has_service_account if consumer_type == "bot" else not has_service_account
+
+
+def _consumer_filter(consumer_type: str) -> object:
+    if consumer_type == "bot":
+        return Vote.service_account_id.is_not(None)
+    return Vote.service_account_id.is_(None)

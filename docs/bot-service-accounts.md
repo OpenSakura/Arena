@@ -72,6 +72,10 @@ documentation, screenshots, logs, issue trackers, or analytics.
 
 Bot clients use the non-streaming create-and-wait endpoint with the service token
 as a bearer token. Include `Idempotency-Key` for retry-safe external jobs.
+When neither `task_id` nor `task_set_id` is provided, the endpoint may return a
+completed battle from the service-account pool instead of creating a fresh
+battle. The idempotency key still maps retries for the same service account to
+the same pooled assignment.
 
 ```bash
 curl -X POST "https://arena.example.com/api/v1/bot/battles/create-and-wait" \
@@ -98,7 +102,9 @@ needed by the external judge:
 ```
 
 Use `GET /api/v1/bot/battles/{battle_id}` with `battle:read` to poll a timed-out
-or previously created bot-owned battle.
+or previously created bot-owned battle. The same status route also reads
+completed pooled battles assigned to that service account, even though the
+underlying `Battle` owner fields remain unchanged for reuse by human judges.
 
 ## Vote Metadata
 

@@ -4,7 +4,7 @@ import uuid
 
 from app.utils.requester_identity import (
     RequesterIdentity,
-    find_any_battle_vote,
+    find_consumer_battle_vote,
     find_existing_battle_vote,
 )
 
@@ -48,19 +48,37 @@ def test_find_existing_vote_uses_authenticated_user_lookup() -> None:
     assert "votes.voter_user_id =" in sql
 
 
-def test_find_any_battle_vote_uses_global_battle_lookup() -> None:
+def test_find_consumer_battle_vote_uses_human_slot_lookup() -> None:
     db = _CaptureDB(result=object())
 
-    vote = find_any_battle_vote(
+    vote = find_consumer_battle_vote(
         db,  # type: ignore[arg-type]
         battle_id=uuid.uuid4(),
+        consumer_type="human",
     )
 
     assert vote is not None
     assert db.execute_calls == 1
     sql = str(db.stmts[0])
     assert "votes.battle_id =" in sql
+    assert "votes.service_account_id IS NULL" in sql
     assert "votes.voter_user_id =" not in sql
+
+
+def test_find_consumer_battle_vote_uses_bot_slot_lookup() -> None:
+    db = _CaptureDB(result=object())
+
+    vote = find_consumer_battle_vote(
+        db,  # type: ignore[arg-type]
+        battle_id=uuid.uuid4(),
+        consumer_type="bot",
+    )
+
+    assert vote is not None
+    assert db.execute_calls == 1
+    sql = str(db.stmts[0])
+    assert "votes.battle_id =" in sql
+    assert "votes.service_account_id IS NOT NULL" in sql
 
 
 def test_judge_key_is_user_scoped() -> None:

@@ -13,7 +13,7 @@ from app.core.config import Settings, get_settings
 from app.core.csrf import csrf_exempt
 from app.core.security import Principal, require_scopes
 from app.db.session import get_db
-from app.models.battle import Battle, Run
+from app.models.battle import Battle, BotPooledBattleClaim, Run
 from app.schemas._types import UuidStr
 from app.schemas.battles import BattleCreate
 from app.schemas.bot import (
@@ -82,6 +82,19 @@ async def create_and_wait_battle(
         )
 
     if battle is None:
+        if payload.task_id is None and payload.task_set_id is None:
+            pooled_battle = _claim_bot_pool_battle(
+                db=db,
+                principal=principal,
+                service_account_id=service_account_id,
+                idempotency_key=idempotency_key,
+                settings=settings,
+            )
+            if pooled_battle is not None:
+                response.status_code = status.HTTP_200_OK
+                runs = _load_battle_runs(db=db, battle_id=pooled_battle.id)
+                return _to_bot_create_response(battle=pooled_battle, runs=runs)
+
         battle = _create_bot_battle(
             db=db,
             payload=payload,
@@ -135,6 +148,12 @@ def get_bot_battle(
         battle_id=battle_uuid,
         service_account_id=service_account_id,
     )
+    if battle is None:
+        battle = _load_assigned_pooled_battle(
+            db=db,
+            battle_id=battle_uuid,
+            service_account_id=service_account_id,
+        )
     if battle is None:
         raise HTTPException(status_code=404, detail="Battle not found")
 
@@ -215,6 +234,109 @@ def _create_bot_battle(
     return battle
 
 
+def _claim_bot_pool_battle(
+    *,
+    db: Session,
+    principal: Principal,
+    service_account_id: uuid.UUID,
+    idempotency_key: str | None,
+    settings: Settings,
+) -> Battle | None:
+    from app.services.battle_prepopulation import claim_eligible_pool_battle
+
+    if idempotency_key is not None:
+        existing = _load_idempotent_pooled_battle(
+            db=db,
+            service_account_id=service_account_id,
+            idempotency_key=idempotency_key,
+        )
+        if existing is not None:
+            return existing
+        claim = BotPooledBattleClaim(
+            service_account_id=service_account_id,
+            idempotency_key=idempotency_key,
+        )
+        try:
+            db.add(claim)
+            db.flush()
+        except IntegrityError as exc:
+            return _handle_bot_pooled_claim_integrity_error(
+                db=db,
+                service_account_id=service_account_id,
+                idempotency_key=idempotency_key,
+                exc=exc,
+            )
+        selection = claim_eligible_pool_battle(
+            db,
+            principal,
+            settings=settings,
+            commit=False,
+        )
+        if selection is None:
+            db.rollback()
+            return None
+    else:
+        claim = None
+        selection = claim_eligible_pool_battle(db, principal, settings=settings)
+
+    if selection is None:
+        return None
+
+    battle = selection.battle
+    metadata = battle.metadata_json if isinstance(battle.metadata_json, dict) else {}
+    metadata = _mark_bot_pooled_assignment_ready(
+        metadata=metadata,
+        service_account_id=service_account_id,
+        idempotency_key=idempotency_key,
+    )
+    battle.metadata_json = {
+        **metadata,
+        "bot_pooled_replay": True,
+    }
+    if claim is not None:
+        claim.battle_id = battle.id
+        db.add(claim)
+    db.add(battle)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        if idempotency_key is not None:
+            return _handle_bot_pooled_claim_integrity_error(
+                db=db,
+                service_account_id=service_account_id,
+                idempotency_key=idempotency_key,
+                exc=exc,
+            )
+        return _handle_bot_battle_integrity_error(
+            db=db,
+            service_account_id=service_account_id,
+            idempotency_key=idempotency_key,
+            exc=exc,
+        )
+    db.refresh(battle)
+    return battle
+
+
+def _mark_bot_pooled_assignment_ready(
+    *,
+    metadata: dict[str, object],
+    service_account_id: uuid.UUID,
+    idempotency_key: str | None,
+) -> dict[str, object]:
+    scoped = metadata.get("pooled_replays")
+    scoped_replays = dict(scoped) if isinstance(scoped, dict) else {}
+    replay = scoped_replays.get("bot")
+    if isinstance(replay, dict):
+        scoped_replays["bot"] = {
+            **replay,
+            "assigned_service_account_id": str(service_account_id),
+            "idempotency_key": idempotency_key,
+            "unlocked": True,
+            "expires_at": None,
+        }
+    return {**metadata, "pooled_replays": scoped_replays}
+
+
 def _handle_bot_battle_integrity_error(
     *,
     db: Session,
@@ -237,6 +359,27 @@ def _handle_bot_battle_integrity_error(
     ) from exc
 
 
+def _handle_bot_pooled_claim_integrity_error(
+    *,
+    db: Session,
+    service_account_id: uuid.UUID,
+    idempotency_key: str,
+    exc: IntegrityError,
+) -> Battle:
+    db.rollback()
+    existing = _load_idempotent_pooled_battle(
+        db=db,
+        service_account_id=service_account_id,
+        idempotency_key=idempotency_key,
+    )
+    if existing is not None:
+        return existing
+    raise HTTPException(
+        status_code=409,
+        detail="Pooled battle claim is still being assigned, please retry",
+    ) from exc
+
+
 def _load_idempotent_battle(
     *,
     db: Session,
@@ -251,6 +394,27 @@ def _load_idempotent_battle(
     ).scalar_one_or_none()
 
 
+def _load_idempotent_pooled_battle(
+    *,
+    db: Session,
+    service_account_id: uuid.UUID,
+    idempotency_key: str,
+) -> Battle | None:
+    claim = db.execute(
+        select(BotPooledBattleClaim).where(
+            BotPooledBattleClaim.service_account_id == service_account_id,
+            BotPooledBattleClaim.idempotency_key == idempotency_key,
+        )
+    ).scalar_one_or_none()
+    if claim is None or claim.battle_id is None:
+        return None
+    return _load_assigned_pooled_battle(
+        db=db,
+        battle_id=claim.battle_id,
+        service_account_id=service_account_id,
+    )
+
+
 def _load_owned_battle(
     *,
     db: Session,
@@ -263,6 +427,32 @@ def _load_owned_battle(
             Battle.requester_service_account_id == service_account_id,
         )
     ).scalar_one_or_none()
+
+
+def _load_assigned_pooled_battle(
+    *,
+    db: Session,
+    battle_id: uuid.UUID,
+    service_account_id: uuid.UUID,
+) -> Battle | None:
+    battle = db.get(Battle, battle_id)
+    if battle is None or battle.status != "completed":
+        return None
+    replay = _bot_pooled_replay(battle.metadata_json if isinstance(battle.metadata_json, dict) else {})
+    if not isinstance(replay, dict):
+        return None
+    if replay.get("assigned_service_account_id") != str(service_account_id):
+        return None
+    return battle
+
+
+def _bot_pooled_replay(metadata: dict[str, object]) -> dict[str, object] | None:
+    scoped = metadata.get("pooled_replays")
+    if isinstance(scoped, dict):
+        replay = scoped.get("bot")
+        if isinstance(replay, dict):
+            return replay
+    return None
 
 
 def _load_battle_runs(*, db: Session, battle_id: uuid.UUID) -> list[Run]:

@@ -656,7 +656,7 @@ def _locked_backend_gated_pooled_replay(battle: Battle) -> dict[str, object] | N
     if battle.status != "completed":
         return None
     metadata = battle.metadata_json if isinstance(battle.metadata_json, dict) else {}
-    replay = metadata.get("pooled_replay")
+    replay = _human_pooled_replay(metadata)
     if not isinstance(replay, dict):
         return None
     if replay.get("backend_gated") is not True or replay.get("unlocked") is True:
@@ -673,7 +673,7 @@ def _backend_gated_pooled_replay_assigned_to_principal(
     principal: Principal,
 ) -> bool:
     metadata = battle.metadata_json if isinstance(battle.metadata_json, dict) else {}
-    replay = metadata.get("pooled_replay")
+    replay = _human_pooled_replay(metadata)
     if not isinstance(replay, dict):
         return True
     assigned_user_id = replay.get("assigned_user_id")
@@ -688,7 +688,7 @@ def _unlocked_backend_gated_pooled_replay_assigned_to_principal(
     principal: Principal,
 ) -> bool:
     metadata = battle.metadata_json if isinstance(battle.metadata_json, dict) else {}
-    replay = metadata.get("pooled_replay")
+    replay = _human_pooled_replay(metadata)
     if not isinstance(replay, dict):
         return False
     return (
@@ -724,7 +724,7 @@ def _missing_backend_gated_pooled_replay(
     settings: Settings | None,
 ) -> bool:
     metadata = battle.metadata_json if isinstance(battle.metadata_json, dict) else {}
-    if isinstance(metadata.get("pooled_replay"), dict):
+    if isinstance(_human_pooled_replay(metadata), dict):
         return False
 
     from app.services.battle_prepopulation import is_battle_pool_eligible
@@ -733,10 +733,23 @@ def _missing_backend_gated_pooled_replay(
         is_battle_pool_eligible(
             battle,
             has_vote=has_vote,
+            consumer_type="human",
             settings=settings,
         )
         is not None
     )
+
+
+def _human_pooled_replay(metadata: dict[str, object]) -> dict[str, object] | None:
+    scoped = metadata.get("pooled_replays")
+    if isinstance(scoped, dict):
+        replay = scoped.get("human")
+        if isinstance(replay, dict):
+            return replay
+    replay = metadata.get("pooled_replay")
+    if isinstance(replay, dict):
+        return replay
+    return None
 
 
 def _locked_pooled_replay_prepopulation(
@@ -884,6 +897,26 @@ def _require_battle_access(
     raise HTTPException(status_code=403, detail=forbidden_detail)
 
 
+def can_access_assigned_bot_pool_battle(
+    battle: Battle,
+    *,
+    principal: Principal,
+) -> bool:
+    if not principal.is_authenticated:
+        return False
+    if getattr(principal, "actor_type", "human") != "bot":
+        return False
+    if principal.service_account_id is None:
+        return False
+    if battle.status != "completed":
+        return False
+    metadata = battle.metadata_json if isinstance(battle.metadata_json, dict) else {}
+    replay = _bot_pooled_replay(metadata)
+    if not isinstance(replay, dict):
+        return False
+    return replay.get("assigned_service_account_id") == principal.service_account_id
+
+
 def _pool_access_state(
     *,
     db: Session,
@@ -894,7 +927,8 @@ def _pool_access_state(
     if not _is_potential_pool_access_candidate(battle):
         return False, None
 
-    has_vote = _battle_has_vote(db, battle.id)
+    consumer_type = "bot" if getattr(principal, "actor_type", "human") == "bot" else "human"
+    has_vote = _battle_has_vote(db, battle.id, consumer_type=consumer_type)
     from app.services.battle_prepopulation import can_access_pool_battle
 
     return (
@@ -916,20 +950,43 @@ def _is_potential_pool_access_candidate(battle: Battle) -> bool:
     if metadata.get("pre_generated") is True and metadata.get("prepopulation_job_id"):
         return True
 
-    if getattr(battle, "requester_service_account_id", None) is not None:
-        return False
-
     return isinstance(getattr(battle, "created_at", None), datetime.datetime)
 
 
-def _battle_has_vote(db: Session, battle_id: uuid.UUID) -> bool:
+def _bot_pooled_replay(metadata: dict[str, object]) -> dict[str, object] | None:
+    scoped = metadata.get("pooled_replays")
+    if isinstance(scoped, dict):
+        replay = scoped.get("bot")
+        if isinstance(replay, dict):
+            return replay
+    return None
+
+
+def _battle_has_vote(db: Session, battle_id: uuid.UUID, *, consumer_type: str = "human") -> bool:
     existing_votes = getattr(db, "existing_votes", None)
     if isinstance(existing_votes, list):
-        return any(getattr(vote, "battle_id", None) == battle_id for vote in existing_votes)
+        return any(
+            getattr(vote, "battle_id", None) == battle_id
+            and (
+                getattr(vote, "service_account_id", None) is not None
+                if consumer_type == "bot"
+                else getattr(vote, "service_account_id", None) is None
+            )
+            for vote in existing_votes
+        )
     if hasattr(db, "execute_rows") or hasattr(db, "runs"):
         return False
     return (
-        db.execute(select(Vote.id).where(Vote.battle_id == battle_id).limit(1))
+        db.execute(
+            select(Vote.id)
+            .where(
+                Vote.battle_id == battle_id,
+                Vote.service_account_id.is_not(None)
+                if consumer_type == "bot"
+                else Vote.service_account_id.is_(None),
+            )
+            .limit(1)
+        )
         .scalar_one_or_none()
         is not None
     )

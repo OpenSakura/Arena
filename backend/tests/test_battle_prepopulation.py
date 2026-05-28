@@ -123,6 +123,7 @@ def _battle(
         status=status,
         metadata_json=metadata,
         created_at=created_at or datetime(2026, 5, 26, 12, 0, tzinfo=timezone.utc),
+        requester_service_account_id=None,
     )
 
 
@@ -463,6 +464,21 @@ def test_user_created_completed_unvoted_battle_enters_pool_after_24_hours() -> N
     ) is None
 
 
+def test_bot_created_completed_unvoted_battle_enters_human_pool_after_recycle_delay() -> None:
+    service = _prepopulation_service()
+    now = datetime(2026, 5, 26, 12, 0, tzinfo=timezone.utc)
+    recycled = _battle(created_at=now - timedelta(hours=24, seconds=1))
+    recycled.requester_service_account_id = uuid.uuid4()
+
+    assert service.is_battle_pool_eligible(
+        recycled,
+        has_vote=False,
+        consumer_type="human",
+        now=now,
+        settings=_settings(),
+    ) == "user_recycled"
+
+
 @pytest.mark.parametrize("status", ["pending", "running", "failed"])
 def test_pool_selection_requires_completed_unvoted_battles(status: str) -> None:
     service = _prepopulation_service()
@@ -627,6 +643,7 @@ def test_create_battle_prefers_completed_unvoted_pool_candidate(monkeypatch: pyt
         "assigned_at": "2026-05-26T12:00:00+00:00",
         "expires_at": "2026-05-26T12:15:00+00:00",
         "assigned_user_id": principal.user_id,
+        "assigned_service_account_id": None,
         "source": "admin_pre_generated",
         "display_delay_ms": 12_345,
         "backend_gated": True,
@@ -1251,7 +1268,7 @@ def test_one_model_constraint_rejects_when_no_distinct_opponent_exists() -> None
     assert "distinct" in str(exc_info.value.detail).lower()
 
 
-def test_second_vote_on_same_battle_is_rejected_globally(
+def test_second_human_vote_on_same_battle_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     creator_user_id = str(uuid.uuid4())

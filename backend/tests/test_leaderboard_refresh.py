@@ -81,13 +81,16 @@ def _seed_mixed_vote_source_samples(db: Session) -> dict[str, object]:
     db.add_all([task, model_a, model_b])
     db.flush()
 
-    battle = Battle(task_id=task.id, status="completed")
-    db.add(battle)
+    battle_one = Battle(task_id=task.id, status="completed")
+    battle_two = Battle(task_id=task.id, status="completed")
+    db.add_all([battle_one, battle_two])
     db.flush()
     db.add_all(
         [
-            Run(battle_id=battle.id, side="A", model_id=model_a.id),
-            Run(battle_id=battle.id, side="B", model_id=model_b.id),
+            Run(battle_id=battle_one.id, side="A", model_id=model_a.id),
+            Run(battle_id=battle_one.id, side="B", model_id=model_b.id),
+            Run(battle_id=battle_two.id, side="A", model_id=model_a.id),
+            Run(battle_id=battle_two.id, side="B", model_id=model_b.id),
         ]
     )
 
@@ -131,14 +134,14 @@ def _seed_mixed_vote_source_samples(db: Session) -> dict[str, object]:
     db.flush()
 
     human_vote = Vote(
-        battle_id=battle.id,
+        battle_id=battle_one.id,
         winner="A",
         voter_user_id=human_user.id,
         revealed=True,
         created_at=created_at,
     )
     bot_vote_one = Vote(
-        battle_id=battle.id,
+        battle_id=battle_one.id,
         winner="B",
         voter_user_id=bot_user_one.id,
         service_account_id=service_account_one.id,
@@ -147,7 +150,7 @@ def _seed_mixed_vote_source_samples(db: Session) -> dict[str, object]:
         created_at=created_at + timedelta(minutes=1),
     )
     bot_vote_two = Vote(
-        battle_id=battle.id,
+        battle_id=battle_two.id,
         winner="tie",
         voter_user_id=bot_user_two.id,
         service_account_id=service_account_two.id,

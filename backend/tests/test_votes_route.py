@@ -299,7 +299,7 @@ def test_build_vote_submit_response_raises_when_model_lookup_fails() -> None:
     assert exc_info.value.detail == "Model not found"
 
 
-def test_find_any_battle_vote_uses_battle_lookup() -> None:
+def test_find_consumer_battle_vote_uses_human_battle_lookup() -> None:
     battle_id = uuid.uuid4()
     matching_vote = SimpleNamespace(battle_id=battle_id)
     db = _VoteDB(
@@ -308,13 +308,13 @@ def test_find_any_battle_vote_uses_battle_lookup() -> None:
         existing_votes=[SimpleNamespace(battle_id=uuid.uuid4()), matching_vote],
     )
 
-    assert votes.find_any_battle_vote(db, battle_id=battle_id) is matching_vote  # type: ignore[arg-type]
+    assert votes.find_consumer_battle_vote(db, battle_id=battle_id, consumer_type="human") is matching_vote  # type: ignore[arg-type]
 
 
 def test_resolve_duplicate_vote_conflict_raises_500_when_vote_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(votes, "find_any_battle_vote", lambda *_a, **_kw: None)
+    monkeypatch.setattr(votes, "find_consumer_battle_vote", lambda *_a, **_kw: None)
 
     with pytest.raises(HTTPException) as exc_info:
         votes._resolve_duplicate_vote_conflict(
@@ -336,7 +336,7 @@ def test_resolve_duplicate_vote_conflict_raises_409_for_existing_vote(
 ) -> None:
     monkeypatch.setattr(
         votes,
-        "find_any_battle_vote",
+        "find_consumer_battle_vote",
         lambda *_a, **_kw: SimpleNamespace(id=uuid.uuid4(), winner="B", revealed=True),
     )
 
@@ -367,7 +367,7 @@ def test_resolve_duplicate_vote_conflict_rejects_same_winner_existing_vote(
     )
     monkeypatch.setattr(
         votes,
-        "find_any_battle_vote",
+        "find_consumer_battle_vote",
         lambda *_a, **_kw: existing_vote,
     )
 
@@ -398,7 +398,7 @@ def test_resolve_duplicate_vote_conflict_rejects_unrevealed_existing_vote_withou
     )
     monkeypatch.setattr(
         votes,
-        "find_any_battle_vote",
+        "find_consumer_battle_vote",
         lambda *_a, **_kw: existing_vote,
     )
 
@@ -521,7 +521,7 @@ def test_submit_vote_rejects_vote_when_selected_side_has_no_output(
             SimpleNamespace(side="B", model_id=model_b_id, output_text=None),
         ],
     )
-    monkeypatch.setattr(votes, "find_any_battle_vote", lambda *_a, **_kw: None)
+    monkeypatch.setattr(votes, "find_consumer_battle_vote", lambda *_a, **_kw: None)
 
     with pytest.raises(HTTPException) as exc_info:
         votes.submit_vote(
@@ -546,7 +546,7 @@ def test_submit_vote_rejects_authenticated_non_creator_before_reveal(
 
     monkeypatch.setattr(
         votes,
-        "find_any_battle_vote",
+        "find_consumer_battle_vote",
         lambda *_a, **_kw: pytest.fail("vote lookup must not run before auth"),
     )
     monkeypatch.setattr(
@@ -592,7 +592,7 @@ def test_submit_vote_allows_non_creator_for_pool_eligible_unvoted_battle(
         },
     )
 
-    monkeypatch.setattr(votes, "find_any_battle_vote", lambda *_a, **_kw: None)
+    monkeypatch.setattr(votes, "find_consumer_battle_vote", lambda *_a, **_kw: None)
     monkeypatch.setattr(votes, "_enforce_auth_vote_rate_limit", lambda **_kw: None)
 
     response = votes.submit_vote(
@@ -618,7 +618,7 @@ def test_submit_vote_rejects_unassigned_pool_battle_before_reveal(
 
     monkeypatch.setattr(
         votes,
-        "find_any_battle_vote",
+        "find_consumer_battle_vote",
         lambda *_a, **_kw: pytest.fail("unassigned pool replay must fail before vote lookup"),
     )
     monkeypatch.setattr(
@@ -662,7 +662,7 @@ def test_submit_vote_rejects_expired_locked_pool_replay_before_reveal(
 
     monkeypatch.setattr(
         votes,
-        "find_any_battle_vote",
+        "find_consumer_battle_vote",
         lambda *_a, **_kw: pytest.fail("expired locked replay must fail before vote lookup"),
     )
     monkeypatch.setattr(
@@ -701,7 +701,7 @@ def test_submit_vote_rejects_locked_backend_gated_pooled_replay(
 
     monkeypatch.setattr(
         votes,
-        "find_any_battle_vote",
+        "find_consumer_battle_vote",
         lambda *_a, **_kw: pytest.fail("locked replay must fail before vote lookup"),
     )
     monkeypatch.setattr(
@@ -749,7 +749,7 @@ def test_submit_vote_allows_unlocked_backend_gated_pooled_replay(
         },
     )
 
-    monkeypatch.setattr(votes, "find_any_battle_vote", lambda *_a, **_kw: None)
+    monkeypatch.setattr(votes, "find_consumer_battle_vote", lambda *_a, **_kw: None)
     monkeypatch.setattr(votes, "_enforce_auth_vote_rate_limit", lambda **_kw: None)
 
     response = votes.submit_vote(
@@ -786,7 +786,7 @@ def test_submit_vote_rejects_unlocked_pool_replay_assigned_to_other_user(
 
     monkeypatch.setattr(
         votes,
-        "find_any_battle_vote",
+        "find_consumer_battle_vote",
         lambda *_a, **_kw: pytest.fail("other user's replay must fail before vote lookup"),
     )
     monkeypatch.setattr(
@@ -822,7 +822,7 @@ def test_submit_vote_rejects_non_creator_for_pool_battle_after_any_vote(
 
     monkeypatch.setattr(
         votes,
-        "find_any_battle_vote",
+        "find_consumer_battle_vote",
         lambda *_a, **_kw: pytest.fail("vote lookup must not run after pool auth denial"),
     )
     monkeypatch.setattr(
@@ -862,7 +862,7 @@ def test_submit_vote_allows_admin_non_creator(
         },
     )
     admin_group_name = "arena-admins"
-    monkeypatch.setattr(votes, "find_any_battle_vote", lambda *_a, **_kw: None)
+    monkeypatch.setattr(votes, "find_consumer_battle_vote", lambda *_a, **_kw: None)
     monkeypatch.setattr(votes, "_enforce_auth_vote_rate_limit", lambda **_kw: None)
     monkeypatch.setattr(
         battles,
@@ -968,7 +968,7 @@ def test_submit_vote_rejects_different_human_second_vote(
     assert exc_info.value.detail == "Battle already has a vote"
 
 
-def test_submit_vote_rejects_human_after_bot_second_vote(
+def test_submit_vote_allows_human_after_bot_vote(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     human_user_id = str(uuid.uuid4())
@@ -981,24 +981,25 @@ def test_submit_vote_rejects_human_after_bot_second_vote(
         service_account_id=uuid.uuid4(),
     )
     db = _VoteDB(battle=battle, runs=runs, existing_votes=[existing_vote])
-    monkeypatch.setattr(
-        votes,
-        "_enforce_auth_vote_rate_limit",
-        lambda **_kw: pytest.fail("duplicate vote must not rate limit"),
+    monkeypatch.setattr(votes, "_enforce_auth_vote_rate_limit", lambda **_kw: None)
+    db._model_lookup.update(
+        {
+            runs[0].model_id: SimpleNamespace(id=runs[0].model_id, display_name="Model A"),
+            runs[1].model_id: SimpleNamespace(id=runs[1].model_id, display_name="Model B"),
+        }
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        votes.submit_vote(
-            battle_id=str(battle.id),
-            payload=VoteCreate(winner="B"),
-            response=Response(),
-            db=db,  # type: ignore[arg-type]
-            principal=_authenticated_principal(user_id=human_user_id),
-            settings=_settings(),  # type: ignore[arg-type]
-        )
+    response = votes.submit_vote(
+        battle_id=str(battle.id),
+        payload=VoteCreate(winner="B"),
+        response=Response(),
+        db=db,  # type: ignore[arg-type]
+        principal=_authenticated_principal(user_id=human_user_id),
+        settings=_settings(),  # type: ignore[arg-type]
+    )
 
-    assert exc_info.value.status_code == 409
-    assert exc_info.value.detail == "Battle already has a vote"
+    assert response.winner == "B"
+    assert db.commit_calls == 1
 
 
 def test_submit_vote_records_vote_and_uses_human_auth_rate_limit_key(
@@ -1016,7 +1017,7 @@ def test_submit_vote_records_vote_and_uses_human_auth_rate_limit_key(
     principal = _authenticated_principal()
     limiter = _CaptureRateLimiter()
 
-    monkeypatch.setattr(votes, "find_any_battle_vote", lambda *_a, **_kw: None)
+    monkeypatch.setattr(votes, "find_consumer_battle_vote", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         votes, "_get_auth_vote_submit_rate_limiter", lambda: limiter
     )
@@ -1068,7 +1069,7 @@ def test_submit_vote_persists_bot_metadata_and_safe_attribution(
     )
     limiter = _CaptureRateLimiter()
 
-    monkeypatch.setattr(votes, "find_any_battle_vote", lambda *_a, **_kw: None)
+    monkeypatch.setattr(votes, "find_consumer_battle_vote", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         votes, "_get_auth_vote_submit_rate_limiter", lambda: limiter
     )
@@ -1101,6 +1102,56 @@ def test_submit_vote_persists_bot_metadata_and_safe_attribution(
     assert not hasattr(response, "plaintext_token")
 
 
+def test_submit_vote_allows_assigned_unlocked_bot_pool_battle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot_user_id = str(uuid.uuid4())
+    service_account_id = uuid.uuid4()
+    service_account_token_id = uuid.uuid4()
+    principal = _bot_principal(
+        user_id=bot_user_id,
+        service_account_id=service_account_id,
+        service_account_token_id=service_account_token_id,
+    )
+    battle, runs, model_a_id, model_b_id = _pool_battle_and_runs()
+    battle.metadata_json["pooled_replays"] = {
+        "human": None,
+        "bot": {
+            "backend_gated": True,
+            "display_delay_ms": 12_345,
+            "assigned_user_id": bot_user_id,
+            "assigned_service_account_id": str(service_account_id),
+            "source": "admin_pre_generated",
+            "unlocked": True,
+        },
+    }
+    db = _VoteDB(
+        battle=battle,
+        runs=runs,
+        model_lookup={
+            model_a_id: SimpleNamespace(id=model_a_id, display_name="Model A"),
+            model_b_id: SimpleNamespace(id=model_b_id, display_name="Model B"),
+        },
+    )
+    monkeypatch.setattr(votes, "find_consumer_battle_vote", lambda *_a, **_kw: None)
+    monkeypatch.setattr(votes, "_enforce_auth_vote_rate_limit", lambda **_kw: None)
+
+    response = votes.submit_vote(
+        battle_id=str(battle.id),
+        payload=VoteCreate(winner="A", bot_metadata={"run": "pooled"}),
+        response=Response(),
+        db=db,  # type: ignore[arg-type]
+        principal=principal,
+        settings=_settings(),  # type: ignore[arg-type]
+    )
+
+    assert response.winner == "A"
+    assert response.voter_actor_type == "bot"
+    assert db.vote_row is not None
+    assert db.vote_row.service_account_id == service_account_id
+    assert db.commit_calls == 1
+
+
 def test_submit_vote_rejects_human_bot_metadata_without_writing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1108,7 +1159,7 @@ def test_submit_vote_rejects_human_bot_metadata_without_writing(
     db = _VoteDB(battle=battle, runs=runs)
     monkeypatch.setattr(
         votes,
-        "find_any_battle_vote",
+        "find_consumer_battle_vote",
         lambda *_a, **_kw: pytest.fail("human bot_metadata must fail before lookup"),
     )
     monkeypatch.setattr(
@@ -1143,7 +1194,7 @@ def test_submit_vote_rejects_under_scoped_bot_without_writing(
     principal = _bot_principal(user_id=bot_user_id, scopes=("battle:read",))
     monkeypatch.setattr(
         votes,
-        "find_any_battle_vote",
+        "find_consumer_battle_vote",
         lambda *_a, **_kw: pytest.fail("under-scoped bot must fail before lookup"),
     )
 
@@ -1186,7 +1237,7 @@ def test_submit_vote_rejects_malformed_bot_principal_without_writing(
     )
     monkeypatch.setattr(
         votes,
-        "find_any_battle_vote",
+        "find_consumer_battle_vote",
         lambda *_a, **_kw: pytest.fail("malformed bot must fail before lookup"),
     )
     monkeypatch.setattr(
@@ -1313,14 +1364,20 @@ def test_submit_vote_rejects_duplicate_conflict_after_flush_error(
 
     lookup_calls = 0
 
-    def fake_find_any(_db: object, *, battle_id: uuid.UUID) -> object | None:
+    def fake_find_any(
+        _db: object,
+        *,
+        battle_id: uuid.UUID,
+        consumer_type: str,
+    ) -> object | None:
+        _ = consumer_type
         nonlocal lookup_calls
         lookup_calls += 1
         if lookup_calls == 1:
             return None
         return existing_vote
 
-    monkeypatch.setattr(votes, "find_any_battle_vote", fake_find_any)
+    monkeypatch.setattr(votes, "find_consumer_battle_vote", fake_find_any)
     monkeypatch.setattr(votes, "_enforce_auth_vote_rate_limit", lambda **_kw: None)
 
     with pytest.raises(HTTPException) as exc_info:
@@ -1354,14 +1411,20 @@ def test_submit_vote_rejects_duplicate_conflict_after_commit_error(
 
     lookup_calls = 0
 
-    def fake_find_any(_db: object, *, battle_id: uuid.UUID) -> object | None:
+    def fake_find_any(
+        _db: object,
+        *,
+        battle_id: uuid.UUID,
+        consumer_type: str,
+    ) -> object | None:
+        _ = consumer_type
         nonlocal lookup_calls
         lookup_calls += 1
         if lookup_calls == 1:
             return None
         return existing_vote
 
-    monkeypatch.setattr(votes, "find_any_battle_vote", fake_find_any)
+    monkeypatch.setattr(votes, "find_consumer_battle_vote", fake_find_any)
     monkeypatch.setattr(votes, "_enforce_auth_vote_rate_limit", lambda **_kw: None)
 
     with pytest.raises(HTTPException) as exc_info:

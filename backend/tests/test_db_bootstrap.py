@@ -70,13 +70,19 @@ class _BootstrapConnection:
         if "FROM pg_constraint" in sql:
             return _ScalarResult(self.unique_constraint_exists)
         if "FROM pg_class index_class" in sql:
-            return _ScalarResult(self.votes_unique_index_exists)
+            index_name = str(params.get("index_name", ""))
+            return _ScalarResult(
+                self.votes_unique_index_exists
+                or index_name in {
+                    "uq_votes_human_battle_id",
+                    "uq_votes_bot_battle_id",
+                }
+                and any(index_name in created for created in self.sql)
+            )
         if "HAVING count(*) > 1" in sql:
             if "FROM votes" in sql:
                 return _RowsResult(self.vote_duplicates)
             return _RowsResult(self.duplicates)
-        if "CREATE UNIQUE INDEX IF NOT EXISTS uq_votes_battle_id" in sql:
-            self.votes_unique_index_exists = True
         return _RowsResult([])
 
 
@@ -162,7 +168,12 @@ def test_votes_battle_id_bootstrap_adds_missing_unique_index_postgres() -> None:
     bootstrap._ensure_votes_battle_id_unique_index(connection)
 
     assert any(
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_votes_battle_id ON votes (battle_id)"
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_votes_human_battle_id ON votes (battle_id) WHERE service_account_id IS NULL"
+        in sql
+        for sql in connection.sql
+    )
+    assert any(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_votes_bot_battle_id ON votes (battle_id) WHERE service_account_id IS NOT NULL"
         in sql
         for sql in connection.sql
     )
@@ -200,7 +211,8 @@ def test_votes_battle_id_bootstrap_upgrades_existing_sqlite_table(tmp_path) -> N
                 CREATE TABLE votes (
                     id TEXT PRIMARY KEY,
                     battle_id TEXT NOT NULL,
-                    voter_user_id TEXT NOT NULL
+                    voter_user_id TEXT NOT NULL,
+                    service_account_id TEXT
                 )
                 """
             )
@@ -221,11 +233,25 @@ def test_votes_battle_id_bootstrap_upgrades_existing_sqlite_table(tmp_path) -> N
         bootstrap._ensure_votes_battle_id_unique_index(connection)
         bootstrap._ensure_votes_battle_id_unique_index(connection)
 
+        connection.execute(
+            text(
+                "INSERT INTO votes (id, battle_id, voter_user_id, service_account_id) "
+                "VALUES ('vote-2', 'battle-1', 'bot-user', 'service-1')"
+            )
+        )
+
         with pytest.raises(IntegrityError):
             connection.execute(
                 text(
                     "INSERT INTO votes (id, battle_id, voter_user_id) "
-                    "VALUES ('vote-2', 'battle-1', 'voter-2')"
+                    "VALUES ('vote-3', 'battle-1', 'voter-2')"
+                )
+            )
+        with pytest.raises(IntegrityError):
+            connection.execute(
+                text(
+                    "INSERT INTO votes (id, battle_id, voter_user_id, service_account_id) "
+                    "VALUES ('vote-4', 'battle-1', 'bot-user-2', 'service-2')"
                 )
             )
     engine.dispose()
@@ -240,7 +266,8 @@ def test_votes_battle_id_bootstrap_rejects_existing_duplicates_sqlite(tmp_path) 
                 CREATE TABLE votes (
                     id TEXT PRIMARY KEY,
                     battle_id TEXT NOT NULL,
-                    voter_user_id TEXT NOT NULL
+                    voter_user_id TEXT NOT NULL,
+                    service_account_id TEXT
                 )
                 """
             )
@@ -264,6 +291,6 @@ def test_votes_battle_id_bootstrap_rejects_existing_duplicates_sqlite(tmp_path) 
             )
         )
 
-        with pytest.raises(RuntimeError, match="Consolidate or delete duplicate votes"):
+        with pytest.raises(RuntimeError, match="Consolidate or delete duplicate human votes"):
             bootstrap._ensure_votes_battle_id_unique_index(connection)
     engine.dispose()

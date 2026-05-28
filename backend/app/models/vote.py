@@ -22,6 +22,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -34,9 +35,18 @@ class Vote(Base):
     __table_args__ = (
         CheckConstraint("winner IN ('A', 'B', 'tie')", name="ck_votes_winner"),
         Index(
-            "uq_votes_battle_id",
+            "uq_votes_human_battle_id",
             "battle_id",
             unique=True,
+            postgresql_where=text("service_account_id IS NULL"),
+            sqlite_where=text("service_account_id IS NULL"),
+        ),
+        Index(
+            "uq_votes_bot_battle_id",
+            "battle_id",
+            unique=True,
+            postgresql_where=text("service_account_id IS NOT NULL"),
+            sqlite_where=text("service_account_id IS NOT NULL"),
         ),
         Index("ix_votes_battle_id", "battle_id"),
         Index("ix_votes_battle_voter_user", "battle_id", "voter_user_id"),

@@ -11,7 +11,15 @@ from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
 
 from app.db.base import Base
-from app.models import Battle, ServiceAccount, ServiceAccountToken, Task, User, Vote
+from app.models import (
+    Battle,
+    BotPooledBattleClaim,
+    ServiceAccount,
+    ServiceAccountToken,
+    Task,
+    User,
+    Vote,
+)
 
 
 @compiles(JSONB, "sqlite")
@@ -137,6 +145,57 @@ def test_bot_vote_stores_service_account_token_and_metadata(
     assert vote.bot_metadata == {"judge": "auto", "score": 0.97}
 
 
+def test_human_and_bot_votes_can_share_battle_once_each(db_session: Session) -> None:
+    service_account, token, bot_user = _create_service_account(
+        db_session,
+        token_hash="sha256:vote-pool",
+    )
+    human_user = _human_user()
+    task = _create_task(db_session)
+    db_session.add(human_user)
+    db_session.flush()
+    battle = Battle(task_id=task.id)
+    db_session.add(battle)
+    db_session.flush()
+
+    db_session.add_all(
+        [
+            Vote(battle_id=battle.id, winner="A", voter_user_id=human_user.id),
+            Vote(
+                battle_id=battle.id,
+                winner="B",
+                voter_user_id=bot_user.id,
+                service_account_id=service_account.id,
+                service_account_token_id=token.id,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    duplicate_human = _human_user(sub=f"duplicate-{uuid.uuid4()}")
+    db_session.add(duplicate_human)
+    db_session.flush()
+    db_session.add(
+        Vote(battle_id=battle.id, winner="tie", voter_user_id=duplicate_human.id)
+    )
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()
+
+    db_session.add(
+        Vote(
+            battle_id=battle.id,
+            winner="tie",
+            voter_user_id=bot_user.id,
+            service_account_id=service_account.id,
+            service_account_token_id=token.id,
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()
+
+
 def test_duplicate_token_hash_is_rejected(db_session: Session) -> None:
     service_account, token, _bot_user = _create_service_account(
         db_session, token_hash="sha256:duplicate"
@@ -173,6 +232,67 @@ def test_duplicate_non_null_service_account_idempotency_is_rejected(
         idempotency_key="create-battle-1",
     )
     db_session.add(duplicate_battle)
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()
+
+
+def test_duplicate_pooled_bot_claim_idempotency_is_rejected(
+    db_session: Session,
+) -> None:
+    service_account, _token, _bot_user = _create_service_account(
+        db_session,
+        token_hash="sha256:pooled-idempotency",
+    )
+
+    first_claim = BotPooledBattleClaim(
+        service_account_id=service_account.id,
+        idempotency_key="pooled-key",
+    )
+    db_session.add(first_claim)
+    db_session.commit()
+
+    db_session.add(
+        BotPooledBattleClaim(
+            service_account_id=service_account.id,
+            idempotency_key="pooled-key",
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()
+
+
+def test_pooled_bot_claim_battle_mapping_is_unique(db_session: Session) -> None:
+    service_account_one, _token_one, _bot_user_one = _create_service_account(
+        db_session,
+        token_hash="sha256:pooled-battle-one",
+    )
+    service_account_two, _token_two, _bot_user_two = _create_service_account(
+        db_session,
+        token_hash="sha256:pooled-battle-two",
+    )
+    task = _create_task(db_session)
+    battle = Battle(task_id=task.id, status="completed")
+    db_session.add(battle)
+    db_session.flush()
+
+    db_session.add(
+        BotPooledBattleClaim(
+            service_account_id=service_account_one.id,
+            idempotency_key="claim-one",
+            battle_id=battle.id,
+        )
+    )
+    db_session.commit()
+
+    db_session.add(
+        BotPooledBattleClaim(
+            service_account_id=service_account_two.id,
+            idempotency_key="claim-two",
+            battle_id=battle.id,
+        )
+    )
     with pytest.raises(IntegrityError):
         db_session.commit()
     db_session.rollback()

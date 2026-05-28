@@ -21,7 +21,7 @@ from app.core.config import Settings
 from app.core.security import Principal
 from app.db.base import Base
 import app.models  # noqa: F401
-from app.models.battle import Battle
+from app.models.battle import Battle, BotPooledBattleClaim
 from app.models.model_registry import Model
 from app.models.service_account import ServiceAccount
 from app.models.task import Task
@@ -2110,6 +2110,211 @@ def test_bot_create_and_wait_repeated_idempotency_key_returns_existing_battle(
     assert second.result.run_a is not None
     assert second.result.run_a.output_text == "A output"
     assert len(bot_battle_db.execute(select(Battle)).scalars().all()) == 1
+
+
+def test_bot_create_and_wait_uses_bot_pool_for_implicit_task(
+    bot_battle_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _seed_bot_battle_context(bot_battle_db, suffix="pool")
+    original_user_id = str(uuid.uuid4())
+    pooled = Battle(
+        task_id=context.task.id,
+        mode="jp2zh_ab",
+        status="completed",
+        requester_service_account_id=None,
+        idempotency_key=None,
+        metadata_json={
+            "pre_generated": True,
+            "prepopulation_job_id": str(uuid.uuid4()),
+            "requester_user_id": original_user_id,
+            "task_snapshot": {
+                "source_text": context.task.source_text,
+                "source_lang": "ja",
+                "target_lang": "zh",
+            },
+            "pooled_replays": {"human": None, "bot": None},
+        },
+    )
+    bot_battle_db.add(pooled)
+    bot_battle_db.flush()
+    bot_battle_db.add_all(
+        [
+            bot_battles.Run(
+                battle_id=pooled.id,
+                side="A",
+                model_id=context.model_a.id,
+                output_text="A pooled",
+            ),
+            bot_battles.Run(
+                battle_id=pooled.id,
+                side="B",
+                model_id=context.model_b.id,
+                output_text="B pooled",
+            ),
+        ]
+    )
+    bot_battle_db.commit()
+    orchestrator = _BotRouteOrchestrator(bot_battle_db, outcome="completed")
+    monkeypatch.setattr(
+        bot_battles.human_battles,
+        "_select_task",
+        lambda **_kw: pytest.fail("implicit bot pool must skip fresh task selection"),
+    )
+
+    response = Response()
+    result = asyncio.run(
+        bot_battles.create_and_wait_battle(
+            payload=BotBattleCreateAndWaitRequest(timeout_seconds=5),
+            request=_request(),
+            response=response,
+            idempotency_key="pooled-bot",
+            db=bot_battle_db,
+            principal=_bot_battle_principal(context),
+            settings=cast(Settings, _settings()),
+            orchestrator=cast(bot_battles.BattleOrchestrator, orchestrator),
+        )
+    )
+
+    assert response.status_code == 200
+    assert result.battle_id == str(pooled.id)
+    assert result.status == "completed"
+    assert result.result is not None
+    assert result.result.run_a is not None
+    assert result.result.run_a.output_text == "A pooled"
+    assert orchestrator.calls == []
+    bot_battle_db.refresh(pooled)
+    assert pooled.requester_service_account_id is None
+    assert pooled.idempotency_key is None
+    assert pooled.metadata_json["requester_user_id"] == original_user_id
+    replay = pooled.metadata_json["pooled_replays"]["bot"]
+    assert replay["assigned_service_account_id"] == str(context.service_account.id)
+    assert replay["idempotency_key"] == "pooled-bot"
+    assert replay["unlocked"] is True
+    assert pooled.metadata_json["pooled_replays"]["human"] is None
+
+    status_response = bot_battles.get_bot_battle(
+        str(pooled.id),
+        db=bot_battle_db,
+        principal=_bot_battle_principal(context),
+    )
+    assert status_response.battle_id == str(pooled.id)
+    assert status_response.result is not None
+    assert status_response.result.run_a is not None
+    assert status_response.result.run_a.output_text == "A pooled"
+
+    repeated_response = Response()
+    repeated = asyncio.run(
+        bot_battles.create_and_wait_battle(
+            payload=BotBattleCreateAndWaitRequest(timeout_seconds=5),
+            request=_request(),
+            response=repeated_response,
+            idempotency_key="pooled-bot",
+            db=bot_battle_db,
+            principal=_bot_battle_principal(context),
+            settings=cast(Settings, _settings()),
+            orchestrator=cast(bot_battles.BattleOrchestrator, orchestrator),
+        )
+    )
+    assert repeated_response.status_code == 200
+    assert repeated.battle_id == str(pooled.id)
+    assert orchestrator.calls == []
+    claims = bot_battle_db.execute(select(BotPooledBattleClaim)).scalars().all()
+    assert len(claims) == 1
+    assert claims[0].service_account_id == context.service_account.id
+    assert claims[0].idempotency_key == "pooled-bot"
+    assert claims[0].battle_id == pooled.id
+
+
+def test_bot_create_and_wait_reloads_pooled_claim_after_integrity_error(
+    bot_battle_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _seed_bot_battle_context(bot_battle_db, suffix="pool-race")
+    pooled = Battle(
+        task_id=context.task.id,
+        mode="jp2zh_ab",
+        status="completed",
+        requester_service_account_id=None,
+        idempotency_key=None,
+        metadata_json={
+            "pre_generated": True,
+            "prepopulation_job_id": str(uuid.uuid4()),
+            "requester_user_id": str(uuid.uuid4()),
+            "task_snapshot": {
+                "source_text": context.task.source_text,
+                "source_lang": "ja",
+                "target_lang": "zh",
+            },
+            "pooled_replays": {
+                "human": None,
+                "bot": {
+                    "backend_gated": True,
+                    "display_delay_ms": 12_345,
+                    "assigned_user_id": str(context.bot_user.id),
+                    "assigned_service_account_id": str(context.service_account.id),
+                    "source": "admin_pre_generated",
+                    "unlocked": True,
+                    "idempotency_key": "pooled-race",
+                },
+            },
+        },
+    )
+    bot_battle_db.add(pooled)
+    bot_battle_db.flush()
+    bot_battle_db.add_all(
+        [
+            bot_battles.Run(
+                battle_id=pooled.id,
+                side="A",
+                model_id=context.model_a.id,
+                output_text="A pooled race",
+            ),
+            bot_battles.Run(
+                battle_id=pooled.id,
+                side="B",
+                model_id=context.model_b.id,
+                output_text="B pooled race",
+            ),
+            BotPooledBattleClaim(
+                service_account_id=context.service_account.id,
+                idempotency_key="pooled-race",
+                battle_id=pooled.id,
+            ),
+        ]
+    )
+    bot_battle_db.commit()
+    calls = 0
+
+    def fake_load_idempotent_pooled_battle(**kwargs: object) -> Battle | None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return None
+        return pooled
+
+    monkeypatch.setattr(
+        bot_battles,
+        "_load_idempotent_pooled_battle",
+        fake_load_idempotent_pooled_battle,
+    )
+    monkeypatch.setattr(
+        bot_battles.human_battles,
+        "_select_task",
+        lambda **_kw: pytest.fail("race loser must not create a fresh battle"),
+    )
+
+    result = bot_battles._claim_bot_pool_battle(
+        db=bot_battle_db,
+        principal=_bot_battle_principal(context),
+        service_account_id=context.service_account.id,
+        idempotency_key="pooled-race",
+        settings=cast(Settings, _settings()),
+    )
+
+    assert result is pooled
+    assert calls == 2
+    assert bot_battle_db.execute(select(BotPooledBattleClaim)).scalars().all()[0].battle_id == pooled.id
 
 
 def test_bot_status_route_isolates_battles_by_service_account(

@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.routes.battles import (
+    can_access_assigned_bot_pool_battle,
     _is_admin_principal,
     _require_battle_access,
 )
@@ -40,7 +41,7 @@ from app.schemas.votes import VoteCreate, VoteSubmitResponse
 from app.utils.id import parse_uuid_or_422
 from app.utils.requester_identity import (
     RequesterIdentity,
-    find_any_battle_vote,
+    find_consumer_battle_vote,
 )
 from app.utils.rate_limit import (
     RollingWindowRateLimiter,
@@ -107,14 +108,17 @@ def submit_vote(
     if battle is None:
         raise HTTPException(status_code=404, detail="Battle not found")
 
-    access_has_vote = _require_battle_access(
-        battle=battle,
-        principal=principal,
-        db=db,
-        allow_pool=not is_bot_vote,
-        settings=settings,
-        forbidden_detail="Only the battle creator or an admin may vote on this battle",
-    )
+    if is_bot_vote and can_access_assigned_bot_pool_battle(battle, principal=principal):
+        access_has_vote = None
+    else:
+        access_has_vote = _require_battle_access(
+            battle=battle,
+            principal=principal,
+            db=db,
+            allow_pool=not is_bot_vote,
+            settings=settings,
+            forbidden_detail="Only the battle creator or an admin may vote on this battle",
+        )
 
     if battle.status != "completed":
         raise HTTPException(status_code=409, detail="Battle is not ready for voting")
@@ -168,7 +172,12 @@ def submit_vote(
 
     requester_identity = RequesterIdentity(voter_user_id=voter_user_id)
 
-    if find_any_battle_vote(db, battle_id=battle_uuid) is not None:
+    consumer_type = "bot" if is_bot_vote else "human"
+    if find_consumer_battle_vote(
+        db,
+        battle_id=battle_uuid,
+        consumer_type=consumer_type,
+    ) is not None:
         raise HTTPException(status_code=409, detail="Battle already has a vote")
 
     _enforce_auth_vote_rate_limit(
@@ -210,6 +219,7 @@ def submit_vote(
             service_account_token_id=service_account_token_id,
             bot_metadata=bot_metadata,
             principal=principal,
+            consumer_type=consumer_type,
         )
 
     # Ratings are updated exclusively by the background leaderboard refresh
@@ -234,6 +244,7 @@ def submit_vote(
             service_account_token_id=service_account_token_id,
             bot_metadata=bot_metadata,
             principal=principal,
+            consumer_type=consumer_type,
         )
 
     return _build_vote_submit_response(
@@ -263,8 +274,13 @@ def _resolve_duplicate_vote_conflict(
     service_account_token_id: uuid.UUID | None = None,
     bot_metadata: dict[str, Any] | None = None,
     principal: Principal | None = None,
+    consumer_type: str = "human",
 ) -> VoteSubmitResponse:
-    existing_vote = find_any_battle_vote(db, battle_id=battle_id)
+    existing_vote = find_consumer_battle_vote(
+        db,
+        battle_id=battle_id,
+        consumer_type=consumer_type,
+    )
     if existing_vote is None:
         raise HTTPException(status_code=500, detail="Failed to persist vote")
 

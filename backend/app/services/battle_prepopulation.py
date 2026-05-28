@@ -47,6 +47,7 @@ _POOL_DELAY_MIN_MS = 10_000
 _POOL_DELAY_MAX_MS = 30_000
 _POOL_ASSIGNMENT_TTL_SECONDS = 900
 _POOL_SOURCES = {"admin_pre_generated", "user_recycled"}
+_POOL_CONSUMER_TYPES = {"human", "bot"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,25 +156,24 @@ def is_battle_pool_eligible(
     battle: Any,
     *,
     has_vote: bool,
+    consumer_type: str = "human",
     now: datetime | None = None,
     settings: Settings | Any | None = None,
 ) -> str | None:
+    consumer_type = _normalize_consumer_type(consumer_type)
     if has_vote or getattr(battle, "status", None) != "completed":
         return None
 
     current_time = _normalize_datetime(now or datetime.now(timezone.utc))
     metadata = getattr(battle, "metadata_json", None)
     metadata = metadata if isinstance(metadata, dict) else {}
-    replay = metadata.get("pooled_replay")
+    replay = _pool_replay_for_consumer(metadata, consumer_type)
     if isinstance(replay, dict):
         if not _is_expired_locked_pool_replay(replay, current_time):
             return None
 
     if metadata.get("pre_generated") is True and metadata.get("prepopulation_job_id"):
         return "admin_pre_generated"
-
-    if getattr(battle, "requester_service_account_id", None) is not None:
-        return None
 
     created_at = getattr(battle, "created_at", None)
     if not isinstance(created_at, datetime):
@@ -201,15 +201,14 @@ def can_access_pool_battle(
 ) -> bool:
     if not getattr(principal, "is_authenticated", False):
         return False
-    if getattr(principal, "actor_type", "human") != "human":
-        return False
+    consumer_type = _consumer_type_for_principal(principal)
     if has_vote or getattr(battle, "status", None) != "completed":
         return False
 
     current_time = _normalize_datetime(now or datetime.now(timezone.utc))
     metadata = getattr(battle, "metadata_json", None)
     metadata = metadata if isinstance(metadata, dict) else {}
-    replay = metadata.get("pooled_replay")
+    replay = _pool_replay_for_consumer(metadata, consumer_type)
     if isinstance(replay, dict):
         if _is_unlocked_pool_replay(replay):
             return _pool_replay_assigned_to_principal(replay, principal)
@@ -222,6 +221,7 @@ def can_access_pool_battle(
         is_battle_pool_eligible(
             battle,
             has_vote=has_vote,
+            consumer_type=consumer_type,
             now=current_time,
             settings=settings,
         )
@@ -232,17 +232,24 @@ def can_access_pool_battle(
 def select_eligible_pool_battle(
     db: Session,
     *,
+    consumer_type: str = "human",
     now: datetime | None = None,
     settings: Settings | Any | None = None,
 ) -> PoolBattleSelection | None:
     current_time = now or datetime.now(timezone.utc)
     effective_settings = settings or get_settings()
+    consumer_type = _normalize_consumer_type(consumer_type)
 
     fake_battle = getattr(db, "battle", None)
     if fake_battle is not None:
         source = is_battle_pool_eligible(
             fake_battle,
-            has_vote=_battle_has_vote(db, getattr(fake_battle, "id", None)),
+            has_vote=_battle_has_vote(
+                db,
+                getattr(fake_battle, "id", None),
+                consumer_type=consumer_type,
+            ),
+            consumer_type=consumer_type,
             now=current_time,
             settings=effective_settings,
         )
@@ -267,7 +274,8 @@ def select_eligible_pool_battle(
     for battle in candidates:
         source = is_battle_pool_eligible(
             battle,
-            has_vote=_battle_has_vote(db, battle.id),
+            has_vote=_battle_has_vote(db, battle.id, consumer_type=consumer_type),
+            consumer_type=consumer_type,
             now=current_time,
             settings=effective_settings,
         )
@@ -286,11 +294,14 @@ def claim_eligible_pool_battle(
     principal: Any,
     settings: Settings | Any | None = None,
     now: datetime | None = None,
+    *,
+    commit: bool = True,
 ) -> PoolBattleSelection | None:
     current_time = _normalize_datetime(now or datetime.now(timezone.utc))
     effective_settings = settings or get_settings()
     if not _principal_can_claim_pool(principal):
         return None
+    consumer_type = _consumer_type_for_principal(principal)
 
     fake_battle = getattr(db, "battle", None)
     if fake_battle is not None:
@@ -298,10 +309,16 @@ def claim_eligible_pool_battle(
             db,
             battle=fake_battle,
             principal=principal,
-            has_vote=_battle_has_vote(db, getattr(fake_battle, "id", None)),
+            has_vote=_battle_has_vote(
+                db,
+                getattr(fake_battle, "id", None),
+                consumer_type=consumer_type,
+            ),
             settings=effective_settings,
             now=current_time,
             allow_existing_assigned=False,
+            consumer_type=consumer_type,
+            commit=commit,
         )
 
     if not _is_real_session(db):
@@ -323,10 +340,12 @@ def claim_eligible_pool_battle(
             db,
             battle=battle,
             principal=principal,
-            has_vote=_battle_has_vote(db, battle.id),
+            has_vote=_battle_has_vote(db, battle.id, consumer_type=consumer_type),
             settings=effective_settings,
             now=current_time,
             allow_existing_assigned=False,
+            consumer_type=consumer_type,
+            commit=commit,
         )
         if selection is not None:
             return selection
@@ -347,6 +366,7 @@ def claim_pool_battle_for_principal(
     effective_settings = settings or get_settings()
     if not _principal_can_claim_pool(principal):
         return None
+    consumer_type = _consumer_type_for_principal(principal)
 
     battle_uuid = _coerce_uuid(battle_id, "battle_id")
     battle = _get_pool_battle_for_update(db, battle_uuid)
@@ -357,10 +377,14 @@ def claim_pool_battle_for_principal(
         db,
         battle=battle,
         principal=principal,
-        has_vote=has_vote if not _is_real_session(db) else _battle_has_vote(db, battle_uuid),
+        has_vote=has_vote
+        if not _is_real_session(db)
+        else _battle_has_vote(db, battle_uuid, consumer_type=consumer_type),
         settings=effective_settings,
         now=current_time,
         allow_existing_assigned=True,
+        consumer_type=consumer_type,
+        commit=True,
     )
 
 
@@ -375,10 +399,18 @@ def backend_gated_pooled_replay_blocks_vote(
     current_time = _normalize_datetime(now or datetime.now(timezone.utc))
     metadata = getattr(battle, "metadata_json", None)
     metadata = metadata if isinstance(metadata, dict) else {}
-    replay = metadata.get("pooled_replay")
+    consumer_type = _consumer_type_for_principal(principal)
+    replay = _pool_replay_for_consumer(metadata, consumer_type)
     if isinstance(replay, dict) and replay.get("backend_gated") is True:
         if replay.get("unlocked") is not True:
             return True
+        if consumer_type == "bot":
+            assigned_service_account_id = replay.get("assigned_service_account_id")
+            return assigned_service_account_id is not None and assigned_service_account_id != getattr(
+                principal,
+                "service_account_id",
+                None,
+            )
         assigned_user_id = replay.get("assigned_user_id")
         return assigned_user_id is not None and assigned_user_id != getattr(principal, "user_id", None)
 
@@ -389,6 +421,7 @@ def backend_gated_pooled_replay_blocks_vote(
         is_battle_pool_eligible(
             battle,
             has_vote=has_vote,
+            consumer_type=consumer_type,
             now=current_time,
             settings=settings,
         )
@@ -484,10 +517,11 @@ def get_pool_stats(
         if not isinstance(battle, Battle):
             continue
         total_count += 1
-        has_vote = _battle_has_vote(db, battle.id)
+        has_vote = _battle_has_vote(db, battle.id, consumer_type="human")
         source = is_battle_pool_eligible(
             battle,
             has_vote=has_vote,
+            consumer_type="human",
             now=now,
             settings=effective_settings,
         )
@@ -625,6 +659,7 @@ def _create_prepopulation_battle_for_job(
                 "models": _sampling_label_for_model_ids(job.model_ids or []),
             },
             "automatic_retry_count": 0,
+            "pooled_replays": {"human": None, "bot": None},
         }
         battle = Battle(
             task_id=task.id,
@@ -824,17 +859,26 @@ def _count_jobs_by_status(db: Session, statuses: set[str]) -> int:
         return sum(1 for job in jobs if job.status in statuses)
 
 
-def _battle_has_vote(db: Session, battle_id: Any) -> bool:
+def _battle_has_vote(db: Session, battle_id: Any, *, consumer_type: str = "human") -> bool:
     if battle_id is None:
         return False
+    consumer_type = _normalize_consumer_type(consumer_type)
     existing_votes = getattr(db, "existing_votes", None)
     if isinstance(existing_votes, list):
-        return any(getattr(vote, "battle_id", None) == battle_id for vote in existing_votes)
+        return any(
+            getattr(vote, "battle_id", None) == battle_id
+            and _vote_matches_consumer_type(vote, consumer_type)
+            for vote in existing_votes
+        )
     if hasattr(db, "execute_rows") or hasattr(db, "runs"):
         return False
     try:
         return (
-            db.execute(select(Vote.id).where(Vote.battle_id == battle_id).limit(1))
+            db.execute(
+                select(Vote.id)
+                .where(Vote.battle_id == battle_id, _vote_consumer_filter(consumer_type))
+                .limit(1)
+            )
             .scalar_one_or_none()
             is not None
         )
@@ -851,10 +895,13 @@ def _claim_loaded_pool_battle(
     settings: Settings | Any,
     now: datetime,
     allow_existing_assigned: bool,
+    consumer_type: str,
+    commit: bool,
 ) -> PoolBattleSelection | None:
     metadata = getattr(battle, "metadata_json", None)
     metadata = dict(metadata) if isinstance(metadata, dict) else {}
-    replay = metadata.get("pooled_replay")
+    consumer_type = _normalize_consumer_type(consumer_type)
+    replay = _pool_replay_for_consumer(metadata, consumer_type)
 
     if isinstance(replay, dict):
         if _is_unlocked_pool_replay(replay):
@@ -879,6 +926,7 @@ def _claim_loaded_pool_battle(
     source = is_battle_pool_eligible(
         battle,
         has_vote=has_vote,
+        consumer_type=consumer_type,
         now=now,
         settings=settings,
     )
@@ -886,17 +934,19 @@ def _claim_loaded_pool_battle(
         return None
 
     display_delay_ms = _random_display_delay_ms()
-    metadata["pooled_replay"] = build_pooled_replay_metadata(
+    replay_metadata = build_pooled_replay_metadata(
         principal=principal,
         source=source,
         display_delay_ms=display_delay_ms,
         settings=settings,
         now=now,
     )
+    _set_pool_replay_for_consumer(metadata, consumer_type, replay_metadata)
     battle.metadata_json = metadata
     if _is_real_session(db):
         db.add(battle)
-    db.commit()
+    if commit:
+        db.commit()
     return PoolBattleSelection(
         battle=battle,
         source=source,
@@ -921,6 +971,7 @@ def build_pooled_replay_metadata(
         "assigned_at": current_time.isoformat(),
         "expires_at": expires_at.isoformat(),
         "assigned_user_id": getattr(principal, "user_id", None),
+        "assigned_service_account_id": getattr(principal, "service_account_id", None),
         "source": source,
         "display_delay_ms": display_delay_ms,
         "backend_gated": True,
@@ -946,11 +997,13 @@ def _get_pool_battle_for_update(db: Session, battle_id: uuid.UUID) -> Any | None
 
 
 def _principal_can_claim_pool(principal: Any) -> bool:
-    return (
-        getattr(principal, "is_authenticated", False)
-        and getattr(principal, "actor_type", "human") == "human"
-        and getattr(principal, "user_id", None) is not None
-    )
+    if not getattr(principal, "is_authenticated", False):
+        return False
+    if getattr(principal, "user_id", None) is None:
+        return False
+    if _consumer_type_for_principal(principal) == "human":
+        return True
+    return getattr(principal, "service_account_id", None) is not None
 
 
 def _is_real_session(db: Session) -> bool:
@@ -964,7 +1017,67 @@ def _rollback_if_possible(db: Session) -> None:
 
 
 def _pool_replay_assigned_to_principal(replay: dict[str, Any], principal: Any) -> bool:
+    if _consumer_type_for_principal(principal) == "bot":
+        return replay.get("assigned_service_account_id") == getattr(
+            principal,
+            "service_account_id",
+            None,
+        )
     return replay.get("assigned_user_id") == getattr(principal, "user_id", None)
+
+
+def _normalize_consumer_type(consumer_type: str) -> str:
+    return consumer_type if consumer_type in _POOL_CONSUMER_TYPES else "human"
+
+
+def _consumer_type_for_principal(principal: Any) -> str:
+    return "bot" if getattr(principal, "actor_type", "human") == "bot" else "human"
+
+
+def _pool_replay_for_consumer(
+    metadata: dict[str, Any],
+    consumer_type: str,
+) -> dict[str, Any] | None:
+    consumer_type = _normalize_consumer_type(consumer_type)
+    scoped = metadata.get("pooled_replays")
+    if isinstance(scoped, dict):
+        replay = scoped.get(consumer_type)
+        if isinstance(replay, dict):
+            return replay
+    if consumer_type == "human":
+        replay = metadata.get("pooled_replay")
+        if isinstance(replay, dict):
+            return replay
+    return None
+
+
+def _set_pool_replay_for_consumer(
+    metadata: dict[str, Any],
+    consumer_type: str,
+    replay: dict[str, object],
+) -> None:
+    consumer_type = _normalize_consumer_type(consumer_type)
+    scoped = metadata.get("pooled_replays")
+    scoped_replays = dict(scoped) if isinstance(scoped, dict) else {}
+    scoped_replays.setdefault("human", None)
+    scoped_replays.setdefault("bot", None)
+    scoped_replays[consumer_type] = replay
+    metadata["pooled_replays"] = scoped_replays
+    if consumer_type == "human":
+        metadata["pooled_replay"] = replay
+    else:
+        metadata["bot_pooled_replay"] = True
+
+
+def _vote_matches_consumer_type(vote: object, consumer_type: str) -> bool:
+    has_service_account = getattr(vote, "service_account_id", None) is not None
+    return has_service_account if consumer_type == "bot" else not has_service_account
+
+
+def _vote_consumer_filter(consumer_type: str) -> object:
+    if consumer_type == "bot":
+        return Vote.service_account_id.is_not(None)
+    return Vote.service_account_id.is_(None)
 
 
 def _is_unlocked_pool_replay(replay: dict[str, Any]) -> bool:
