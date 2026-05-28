@@ -320,7 +320,7 @@ def test_test_model_merges_parameters_and_returns_preview(
     assert response["output_preview"] == "connectivity ok"
     assert captured["params"] == {
         "max_tokens": 12,
-        "temperature": 0,
+        "temperature": 0.2,
         "foo": "extra",
         "frequency_penalty": 0.5,
         "top_p": 0.9,

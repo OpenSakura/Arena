@@ -215,10 +215,7 @@ async def test_model(
     if model.presence_penalty is not None:
         params["presence_penalty"] = model.presence_penalty
 
-    # Keep the test cheap even if the model params are expensive.
-    # Hard override to enforce the cap regardless of model params.
     params["max_tokens"] = 12
-    params["temperature"] = 0
 
     client = get_battle_orchestrator().llm_client
     try:
