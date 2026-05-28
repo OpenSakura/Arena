@@ -89,7 +89,7 @@ export const zhResource = {
       },
       communityVoting: {
         title: "社区投票",
-        description: "从准确性、流畅度、风格、自然度、知识、文化、语调、术语等维度投票，凝聚共识。"
+        description: "从准确性、流畅度、风格、自然度、知识、文化、语调、术语、拒答等维度投票，凝聚共识。"
       },
       rankings: {
         title: "Elo 与 BT 排名",
@@ -241,7 +241,8 @@ export const zhResource = {
       knowledge: "知识",
       cultural: "文化",
       voice: "语调",
-      terminology: "术语"
+      terminology: "术语",
+      refusal: "拒答"
     },
     rubricDescriptions: {
       accuracy: "忠实于原文，无漏译或误译。",
@@ -252,7 +253,8 @@ export const zhResource = {
       knowledge: "正确理解特定领域的概念或背景知识。",
       cultural: "妥善处理文化背景及细微差别。",
       voice: "保留角色的个性及说话特征。",
-      terminology: "准确翻译专有名词及特定术语。"
+      terminology: "准确翻译专有名词及特定术语。",
+      refusal: "拒绝翻译或提供回答。"
     },
     errorEmptyStateTitle: "对战加载失败",
     returnHome: "返回首页",

@@ -89,7 +89,7 @@ export const enResource = {
       },
       communityVoting: {
         title: "Community Voting",
-        description: "Vote on accuracy, fluency, style, naturalness, knowledge, cultural nuance, voice, and terminology to build consensus."
+        description: "Vote on accuracy, fluency, style, naturalness, knowledge, cultural nuance, voice, terminology, and refusal to build consensus."
       },
       rankings: {
         title: "Elo & BT Rankings",
@@ -241,7 +241,8 @@ export const enResource = {
       knowledge: "Knowledge",
       cultural: "Cultural",
       voice: "Voice",
-      terminology: "Terminology"
+      terminology: "Terminology",
+      refusal: "Refusal"
     },
     rubricDescriptions: {
       accuracy: "Faithfulness to the original text without omissions or mistranslations.",
@@ -252,7 +253,8 @@ export const enResource = {
       knowledge: "Correct understanding of domain-specific concepts or trivia.",
       cultural: "Proper handling of cultural references and nuances.",
       voice: "Preservation of character personality and speech patterns.",
-      terminology: "Accurate translation of proper nouns and specific terms."
+      terminology: "Accurate translation of proper nouns and specific terms.",
+      refusal: "Refused to translate or provide a response."
     },
     errorEmptyStateTitle: "Unable to load battle",
     returnHome: "Return Home",

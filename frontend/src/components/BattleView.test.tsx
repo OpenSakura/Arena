@@ -150,6 +150,7 @@ describe("BattleView", () => {
     expect(screen.getByRole("button", { name: "Cultural" })).toBeDefined();
     expect(screen.getByRole("button", { name: "Voice" })).toBeDefined();
     expect(screen.getByRole("button", { name: "Terminology" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Refusal" })).toBeDefined();
 
     const culturalButton = screen.getByRole("button", { name: "Cultural" });
     expect(culturalButton.getAttribute("aria-describedby")).toBe("tooltip-cultural");
@@ -158,12 +159,22 @@ describe("BattleView", () => {
     expect(culturalTooltip).toBeDefined();
     expect(culturalTooltip?.textContent).toContain("Proper handling");
 
+    const refusalButton = screen.getByRole("button", { name: "Refusal" });
+    expect(refusalButton.getAttribute("aria-describedby")).toBe("tooltip-refusal");
+
+    const refusalTooltip = document.getElementById("tooltip-refusal");
+    expect(refusalTooltip).toBeDefined();
+    expect(refusalTooltip?.textContent).toContain("Refused to translate or provide a response.");
+
     const user = userEvent.setup();
     const option = screen.getByText(/Model A is better/i).closest("button");
     if (!option) throw new Error("Vote option not found");
 
     await user.click(culturalButton);
     expect(dispatch).toHaveBeenCalledWith({ type: "TOGGLE_RUBRIC_TAG", tag: "cultural" });
+
+    await user.click(refusalButton);
+    expect(dispatch).toHaveBeenCalledWith({ type: "TOGGLE_RUBRIC_TAG", tag: "refusal" });
 
     await user.click(option);
     await user.click(screen.getByRole("button", { name: "Submit Vote" }));

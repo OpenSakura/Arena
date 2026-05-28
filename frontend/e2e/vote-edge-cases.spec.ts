@@ -202,6 +202,11 @@ test("submits tie votes with rubric tags and comment payload", async ({ page }) 
   await expect(page.getByRole("tooltip", { name: /Accurate translation of proper nouns/ })).toBeVisible();
   await terminologyButton.click();
 
+  const refusalButton = page.getByRole("button", { name: "Refusal" });
+  await refusalButton.hover();
+  await expect(page.getByRole("tooltip", { name: /Refused to translate or provide a response/ })).toBeVisible();
+  await refusalButton.click();
+
   await page.getByLabel("Optional feedback").fill("Both outputs are strong in different dimensions.");
 
   await page.getByRole("button", { name: "Submit Vote" }).click();
@@ -216,7 +221,9 @@ test("submits tie votes with rubric tags and comment payload", async ({ page }) 
   });
 
   const rubric = payload.rubric as Record<string, unknown>;
-  expect(rubric.tags).toEqual(expect.arrayContaining(["accuracy", "style", "knowledge", "terminology"]));
+  expect(rubric.tags).toEqual(
+    expect.arrayContaining(["accuracy", "style", "knowledge", "terminology", "refusal"]),
+  );
 });
 
 test("shows conflict errors and allows retry with the same vote state", async ({ page }) => {

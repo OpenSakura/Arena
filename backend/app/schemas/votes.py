@@ -27,6 +27,7 @@ ALLOWED_RUBRIC_TAGS = frozenset(
         "terminology",
         "consistency",
         "naturalness",
+        "refusal",
     }
 )
 

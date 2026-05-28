@@ -233,12 +233,20 @@ def test_vote_create_accepts_new_rubric_tags() -> None:
     payload = VoteCreate.model_validate(
         {
             "winner": "A",
-            "rubric": {"tags": ["knowledge", "cultural", "voice", "terminology"]},
+            "rubric": {
+                "tags": ["knowledge", "cultural", "voice", "terminology", "refusal"]
+            },
         }
     )
 
     assert payload.rubric is not None
-    assert payload.rubric.tags == ["knowledge", "cultural", "voice", "terminology"]
+    assert payload.rubric.tags == [
+        "knowledge",
+        "cultural",
+        "voice",
+        "terminology",
+        "refusal",
+    ]
 
 
 def test_vote_create_rejects_invalid_bot_metadata_before_route_use() -> None:

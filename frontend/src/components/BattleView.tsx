@@ -22,6 +22,7 @@ const RUBRIC_TAGS = [
   "cultural",
   "voice",
   "terminology",
+  "refusal",
 ] as const;
 
 export function BattleView({ battleId }: { battleId: string }) {
