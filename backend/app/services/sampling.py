@@ -153,11 +153,13 @@ def _sample_weight(
     if candidate.model_name in policy.outage_models:
         return 0.0
 
-    configured = policy.weights.get(candidate.model_name)
-    if configured is not None:
-        weight = max(float(configured), 0.0)
-    else:
-        weight = 1.0 / (1.0 + float(max(candidate.games_played, 0)))
+    # ``policy.weights`` is a *multiplier* on the games-played decay so that
+    # configured and unconfigured models share the same scale.  Without this
+    # the two paths drift apart as games accumulate and a static override
+    # eventually dominates (or vanishes against) the decaying base.
+    base = 1.0 / (1.0 + float(max(candidate.games_played, 0)))
+    multiplier = policy.weights.get(candidate.model_name, 1.0)
+    weight = base * max(float(multiplier), 0.0)
 
     if include_boost and candidate.model_name in policy.boost_models:
         weight *= 5.0

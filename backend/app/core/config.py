@@ -132,6 +132,8 @@ class Settings(BaseSettings):
     admin_model_test_timeout_seconds: float = 20.0
 
     # FastChat-inspired model pairing controls (model_name keyed).
+    # ``battle_sampling_weights`` is a multiplier on the games-played decay,
+    # not a replacement for it.  Unset == 1.0, ``0`` hard-disables.
     battle_sampling_weights: dict[str, float] = Field(default_factory=dict)
     battle_targets: dict[str, list[str]] = Field(default_factory=dict)
     battle_strict_targets: dict[str, list[str]] = Field(default_factory=dict)

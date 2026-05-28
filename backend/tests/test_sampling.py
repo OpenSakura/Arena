@@ -123,6 +123,53 @@ def test_sampling_rejects_pairs_when_outage_excludes_all_models() -> None:
         raise AssertionError("Expected ValueError when all candidates are in outage")
 
 
+def test_configured_weight_multiplies_decay_so_ratio_holds_with_games() -> None:
+    """A configured weight must scale the games-played decay, not replace it.
+
+    With the old replacement semantic a static ``0.3`` for ``a`` would beat
+    ``b``'s decayed weight ``1/(1+games)`` once ``b`` had even a few games,
+    inverting the operator's intent.  With the multiplier semantic the per-pick
+    ratio between a and b stays at ``0.3`` regardless of game count.
+    """
+
+    games = 9
+    candidates = [
+        _candidate("model-a", games=games),
+        _candidate("model-b", games=games),
+    ]
+    policy = _policy(weights={"model-a": 0.3})
+
+    rng = random.Random(42)
+    counts: Counter[str] = Counter()
+    id_to_name = {c.id: c.model_name for c in candidates}
+
+    iterations = 4000
+    for _ in range(iterations):
+        pair = select_battle_pair(
+            candidates=candidates,
+            policy=policy,
+            randomizer=rng,
+        )
+        for cid in pair:
+            counts[id_to_name[cid]] += 1
+
+    # Each battle picks both candidates exactly once, so per-model counts equal
+    # the number of battles.  The ratio assertion exists for documentation: it
+    # would still hold even without the fix because the pair only has 2 models.
+    # The real protection is the unit-level check below.
+    assert counts["model-a"] == iterations
+    assert counts["model-b"] == iterations
+
+    # Unit-level: the first-pick weight ratio must match the configured 0.3
+    # multiplier, not the legacy "0.3 vs 1/(1+games)=0.1" inversion.
+    from app.services.sampling import _sample_weight  # noqa: PLC0415
+
+    w_a = _sample_weight(candidates[0], policy=policy, include_boost=False)
+    w_b = _sample_weight(candidates[1], policy=policy, include_boost=False)
+    assert w_b > 0
+    assert abs(w_a / w_b - 0.3) < 1e-9
+
+
 def test_zero_weight_fallback_never_selects_disabled_model() -> None:
     candidates = [
         _candidate("model-a"),
