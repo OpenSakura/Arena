@@ -11,7 +11,7 @@ Notes:
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any, Literal, cast
+from typing import Literal, NoReturn, cast
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -39,10 +39,7 @@ from app.models.service_account import ServiceAccount
 from app.models.vote import Vote
 from app.schemas.votes import VoteCreate, VoteSubmitResponse
 from app.utils.id import parse_uuid_or_422
-from app.utils.requester_identity import (
-    RequesterIdentity,
-    find_consumer_battle_vote,
-)
+from app.utils.requester_identity import find_consumer_battle_vote
 from app.utils.rate_limit import (
     RollingWindowRateLimiter,
     build_auth_rate_limit_key,
@@ -170,8 +167,6 @@ def submit_vote(
     voter_user_id = uuid.UUID(principal.user_id)
     bot_metadata = payload.bot_metadata if is_bot_vote else None
 
-    requester_identity = RequesterIdentity(voter_user_id=voter_user_id)
-
     consumer_type = "bot" if is_bot_vote else "human"
     if find_consumer_battle_vote(
         db,
@@ -205,20 +200,9 @@ def submit_vote(
         db.flush()
     except IntegrityError:
         db.rollback()
-        return _resolve_duplicate_vote_conflict(
+        _resolve_duplicate_vote_conflict(
             db,
-            response=response,
             battle_id=battle_uuid,
-            winner=winner,
-            rubric=rubric,
-            comment=payload.comment,
-            requester_identity=requester_identity,
-            model_a_id=run_a.model_id,
-            model_b_id=run_b.model_id,
-            service_account_id=service_account_id,
-            service_account_token_id=service_account_token_id,
-            bot_metadata=bot_metadata,
-            principal=principal,
             consumer_type=consumer_type,
         )
 
@@ -230,20 +214,9 @@ def submit_vote(
         db.commit()
     except IntegrityError:
         db.rollback()
-        return _resolve_duplicate_vote_conflict(
+        _resolve_duplicate_vote_conflict(
             db,
-            response=response,
             battle_id=battle_uuid,
-            winner=winner,
-            rubric=rubric,
-            comment=payload.comment,
-            requester_identity=requester_identity,
-            model_a_id=run_a.model_id,
-            model_b_id=run_b.model_id,
-            service_account_id=service_account_id,
-            service_account_token_id=service_account_token_id,
-            bot_metadata=bot_metadata,
-            principal=principal,
             consumer_type=consumer_type,
         )
 
@@ -262,20 +235,13 @@ def submit_vote(
 def _resolve_duplicate_vote_conflict(
     db: Session,
     *,
-    response: Response,
     battle_id: uuid.UUID,
-    winner: str,
-    rubric: dict[str, Any] | None = None,
-    comment: str | None = None,
-    requester_identity: RequesterIdentity,
-    model_a_id: uuid.UUID,
-    model_b_id: uuid.UUID,
-    service_account_id: uuid.UUID | None = None,
-    service_account_token_id: uuid.UUID | None = None,
-    bot_metadata: dict[str, Any] | None = None,
-    principal: Principal | None = None,
     consumer_type: str = "human",
-) -> VoteSubmitResponse:
+) -> NoReturn:
+    # A unique-constraint violation means a competing request already
+    # persisted the (battle, consumer_type) vote. Confirm it is actually
+    # present, then surface a 409; otherwise the flush/commit failed for a
+    # different reason and we report a 500.
     existing_vote = find_consumer_battle_vote(
         db,
         battle_id=battle_id,

@@ -69,24 +69,31 @@ export async function* streamSSE(
 
       const delay = Math.min(1000 * 2 ** (attempt - 1), 8000);
       await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(resolve, delay);
         const signal = init?.signal;
-        if (signal) {
-          if (signal.aborted) {
-            clearTimeout(timer);
-            reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
-            return;
+        if (signal?.aborted) {
+          reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+          return;
+        }
+
+        let onAbort: (() => void) | null = null;
+        const cleanup = () => {
+          if (onAbort && signal) {
+            signal.removeEventListener("abort", onAbort);
           }
-          const onAbort = () => {
+        };
+
+        const timer = setTimeout(() => {
+          cleanup();
+          resolve();
+        }, delay);
+
+        if (signal) {
+          onAbort = () => {
             clearTimeout(timer);
+            cleanup();
             reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
           };
           signal.addEventListener("abort", onAbort, { once: true });
-          const origResolve = resolve;
-          resolve = (() => {
-            signal.removeEventListener("abort", onAbort);
-            origResolve();
-          }) as typeof resolve;
         }
       });
     }

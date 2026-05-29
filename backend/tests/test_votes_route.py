@@ -15,7 +15,6 @@ from app.api.routes import battles, votes
 from app.core.security import Principal
 from app.models.vote import Vote
 from app.schemas.votes import VoteCreate, VoteSubmitResponse
-from app.utils.requester_identity import RequesterIdentity
 
 
 _CREATOR_USER_ID = uuid.uuid4()
@@ -327,12 +326,7 @@ def test_resolve_duplicate_vote_conflict_raises_500_when_vote_missing(
     with pytest.raises(HTTPException) as exc_info:
         votes._resolve_duplicate_vote_conflict(
             db=object(),  # type: ignore[arg-type]
-            response=Response(),
             battle_id=uuid.uuid4(),
-            winner="A",
-            requester_identity=RequesterIdentity(voter_user_id=uuid.uuid4()),
-            model_a_id=uuid.uuid4(),
-            model_b_id=uuid.uuid4(),
         )
 
     assert exc_info.value.status_code == 500
@@ -351,12 +345,7 @@ def test_resolve_duplicate_vote_conflict_raises_409_for_existing_vote(
     with pytest.raises(HTTPException) as exc_info:
         votes._resolve_duplicate_vote_conflict(
             db=object(),  # type: ignore[arg-type]
-            response=Response(),
             battle_id=uuid.uuid4(),
-            winner="A",
-            requester_identity=RequesterIdentity(voter_user_id=uuid.uuid4()),
-            model_a_id=uuid.uuid4(),
-            model_b_id=uuid.uuid4(),
         )
 
     assert exc_info.value.status_code == 409
@@ -382,12 +371,7 @@ def test_resolve_duplicate_vote_conflict_rejects_same_winner_existing_vote(
     with pytest.raises(HTTPException) as exc_info:
         votes._resolve_duplicate_vote_conflict(
             db=object(),  # type: ignore[arg-type]
-            response=Response(),
             battle_id=uuid.uuid4(),
-            winner="A",
-            requester_identity=RequesterIdentity(voter_user_id=uuid.uuid4()),
-            model_a_id=uuid.uuid4(),
-            model_b_id=uuid.uuid4(),
         )
 
     assert exc_info.value.status_code == 409
@@ -413,14 +397,7 @@ def test_resolve_duplicate_vote_conflict_rejects_unrevealed_existing_vote_withou
     with pytest.raises(HTTPException) as exc_info:
         votes._resolve_duplicate_vote_conflict(
             db=object(),  # type: ignore[arg-type]
-            response=Response(),
             battle_id=uuid.uuid4(),
-            winner="B",
-            rubric={"tags": ["fluency"]},
-            comment="new",
-            requester_identity=RequesterIdentity(voter_user_id=uuid.uuid4()),
-            model_a_id=uuid.uuid4(),
-            model_b_id=uuid.uuid4(),
         )
 
     assert exc_info.value.status_code == 409

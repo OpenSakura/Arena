@@ -552,6 +552,36 @@ describe("useBattle", () => {
     expect(resultRef.current?.state.outB).toBe("Partial before disconnect");
   });
 
+  it("does not duplicate live output when the stream reconnects and replays history", async () => {
+    mockedUseArenaAuth.mockReturnValue(createAuthState());
+    mockedLoadOrCreateBattle.mockResolvedValueOnce(
+      createBattle({ id: "battle-live", status: "pending", run_a: null, run_b: null }),
+    );
+    mockedStreamSSE.mockImplementationOnce(async function* () {
+      // Initial live deltas (no replay/chunk markers).
+      yield { event: "run.delta", data: { side: "A", text_delta: "Hello " } };
+      yield { event: "run.delta", data: { side: "B", text_delta: "Bonjour " } };
+      // Reconnect: the backend re-sends the full buffered live history from
+      // the start as plain (non-replay) deltas.
+      yield { event: "sse.retry", data: { attempt: 1 } };
+      yield { event: "run.delta", data: { side: "A", text_delta: "Hello " } };
+      yield { event: "run.delta", data: { side: "B", text_delta: "Bonjour " } };
+      // Continue streaming after catch-up.
+      yield { event: "run.delta", data: { side: "A", text_delta: "world" } };
+      yield { event: "run.delta", data: { side: "B", text_delta: "monde" } };
+      yield { event: "battle.completed", data: { battle_id: "battle-live" } };
+    });
+
+    const { resultRef } = renderUseBattle({ battleId: "battle-live" });
+
+    await waitFor(() => {
+      expect(resultRef.current?.state.status).toBe("done");
+    });
+
+    expect(resultRef.current?.state.outA).toBe("Hello world");
+    expect(resultRef.current?.state.outB).toBe("Bonjour monde");
+  });
+
   it("attempts reveal immediately after a successful vote submit", async () => {
     mockedUseArenaAuth.mockReturnValue(createAuthState());
     mockedLoadOrCreateBattle.mockResolvedValueOnce(createBattle());

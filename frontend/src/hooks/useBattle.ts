@@ -276,12 +276,18 @@ function battleReducer(state: BattleState, action: Action): BattleState {
     }
 
     case "STREAM_RECONNECTING":
+      // On reconnect the backend re-sends the full buffered live history from
+      // the start, and live deltas carry no replay/chunk markers, so
+      // mergeBattleDelta would append them on top of the already-rendered
+      // text. Clear the accumulators so the replayed history rebuilds cleanly.
+      if (state.status === "done" || state.status === "failed") {
+        return state;
+      }
       return {
         ...state,
-        status:
-          state.status === "done" || state.status === "failed"
-            ? state.status
-            : "reconnecting",
+        outA: "",
+        outB: "",
+        status: "reconnecting",
       };
 
     case "RUN_ERROR":
