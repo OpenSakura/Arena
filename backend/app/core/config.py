@@ -159,6 +159,11 @@ class Settings(BaseSettings):
     battle_prepopulation_enabled: bool = True
     battle_pool_user_recycle_after_hours: int = 24
     battle_pool_assignment_ttl_seconds: int = 900
+    # Pooled (pre-generated) battle replay display delay range, in milliseconds.
+    # Each selection picks a uniform-random value in [min, max] inclusive; set
+    # both to 0 to disable the delay entirely.
+    battle_pool_display_delay_min_ms: int = 10_000
+    battle_pool_display_delay_max_ms: int = 30_000
 
     # Leaderboard refresh background job.
     leaderboard_refresh_enabled: bool = True

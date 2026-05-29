@@ -56,6 +56,8 @@ def _settings(**overrides: object) -> SimpleNamespace:
         "battle_prepopulation_max_job_size": 50,
         "battle_pool_user_recycle_after_hours": 24,
         "battle_pool_assignment_ttl_seconds": 900,
+        "battle_pool_display_delay_min_ms": 10_000,
+        "battle_pool_display_delay_max_ms": 30_000,
         "battle_prepopulation_enabled": True,
         "oidc_admin_group_claim": "groups",
         "oidc_admin_group_name": "arena_admin",

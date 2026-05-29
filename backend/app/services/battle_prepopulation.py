@@ -258,7 +258,7 @@ def select_eligible_pool_battle(
         return PoolBattleSelection(
             battle=fake_battle,
             source=source,
-            display_delay_ms=_random_display_delay_ms(),
+            display_delay_ms=_random_display_delay_ms(effective_settings),
         )
 
     candidates = (
@@ -284,7 +284,7 @@ def select_eligible_pool_battle(
         return PoolBattleSelection(
             battle=battle,
             source=source,
-            display_delay_ms=_random_display_delay_ms(),
+            display_delay_ms=_random_display_delay_ms(effective_settings),
         )
     return None
 
@@ -933,7 +933,7 @@ def _claim_loaded_pool_battle(
     if source is None:
         return None
 
-    display_delay_ms = _random_display_delay_ms()
+    display_delay_ms = _random_display_delay_ms(settings)
     replay_metadata = build_pooled_replay_metadata(
         principal=principal,
         source=source,
@@ -1182,8 +1182,17 @@ def _to_iso(value: datetime | None) -> str | None:
     return value.isoformat()
 
 
-def _random_display_delay_ms() -> int:
-    return random.randint(_POOL_DELAY_MIN_MS, _POOL_DELAY_MAX_MS)
+def _random_display_delay_ms(settings: Settings | Any | None = None) -> int:
+    effective = settings or get_settings()
+    min_ms = int(
+        getattr(effective, "battle_pool_display_delay_min_ms", _POOL_DELAY_MIN_MS)
+    )
+    max_ms = int(
+        getattr(effective, "battle_pool_display_delay_max_ms", _POOL_DELAY_MAX_MS)
+    )
+    min_ms = max(min_ms, 0)
+    max_ms = max(max_ms, min_ms)
+    return random.randint(min_ms, max_ms)
 
 
 def _coerce_uuid(value: str | uuid.UUID, field_name: str) -> uuid.UUID:
