@@ -230,6 +230,80 @@ def test_total_timeout_raises_stream_total_timeout_error(
     asyncio.run(_run())
 
 
+def test_async_openai_stream_uses_settings_timeout_when_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_async_openai(monkeypatch)
+
+    async def _run() -> _FakeAsyncOpenAI:
+        client = LLMClient()
+        _FakeAsyncOpenAI.responses.append(
+            _AsyncChunkStream(
+                [_SdkObject({"choices": [{"delta": {"content": "ok"}}]})]
+            )
+        )
+        await _collect_stream(client)
+        return _FakeAsyncOpenAI.created[0]
+
+    created = asyncio.run(_run())
+
+    request_timeout = created.last_create_kwargs["timeout"]
+    assert isinstance(request_timeout, httpx.Timeout)
+    assert request_timeout.connect == 1.5
+    assert request_timeout.read == 9.5
+    assert request_timeout.write == 1.5
+    assert request_timeout.pool == 1.5
+
+
+def test_async_openai_stream_uses_caller_timeout_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_async_openai(monkeypatch)
+
+    async def _run() -> _FakeAsyncOpenAI:
+        client = LLMClient()
+        _FakeAsyncOpenAI.responses.append(
+            _AsyncChunkStream(
+                [_SdkObject({"choices": [{"delta": {"content": "ok"}}]})]
+            )
+        )
+        await _collect_stream(client, timeout_seconds=20.0)
+        return _FakeAsyncOpenAI.created[0]
+
+    created = asyncio.run(_run())
+
+    request_timeout = created.last_create_kwargs["timeout"]
+    assert isinstance(request_timeout, httpx.Timeout)
+    assert request_timeout.connect == 1.5
+    assert request_timeout.read == 20.0
+    assert request_timeout.write == 1.5
+    assert request_timeout.pool == 1.5
+
+
+def test_async_openai_stream_timeout_error_reports_caller_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_async_openai(monkeypatch)
+    import openai
+
+    async def _run() -> None:
+        client = LLMClient()
+        request = httpx.Request("POST", "https://llm.example/v1/chat/completions")
+        for _ in range(3):
+            timeout_error = openai.APITimeoutError(request=request)
+            timeout_error.__context__ = httpx.ReadTimeout("read timed out", request=request)
+            _FakeAsyncOpenAI.responses.append(timeout_error)
+
+        with pytest.raises(openai.APITimeoutError) as exc_info:
+            with patch("app.services.llm_client.asyncio.sleep", new_callable=AsyncMock):
+                await _collect_stream(client, timeout_seconds=20.0)
+        assert getattr(exc_info.value, "timeout_layer") == "llm_read"
+        assert getattr(exc_info.value, "timeout_seconds") == 20.0
+        assert str(exc_info.value) == "LLM timeout layer=llm_read exceeded after 20s"
+
+    asyncio.run(_run())
+
+
 def test_openai_base_url_normalization_variants() -> None:
     cases = {
         "https://llm.example": "https://llm.example/v1",

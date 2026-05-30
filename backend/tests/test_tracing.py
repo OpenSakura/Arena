@@ -57,6 +57,10 @@ class _HealthyEngine:
         return _HealthyConnection()
 
 
+async def _noop_async() -> None:
+    return None
+
+
 def _settings(**overrides: Any) -> SimpleNamespace:
     values: dict[str, Any] = {
         "app_name": "OpenSakura Arena API (tests)",
@@ -69,6 +73,8 @@ def _settings(**overrides: Any) -> SimpleNamespace:
         "rate_limit_redis_url": "",
         "rate_limit_redis_timeout_seconds": 0.5,
         "web_concurrency": 1,
+        "auth_csrf_header_name": "X-CSRF-Token",
+        "battle_prepopulation_enabled": False,
         "oidc_issuer": "",
         "otlp_disabled": False,
         "otlp_endpoint": "",
@@ -448,6 +454,11 @@ def _create_main_test_app(monkeypatch, settings: SimpleNamespace):
     monkeypatch.setattr(main, "bootstrap_schema", lambda: None)
     monkeypatch.setattr(main, "acquire_battle_process_lock", lambda: None)
     monkeypatch.setattr(main, "release_battle_process_lock", lambda: None)
+    monkeypatch.setattr(
+        main,
+        "get_battle_prepopulation_service",
+        lambda: SimpleNamespace(resume_incomplete_jobs=lambda: [], shutdown=_noop_async),
+    )
 
     import app.db.session as session_module
 

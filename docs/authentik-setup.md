@@ -27,7 +27,8 @@ authenticated backend session.
 - The backend stores only an app session and sets an opaque HttpOnly session
   cookie, default `arena_session`.
 - `/api/v1/auth/session` returns the current user plus a CSRF token. Unsafe
-  cookie-authenticated requests must send that token in `X-CSRF-Token`.
+  cookie-authenticated requests must send that token in the configured
+  `AUTH_CSRF_HEADER_NAME` header, default `X-CSRF-Token`.
 
 ## Create Provider And Application
 

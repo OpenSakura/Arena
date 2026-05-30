@@ -34,6 +34,10 @@ class _Orchestrator:
     llm_client = _Closable()
 
 
+async def _noop_async() -> None:
+    return None
+
+
 def _settings() -> SimpleNamespace:
     return SimpleNamespace(
         app_name="OpenSakura Arena API (route contract tests)",
@@ -47,6 +51,8 @@ def _settings() -> SimpleNamespace:
         rate_limit_redis_url="",
         rate_limit_redis_timeout_seconds=0.5,
         web_concurrency=1,
+        auth_csrf_header_name="X-CSRF-Token",
+        battle_prepopulation_enabled=False,
     )
 
 
@@ -74,6 +80,11 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setattr(main, "close_all_redis_clients", lambda: None)
     monkeypatch.setattr(main, "get_oidc_confidential_client", lambda: _Closable())
     monkeypatch.setattr(main, "get_battle_orchestrator", lambda: _Orchestrator())
+    monkeypatch.setattr(
+        main,
+        "get_battle_prepopulation_service",
+        lambda: SimpleNamespace(resume_incomplete_jobs=lambda: [], shutdown=_noop_async),
+    )
 
     app = main.create_app()
     app.dependency_overrides[get_db] = lambda: iter((object(),))

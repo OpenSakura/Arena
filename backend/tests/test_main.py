@@ -44,17 +44,21 @@ def _settings(
     access_log_enabled: bool = False,
     app_env: str = "test",
     leaderboard_refresh_enabled: bool = False,
+    battle_prepopulation_enabled: bool = True,
     turnstile_secret_key: str = "",
     web_concurrency: int = 1,
+    auth_csrf_header_name: str = "X-CSRF-Token",
 ) -> SimpleNamespace:
     return SimpleNamespace(
         app_name="OpenSakura Arena API (tests)",
         app_env=app_env,
         leaderboard_refresh_enabled=leaderboard_refresh_enabled,
+        battle_prepopulation_enabled=battle_prepopulation_enabled,
         access_log_enabled=access_log_enabled,
         turnstile_secret_key=turnstile_secret_key,
         cors_allow_origins=["http://localhost:3000"],
         api_v1_prefix="/api/v1",
+        auth_csrf_header_name=auth_csrf_header_name,
         # Defaults for settings referenced by middleware/health checks.
         trust_x_forwarded_for=False,
         rate_limit_redis_url="",
@@ -70,17 +74,22 @@ def _create_test_app(
     access_log_enabled: bool = False,
     app_env: str = "test",
     leaderboard_refresh_enabled: bool = False,
+    battle_prepopulation_enabled: bool = True,
     turnstile_secret_key: str = "",
     web_concurrency: int = 1,
+    auth_csrf_header_name: str = "X-CSRF-Token",
     acquire_guard=None,
     release_guard=None,
+    prepopulation_service=None,
 ):
     settings_obj = _settings(
         access_log_enabled=access_log_enabled,
         app_env=app_env,
         leaderboard_refresh_enabled=leaderboard_refresh_enabled,
+        battle_prepopulation_enabled=battle_prepopulation_enabled,
         turnstile_secret_key=turnstile_secret_key,
         web_concurrency=web_concurrency,
+        auth_csrf_header_name=auth_csrf_header_name,
     )
 
     monkeypatch.setattr(
@@ -116,6 +125,11 @@ def _create_test_app(
     session_module._SessionLocal = None
     monkeypatch.setattr(session_module, "get_engine", lambda: _HealthyEngine())
     monkeypatch.setattr(main, "configure_logging", lambda _settings: None)
+    monkeypatch.setattr(
+        main,
+        "get_battle_prepopulation_service",
+        lambda: prepopulation_service or _FakePrepopulationService(),
+    )
     return main.create_app()
 
 
@@ -128,6 +142,19 @@ class _CapturingLogger:
 
     def warning(self, msg: str, *args: object, **kwargs: object) -> None:
         self.calls.append(("warning", msg, args, dict(kwargs)))
+
+
+class _FakePrepopulationService:
+    def __init__(self) -> None:
+        self.resumed = False
+        self.shutdown_called = False
+
+    def resume_incomplete_jobs(self) -> list[object]:
+        self.resumed = True
+        return []
+
+    async def shutdown(self) -> None:
+        self.shutdown_called = True
 
 
 def test_request_id_reuses_header_value_and_trims_whitespace(monkeypatch) -> None:
@@ -201,8 +228,23 @@ def test_public_config_exposes_backend_session_auth_paths(monkeypatch) -> None:
         "login_path": "/api/v1/auth/login",
         "logout_path": "/api/v1/auth/logout",
         "session_path": "/api/v1/auth/session",
+        "csrf_header_name": "X-CSRF-Token",
     }
     assert "oidc" not in body
+
+
+def test_public_config_exposes_configured_csrf_header_name(monkeypatch) -> None:
+    from app.core.config import get_settings as core_get_settings
+
+    app = _create_test_app(monkeypatch, auth_csrf_header_name="X-Arena-CSRF")
+    override = _settings(auth_csrf_header_name="X-Arena-CSRF")
+    app.dependency_overrides[core_get_settings] = lambda: override
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/public-config")
+
+    assert response.status_code == 200
+    assert response.json()["auth"]["csrf_header_name"] == "X-Arena-CSRF"
 
 
 def test_public_config_no_secret_or_oidc_bootstrap_fields(monkeypatch) -> None:
@@ -378,6 +420,35 @@ def test_cors_expose_headers_includes_request_id(monkeypatch) -> None:
     assert response.status_code == 200
     expose = response.headers.get("access-control-expose-headers", "")
     assert "x-request-id" in expose.lower()
+
+
+def test_cors_preflight_allows_configured_csrf_header(monkeypatch) -> None:
+    app = _create_test_app(monkeypatch, auth_csrf_header_name="X-Arena-CSRF")
+
+    with TestClient(app) as client:
+        response = client.options(
+            "/api/v1/readyz",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "X-Arena-CSRF, Content-Type",
+            },
+        )
+
+    assert response.status_code == 200
+    allow_headers = response.headers["access-control-allow-headers"].lower()
+    assert "x-arena-csrf" in allow_headers
+
+
+def test_lifespan_resumes_and_shutdowns_prepopulation_jobs(monkeypatch) -> None:
+    service = _FakePrepopulationService()
+    app = _create_test_app(monkeypatch, prepopulation_service=service)
+
+    with TestClient(app):
+        assert service.resumed is True
+        assert service.shutdown_called is False
+
+    assert service.shutdown_called is True
 
 
 # ── Liveness / readiness split (T9) ──
@@ -592,6 +663,11 @@ def test_process_guard_acquire_called_before_serving_requests(monkeypatch) -> No
     session_module._engine = None
     session_module._SessionLocal = None
     monkeypatch.setattr(main, "configure_logging", lambda _: None)
+    monkeypatch.setattr(
+        main,
+        "get_battle_prepopulation_service",
+        lambda: _FakePrepopulationService(),
+    )
 
     app = main.create_app()
 

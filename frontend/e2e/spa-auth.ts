@@ -7,9 +7,11 @@ type MockBackendAuthConfig = {
   login_path: string;
   logout_path: string;
   session_path: string;
+  csrf_header_name?: string;
 };
 
 type MockBackendAuthenticatedSessionOptions = {
+  csrfHeaderName?: string;
   csrfToken?: string;
   isAdmin?: boolean;
   profile?: Record<string, unknown>;
@@ -18,6 +20,7 @@ type MockBackendAuthenticatedSessionOptions = {
 };
 
 type MockBackendPublicConfigOptions = {
+  csrfHeaderName?: string;
   sessionResponse?: Record<string, unknown>;
   sessionStatus?: number;
 };
@@ -27,6 +30,7 @@ export const MOCK_BACKEND_AUTH: MockBackendAuthConfig = {
   login_path: "/api/v1/auth/login",
   logout_path: "/api/v1/auth/logout",
   session_path: "/api/v1/auth/session",
+  csrf_header_name: "X-CSRF-Token",
 };
 
 function profileDisplayName(profile: Record<string, unknown>): string {
@@ -63,8 +67,12 @@ function buildMockSession(options: MockBackendAuthenticatedSessionOptions = {}) 
   };
 }
 
-async function mockPublicConfig(page: Page): Promise<MockBackendAuthConfig> {
+async function mockPublicConfig(
+  page: Page,
+  csrfHeaderName = MOCK_BACKEND_AUTH.csrf_header_name,
+): Promise<MockBackendAuthConfig> {
   enforceNoBearerAuthorization(page);
+  const auth = { ...MOCK_BACKEND_AUTH, csrf_header_name: csrfHeaderName };
 
   await page.route("**/api/v1/public-config", async (route) => {
     await route.fulfill({
@@ -72,19 +80,19 @@ async function mockPublicConfig(page: Page): Promise<MockBackendAuthConfig> {
       contentType: "application/json",
       body: JSON.stringify({
         anon_battle_turnstile_required: false,
-        auth: MOCK_BACKEND_AUTH,
+        auth,
       }),
     });
   });
 
-  return MOCK_BACKEND_AUTH;
+  return auth;
 }
 
 export async function mockSpaPublicConfig(
   page: Page,
   options: MockBackendPublicConfigOptions = {},
 ): Promise<MockBackendAuthConfig> {
-  const auth = await mockPublicConfig(page);
+  const auth = await mockPublicConfig(page, options.csrfHeaderName);
 
   await page.route("**/api/v1/auth/session", async (route) => {
     await route.fulfill({
@@ -109,7 +117,7 @@ export async function mockSpaAuthenticatedSession(
   page: Page,
   options: MockBackendAuthenticatedSessionOptions = {},
 ): Promise<MockBackendAuthConfig> {
-  const auth = await mockPublicConfig(page);
+  const auth = await mockPublicConfig(page, options.csrfHeaderName);
   const session = buildMockSession(options);
 
   await page.context().addCookies([

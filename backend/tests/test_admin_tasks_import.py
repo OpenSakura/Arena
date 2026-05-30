@@ -110,6 +110,19 @@ def test_import_tasks_jsonl_rejects_non_object_metadata() -> None:
     assert exc_info.value.detail == "Line 1 has non-object metadata"
 
 
+def test_import_tasks_jsonl_rejects_metadata_over_64kb() -> None:
+    db = _ImportDB()
+    content = ('{"source_text":"ok","metadata":{"blob":"' + ("x" * 65_536) + '"}}\n').encode(
+        "utf-8"
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_import(db=db, content=content)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Line 1 metadata JSON must not exceed 64 KB"
+
+
 def test_import_tasks_jsonl_rejects_overlong_default_source_lang() -> None:
     db = _ImportDB()
 

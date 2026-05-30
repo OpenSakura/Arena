@@ -29,8 +29,9 @@ The v1 bot scopes are exactly:
 - `vote:create`
 
 The admin API can also be called from a browser-backed admin session. Unsafe
-requests must include the per-session `X-CSRF-Token` returned by
-`GET /api/v1/auth/session` and the HttpOnly session cookie set by login.
+requests must include the per-session CSRF token returned by
+`GET /api/v1/auth/session` in the configured CSRF header, default
+`X-CSRF-Token`, plus the HttpOnly session cookie set by login.
 
 Example admin API flow with an existing backend session:
 

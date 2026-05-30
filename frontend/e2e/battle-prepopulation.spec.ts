@@ -370,7 +370,7 @@ test("pooled admin pre-generated battle shows source immediately and streams out
     payload: Record<string, unknown>;
   }> = [];
   let streamCalls = 0;
-  let releaseStream: (() => void) | null = null;
+  let releaseStream!: () => void;
   const streamRelease = new Promise<void>((resolve) => {
     releaseStream = resolve;
   });
@@ -453,7 +453,7 @@ test("pooled admin pre-generated battle shows source immediately and streams out
   await expect(page.getByRole("button", { name: "Submit Vote" })).toHaveCount(0);
   await expect.poll(() => streamCalls).toBe(1);
 
-  releaseStream?.();
+  releaseStream();
 
   await expect(page.getByText(pooledOutputA)).toBeVisible();
   await expect(page.getByText(pooledOutputB)).toBeVisible();

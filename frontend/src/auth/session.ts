@@ -5,6 +5,7 @@ export type PublicAuthConfig = {
   login_path: string;
   logout_path: string;
   session_path: string;
+  csrf_header_name?: string;
 };
 
 export type PublicConfig = {
@@ -97,6 +98,10 @@ export function assertBackendSessionConfig(config: PublicConfig): PublicAuthConf
   const { login_path: loginPath, logout_path: logoutPath, session_path: sessionPath } = config.auth;
   if (!loginPath || !logoutPath || !sessionPath) {
     throw new Error("Backend session authentication paths are missing");
+  }
+
+  if (config.auth.csrf_header_name !== undefined && !config.auth.csrf_header_name.trim()) {
+    throw new Error("Backend session CSRF header name is invalid");
   }
 
   return config.auth;

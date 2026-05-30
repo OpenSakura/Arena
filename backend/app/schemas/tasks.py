@@ -16,7 +16,7 @@ from app.schemas._types import UuidStr
 _MAX_JSON_DICT_BYTES = 65_536  # 64 KB
 
 
-def _validate_metadata_size(
+def validate_metadata_size(
     value: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     """Reject metadata dicts whose JSON serialization exceeds 64 KB."""
@@ -43,7 +43,7 @@ class TaskSetCreate(BaseModel):
     @field_validator("metadata")
     @classmethod
     def _validate_metadata_size(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
-        return _validate_metadata_size(v)
+        return validate_metadata_size(v)
 
 
 class TaskSetUpdate(BaseModel):
@@ -54,7 +54,7 @@ class TaskSetUpdate(BaseModel):
     @field_validator("metadata")
     @classmethod
     def _validate_metadata_size(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
-        return _validate_metadata_size(v)
+        return validate_metadata_size(v)
 
 
 class TaskPublic(BaseModel):
@@ -76,7 +76,7 @@ class TaskCreate(BaseModel):
     @field_validator("metadata")
     @classmethod
     def _validate_metadata_size(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
-        return _validate_metadata_size(v)
+        return validate_metadata_size(v)
 
 
 class TaskUpdate(BaseModel):
@@ -89,4 +89,4 @@ class TaskUpdate(BaseModel):
     @field_validator("metadata")
     @classmethod
     def _validate_metadata_size(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
-        return _validate_metadata_size(v)
+        return validate_metadata_size(v)

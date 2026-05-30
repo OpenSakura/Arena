@@ -2,7 +2,7 @@ import { createContext, useCallback, useEffect, useMemo, useRef, useState, type 
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 
-import { setApiCsrfToken } from "@/lib/api";
+import { setApiCsrfToken, setApiCsrfHeaderName } from "@/lib/api";
 
 import {
   assertBackendSessionConfig,
@@ -143,6 +143,7 @@ export function ArenaAuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ status: "loading" });
   const configRef = useRef<PublicAuthConfig | null>(null);
   const csrfTokenRef = useRef<string | null>(null);
+  const csrfHeaderNameRef = useRef<string>("X-CSRF-Token");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -155,8 +156,11 @@ export function ArenaAuthProvider({ children }: { children: ReactNode }) {
         const session = await loadBackendSession(authConfig.session_path, controller.signal);
         if (active) {
           const csrfToken = session.csrf_token ?? null;
+          const csrfHeaderName = authConfig.csrf_header_name?.trim() || "X-CSRF-Token";
           configRef.current = authConfig;
           csrfTokenRef.current = csrfToken;
+          csrfHeaderNameRef.current = csrfHeaderName;
+          setApiCsrfHeaderName(csrfHeaderName);
           setApiCsrfToken(csrfToken);
           setState({ status: "ready", config: authConfig, session, sessionError: null });
         }
@@ -188,6 +192,7 @@ export function ArenaAuthProvider({ children }: { children: ReactNode }) {
     const config = configRef.current;
     const logoutPath = config?.logout_path ?? "/api/v1/auth/logout";
     const csrfToken = csrfTokenRef.current;
+    const csrfHeaderName = csrfHeaderNameRef.current;
 
     try {
       await fetch(logoutPath, {
@@ -195,7 +200,7 @@ export function ArenaAuthProvider({ children }: { children: ReactNode }) {
         credentials: "include",
         headers: {
           Accept: "application/json",
-          ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
+          ...(csrfToken ? { [csrfHeaderName]: csrfToken } : {}),
         },
       });
     } finally {

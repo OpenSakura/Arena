@@ -111,8 +111,9 @@ Auth notes:
 - All mutations and viewing, creating battles, viewing battles, submitting votes,
   and retrying battles, require authentication. Successful vote submission
   reveals model identities immediately.
-- Unsafe browser session requests must include the per-session `X-CSRF-Token`
-  returned from `GET /api/v1/auth/session`.
+- Unsafe browser session requests must include the per-session CSRF token returned
+  from `GET /api/v1/auth/session` in the configured `AUTH_CSRF_HEADER_NAME`
+  header, default `X-CSRF-Token`.
 
 ## Frontend
 
@@ -133,8 +134,8 @@ login at `/api/v1/auth/login`, and bootstraps the app session from
 `GET /api/v1/auth/session`.
 
 Do not add provider secrets or token endpoint credentials to `frontend/.env.local`.
-The browser should only receive the app session cookie and a CSRF token from the
-backend.
+The browser should only receive the app session cookie, CSRF token, and non-secret
+CSRF header name from the backend.
 
 ## Seed Data (Tasks + Models)
 

@@ -22,6 +22,8 @@ def test_backend_e2e_confidential_oidc_settings(configured_backend_env: None) ->
     assert settings.oidc_redirect_path == "/api/v1/auth/callback"
     assert settings.auth_session_hash_secret == "arena-e2e-auth-session-hash-secret"
     assert settings.oidc_issuer == "http://localhost:19000/application/o/arena-e2e/"
+    assert settings.oidc_admin_group_claim == "groups"
+    assert settings.oidc_admin_group_name == "arena_admin"
 
 
 def test_authentik_provider_is_confidential_for_e2e(
@@ -69,7 +71,7 @@ def test_authenticated_me_uses_backend_session(
     assert payload["user"] is not None
     assert (
         payload["user"]["oidc_issuer"]
-        == "http://localhost:19000/application/o/arena-e2e/"
+        == "http://localhost:19000/application/o/arena-e2e"
     )
     assert payload["user"]["oidc_sub"]
 

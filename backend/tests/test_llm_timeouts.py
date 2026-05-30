@@ -37,6 +37,10 @@ class _Settings:
         self.openai_model_timeout_seconds = model_timeout
 
 
+async def _noop_async() -> None:
+    return None
+
+
 def _settings(**overrides: object) -> Settings:
     values: dict[str, object] = {
         "app_env": "test",
@@ -52,6 +56,8 @@ def _settings(**overrides: object) -> Settings:
         "oidc_issuer": "",
         "llm_queue_shutdown_timeout_seconds": 0.05,
         "admin_model_test_timeout_seconds": 20.0,
+        "auth_csrf_header_name": "X-CSRF-Token",
+        "battle_prepopulation_enabled": False,
         "otlp_disabled": False,
         "otlp_endpoint": "",
         "otel_exporter_otlp_traces_endpoint": "",
@@ -356,6 +362,11 @@ def test_fastapi_shutdown_uses_queue_drain_timeout_and_keeps_cancellation(
     monkeypatch.setattr(main, "get_oidc_confidential_client", lambda: _Closable())
     monkeypatch.setattr(main, "get_battle_orchestrator", lambda: _Orchestrator())
     monkeypatch.setattr(main, "close_all_redis_clients", lambda: None)
+    monkeypatch.setattr(
+        main,
+        "get_battle_prepopulation_service",
+        lambda: SimpleNamespace(resume_incomplete_jobs=lambda: [], shutdown=_noop_async),
+    )
     monkeypatch.setattr(main, "init_tracing", lambda settings: None)
     monkeypatch.setattr(main, "shutdown_tracing", lambda: None)
 

@@ -60,9 +60,9 @@ class _CsrfClient:
     settings: SimpleNamespace
 
 
-def _csrf_settings() -> SimpleNamespace:
+def _csrf_settings(*, auth_csrf_header_name: str = "X-CSRF-Token") -> SimpleNamespace:
     return SimpleNamespace(
-        auth_csrf_header_name="X-CSRF-Token",
+        auth_csrf_header_name=auth_csrf_header_name,
         auth_session_cookie_name="arena_session",
         auth_session_hash_secret=_HASH_SECRET,
         auth_session_max_age_seconds=3600,
@@ -75,6 +75,7 @@ def _main_settings() -> SimpleNamespace:
         app_name="OpenSakura Arena API (csrf tests)",
         app_env="test",
         leaderboard_refresh_enabled=False,
+        battle_prepopulation_enabled=False,
         access_log_enabled=False,
         turnstile_secret_key="",
         cors_allow_origins=["http://localhost:3000"],
@@ -205,6 +206,57 @@ def test_cookie_requires_csrf_missing_wrong_and_correct(
     assert wrong.json()["detail"] == "Invalid CSRF token"
     assert correct.status_code == 200
     assert correct.json() == {"ok": True}
+
+
+def test_cookie_requires_configured_csrf_header_name(tmp_path) -> None:
+    settings = _csrf_settings(auth_csrf_header_name="X-Arena-CSRF")
+    engine = create_engine(
+        f"sqlite+pysqlite:///{tmp_path / 'custom-csrf.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    Base.metadata.create_all(engine)
+    with session_factory() as db:
+        user = User(oidc_issuer="https://issuer.example", oidc_sub="session-user")
+        db.add(user)
+        db.flush()
+        created = auth_session.create_auth_session(
+            db,
+            user=user,
+            claims={"groups": ["arena_admin"]},
+            settings=settings,
+        )
+        db.commit()
+
+    async def override_principal() -> security.Principal:
+        return _session_principal(created.row.user_id, created.row.id)
+
+    def override_db() -> Iterator[Session]:
+        with session_factory() as session:
+            yield session
+
+    app = FastAPI()
+
+    @app.post("/protected", dependencies=[Depends(csrf.require_csrf_for_session)])
+    def unsafe_endpoint() -> dict[str, bool]:
+        return {"ok": True}
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[security.get_principal_optional] = override_principal
+    app.dependency_overrides[csrf.get_settings] = lambda: settings
+
+    raw_csrf = auth_session.stable_auth_session_csrf_token(
+        created.session_token,
+        settings=settings,
+    )
+    with TestClient(app) as client:
+        client.cookies.set(settings.auth_session_cookie_name, created.session_token)
+        wrong_header = client.post("/protected", headers={"X-CSRF-Token": raw_csrf})
+        correct_header = client.post("/protected", headers={"X-Arena-CSRF": raw_csrf})
+
+    assert wrong_header.status_code == 403
+    assert correct_header.status_code == 200
+    engine.dispose()
 
 
 def test_session_context_marker_requires_csrf_even_before_principal_auth_method_cutover(
@@ -352,6 +404,27 @@ def test_cors_preflight_accepts_csrf_and_authorization_headers(
     assert "x-request-id" in allow_headers
 
 
+def test_cors_preflight_accepts_configured_csrf_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _create_main_app(monkeypatch, auth_csrf_header_name="X-Arena-CSRF")
+
+    with TestClient(app) as client:
+        response = client.options(
+            "/api/v1/readyz",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "Authorization, X-Arena-CSRF",
+            },
+        )
+
+    assert response.status_code == 200
+    allow_headers = response.headers["access-control-allow-headers"].lower()
+    assert "authorization" in allow_headers
+    assert "x-arena-csrf" in allow_headers
+
+
 def test_route_inventory_covers_all_unsafe_authenticated_routes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -436,8 +509,13 @@ def _serialized_row(row: object) -> str:
     )
 
 
-def _create_main_app(monkeypatch: pytest.MonkeyPatch):
+def _create_main_app(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    auth_csrf_header_name: str = "X-CSRF-Token",
+):
     settings = _main_settings()
+    settings.auth_csrf_header_name = auth_csrf_header_name
     monkeypatch.setattr(main, "get_settings", lambda: settings)
     monkeypatch.setattr(config_module, "get_settings", lambda: settings)
     monkeypatch.setattr(security, "get_settings", lambda: settings)

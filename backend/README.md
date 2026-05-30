@@ -9,7 +9,8 @@ Notes:
   another OpenID Provider. The backend builds the authorization request, retains
   PKCE `S256` server-side, exchanges the code at `/api/v1/auth/callback` with
   `client_secret_basic`, and stores only an app session. The browser receives an
-  HttpOnly session cookie and uses `X-CSRF-Token` for unsafe session requests.
+  HttpOnly session cookie and uses the configured CSRF header, default
+  `X-CSRF-Token`, for unsafe session requests.
 - Public reads are limited to the leaderboard. Battle detail reads, battle
   creation, retrying battles, battle streaming, and vote submission require
   authentication. Successful vote submissions reveal model identities inline;

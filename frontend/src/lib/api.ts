@@ -12,13 +12,13 @@
 import { toHeaderObject } from "@/lib/sse";
 
 const API_PREFIX = "/api/v1";
-const CSRF_HEADER_NAME = "X-CSRF-Token";
 
 type ApiMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 const UNSAFE_METHODS = new Set<ApiMethod>(["POST", "PUT", "PATCH", "DELETE"]);
 
 let apiCsrfToken: string | null = null;
+let apiCsrfHeaderName: string = "X-CSRF-Token";
 
 export function getApiPrefix(): string {
   return API_PREFIX;
@@ -30,6 +30,15 @@ export function setApiCsrfToken(token: string | null | undefined): void {
 
 export function getApiCsrfToken(): string | null {
   return apiCsrfToken;
+}
+
+export function setApiCsrfHeaderName(name: string | null | undefined): void {
+  const normalizedName = name?.trim();
+  apiCsrfHeaderName = normalizedName || "X-CSRF-Token";
+}
+
+export function getApiCsrfHeaderName(): string {
+  return apiCsrfHeaderName;
 }
 
 async function readErrorDetail(res: Response): Promise<string | null> {
@@ -117,8 +126,8 @@ function buildRequestHeaders(
     setDefaultHeader(mergedHeaders, "Content-Type", "application/json");
   }
 
-  if (UNSAFE_METHODS.has(method) && apiCsrfToken && !hasHeader(mergedHeaders, CSRF_HEADER_NAME)) {
-    mergedHeaders[CSRF_HEADER_NAME] = apiCsrfToken;
+  if (UNSAFE_METHODS.has(method) && apiCsrfToken && !hasHeader(mergedHeaders, apiCsrfHeaderName)) {
+    mergedHeaders[apiCsrfHeaderName] = apiCsrfToken;
   }
 
   return mergedHeaders;

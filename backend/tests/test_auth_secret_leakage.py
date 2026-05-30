@@ -73,6 +73,7 @@ def test_public_config_response_excludes_confidential_and_token_fields() -> None
             "login_path": "/api/v1/auth/login",
             "logout_path": "/api/v1/auth/logout",
             "session_path": "/api/v1/auth/session",
+            "csrf_header_name": "X-CSRF-Token",
         },
     }
 

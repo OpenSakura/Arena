@@ -39,6 +39,7 @@ from app.schemas.tasks import (
     TaskSetPublic,
     TaskSetUpdate,
     TaskUpdate,
+    validate_metadata_size,
 )
 from app.utils.id import parse_optional_uuid_or_422, parse_uuid_or_422
 
@@ -335,6 +336,13 @@ async def import_tasks_jsonl(
                 status_code=400,
                 detail=f"Line {line_number} has non-object metadata",
             )
+        try:
+            metadata = validate_metadata_size(metadata)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Line {line_number} metadata JSON must not exceed 64 KB",
+            ) from exc
 
         task = Task(
             task_set_id=task_set_uuid,

@@ -168,11 +168,30 @@ def submit_vote(
     bot_metadata = payload.bot_metadata if is_bot_vote else None
 
     consumer_type = "bot" if is_bot_vote else "human"
-    if find_consumer_battle_vote(
+    existing_vote = find_consumer_battle_vote(
         db,
         battle_id=battle_uuid,
         consumer_type=consumer_type,
-    ) is not None:
+    )
+    if existing_vote is not None:
+        if not is_bot_vote and _same_human_voter(existing_vote, voter_user_id):
+            if getattr(existing_vote, "revealed", False) and getattr(existing_vote, "winner", None) == winner:
+                response.status_code = 200
+                return _build_vote_submit_response(
+                    db,
+                    vote_id=_required_vote_id(existing_vote),
+                    battle_id=battle_uuid,
+                    winner=winner,
+                    model_a_id=run_a.model_id,
+                    model_b_id=run_b.model_id,
+                    vote=existing_vote,
+                    principal=principal,
+                )
+            if getattr(existing_vote, "revealed", False):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Vote already revealed and cannot be changed",
+                )
         raise HTTPException(status_code=409, detail="Battle already has a vote")
 
     _enforce_auth_vote_rate_limit(
@@ -251,6 +270,27 @@ def _resolve_duplicate_vote_conflict(
         raise HTTPException(status_code=500, detail="Failed to persist vote")
 
     raise HTTPException(status_code=409, detail="Battle already has a vote")
+
+
+def _same_human_voter(vote: object, voter_user_id: uuid.UUID) -> bool:
+    vote_user_id = getattr(vote, "voter_user_id", None)
+    if vote_user_id is None:
+        return False
+    if isinstance(vote_user_id, uuid.UUID):
+        return vote_user_id == voter_user_id
+    try:
+        return uuid.UUID(str(vote_user_id)) == voter_user_id
+    except ValueError:
+        return False
+
+
+def _required_vote_id(vote: object) -> uuid.UUID:
+    vote_id = getattr(vote, "id", None)
+    if isinstance(vote_id, uuid.UUID):
+        return vote_id
+    if vote_id is not None:
+        return uuid.UUID(str(vote_id))
+    raise HTTPException(status_code=500, detail="Vote not found")
 
 
 def _build_vote_submit_response(

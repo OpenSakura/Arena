@@ -41,6 +41,10 @@ class _Orchestrator:
     llm_client = _Closable()
 
 
+async def _noop_async() -> None:
+    return None
+
+
 class _ClientContext(NamedTuple):
     client: TestClient
     session_factory: sessionmaker[Session]
@@ -61,6 +65,8 @@ def _settings() -> SimpleNamespace:
         rate_limit_redis_url="",
         rate_limit_redis_timeout_seconds=0.5,
         web_concurrency=1,
+        auth_csrf_header_name="X-CSRF-Token",
+        battle_prepopulation_enabled=False,
         oidc_admin_group_claim="groups",
         oidc_admin_group_name="arena_admin",
         service_token_hash_secret=_HASH_SECRET,
@@ -84,6 +90,11 @@ def client_context(
     monkeypatch.setattr(main, "close_all_redis_clients", lambda: None)
     monkeypatch.setattr(main, "get_oidc_confidential_client", lambda: _Closable())
     monkeypatch.setattr(main, "get_battle_orchestrator", lambda: _Orchestrator())
+    monkeypatch.setattr(
+        main,
+        "get_battle_prepopulation_service",
+        lambda: SimpleNamespace(resume_incomplete_jobs=lambda: [], shutdown=_noop_async),
+    )
 
     engine = create_engine(
         f"sqlite+pysqlite:///{tmp_path / 'admin-service-accounts.db'}",

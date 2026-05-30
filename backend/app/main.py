@@ -27,6 +27,7 @@ from app.db.bootstrap import bootstrap_schema
 from app.core.logging import clear_request_id, configure_logging, set_request_id
 from app.services.leaderboard_refresh import get_leaderboard_refresher
 from app.services.battle_orchestrator import get_battle_orchestrator
+from app.services.battle_prepopulation import get_battle_prepopulation_service
 from app.services.oidc_client import get_oidc_confidential_client
 from app.utils.client_ip import get_client_ip
 from app.utils.process_guard import (
@@ -140,6 +141,12 @@ def create_app() -> FastAPI:
 
             refresh_task.add_done_callback(_on_refresh_done)
 
+        prepopulation_enabled = bool(
+            getattr(settings, "battle_prepopulation_enabled", True)
+        )
+        if prepopulation_enabled:
+            get_battle_prepopulation_service().resume_incomplete_jobs()
+
         try:
             yield
         finally:
@@ -147,6 +154,10 @@ def create_app() -> FastAPI:
                 stop_event.set()
                 with suppress(asyncio.CancelledError):
                     await refresh_task
+
+            if prepopulation_enabled:
+                with suppress(Exception):
+                    await get_battle_prepopulation_service().shutdown()
 
             try:
                 llm_shutdown_timeout = getattr(
@@ -283,7 +294,7 @@ def create_app() -> FastAPI:
         allow_headers=[
             "Authorization",
             "Content-Type",
-            "X-CSRF-Token",
+            getattr(settings, "auth_csrf_header_name", "X-CSRF-Token"),
             "X-Request-ID",
         ],
         expose_headers=["X-Request-ID"],

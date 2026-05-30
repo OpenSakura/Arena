@@ -1,9 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { apiDelete, apiGet, apiPatch, apiPost, apiPut, getApiCsrfToken, setApiCsrfToken } from "./api";
+import {
+  apiDelete,
+  apiGet,
+  apiPatch,
+  apiPost,
+  apiPut,
+  getApiCsrfHeaderName,
+  getApiCsrfToken,
+  setApiCsrfHeaderName,
+  setApiCsrfToken,
+} from "./api";
 
 afterEach(() => {
   setApiCsrfToken(null);
+  setApiCsrfHeaderName(null);
   vi.restoreAllMocks();
 });
 
@@ -54,6 +65,14 @@ describe("api helpers", () => {
     setApiCsrfToken("csrf-token-2");
 
     expect(getApiCsrfToken()).toBe("csrf-token-2");
+  });
+
+  it("keeps the CSRF header name in module memory with default reset", () => {
+    expect(getApiCsrfHeaderName()).toBe("X-CSRF-Token");
+    setApiCsrfHeaderName("X-Arena-CSRF");
+    expect(getApiCsrfHeaderName()).toBe("X-Arena-CSRF");
+    setApiCsrfHeaderName(null);
+    expect(getApiCsrfHeaderName()).toBe("X-CSRF-Token");
   });
 
   it("apiPost merges caller headers, forces credentials, and serializes body with CSRF", async () => {
@@ -108,6 +127,25 @@ describe("api helpers", () => {
     expect(init.credentials).toBe("include");
     expect(sentHeaders.get("x-csrf-token")).toBe("csrf-token-browser");
     expect(sentHeaders.get("authorization")).toBeNull();
+  });
+
+  it("apiPost uses custom CSRF header name when configured", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ created: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    setApiCsrfHeaderName("X-Custom-CSRF");
+    setApiCsrfToken("custom-csrf-token");
+
+    await expect(apiPost("/test", { hello: "world" })).resolves.toEqual({ created: true });
+
+    const init = fetchSpy.mock.calls[0]?.[1] as RequestInit;
+    const sentHeaders = new Headers(init.headers as HeadersInit);
+    expect(sentHeaders.get("x-custom-csrf")).toBe("custom-csrf-token");
+    expect(sentHeaders.get("x-csrf-token")).toBeNull();
   });
 
   it("apiPost preserves explicit headers from Headers instances", async () => {
@@ -213,6 +251,23 @@ describe("api helpers", () => {
 
     const init = fetchSpy.mock.calls[0]?.[1] as RequestInit;
     expect(new Headers(init.headers as HeadersInit).get("x-csrf-token")).toBe("explicit-token");
+  });
+
+  it("does not overwrite explicit CSRF headers when using custom header name", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    setApiCsrfHeaderName("X-Custom-Token");
+    setApiCsrfToken("current-token");
+
+    await apiPost("/votes", {}, { headers: { "x-custom-token": "explicit-token" } });
+
+    const init = fetchSpy.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(init.headers as HeadersInit).get("x-custom-token")).toBe("explicit-token");
   });
 
   it("includes JSON detail string in error messages", async () => {

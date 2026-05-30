@@ -72,7 +72,7 @@ class BattlePrepopulationService:
     ) -> None:
         self._orchestrator = orchestrator
         self._settings = settings
-        self._tasks: set[asyncio.Task[None]] = set()
+        self._tasks_by_job_id: dict[uuid.UUID, asyncio.Task[None]] = {}
 
     @property
     def settings(self) -> Settings:
@@ -120,11 +120,15 @@ class BattlePrepopulationService:
         request_id: str | None = None,
     ) -> asyncio.Task[None]:
         job_uuid = _coerce_uuid(job_id, "job_id")
+        existing = self._tasks_by_job_id.get(job_uuid)
+        if existing is not None and not existing.done():
+            return existing
         task = asyncio.create_task(self.run_job(job_uuid, request_id=request_id))
-        self._tasks.add(task)
+        self._tasks_by_job_id[job_uuid] = task
 
         def _discard_finished(done_task: asyncio.Task[None]) -> None:
-            self._tasks.discard(done_task)
+            if self._tasks_by_job_id.get(job_uuid) is done_task:
+                self._tasks_by_job_id.pop(job_uuid, None)
             if done_task.cancelled():
                 return
             exc = done_task.exception()
@@ -137,6 +141,33 @@ class BattlePrepopulationService:
 
         task.add_done_callback(_discard_finished)
         return task
+
+    def resume_incomplete_jobs(self) -> list[asyncio.Task[None]]:
+        SessionLocal = get_sessionmaker()
+        db = SessionLocal()
+        try:
+            job_ids = list(
+                db.execute(
+                    select(BattlePrepopulationJob.id).where(
+                        BattlePrepopulationJob.status.in_({"pending", "running"})
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        finally:
+            db.close()
+        return [self.start_job(job_id) for job_id in job_ids]
+
+    async def shutdown(self) -> None:
+        tasks = [task for task in self._tasks_by_job_id.values() if not task.done()]
+        if not tasks:
+            self._tasks_by_job_id.clear()
+            return
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks_by_job_id.clear()
 
     async def run_job(
         self,
@@ -579,6 +610,13 @@ async def run_prepopulation_job(
             return
         if job.status not in {"pending", "running"}:
             return
+        _reconcile_job_progress_from_battles(job)
+        job = _load_job_detached(job_uuid)
+        if job is None:
+            logger.warning("Prepopulation job missing after reconciliation: %s", job_uuid)
+            return
+        if job.status not in {"pending", "running"}:
+            return
         completed = int(job.completed_count or 0)
         failed = int(job.failed_count or 0)
         if completed + failed >= int(job.requested_count):
@@ -586,7 +624,12 @@ async def run_prepopulation_job(
             return
 
         try:
-            battle_id = _create_prepopulation_battle_for_job(job, settings=effective_settings)
+            battle_id = _active_prepopulation_battle_id_for_job(job)
+            if battle_id is None:
+                battle_id = _create_prepopulation_battle_for_job(
+                    job,
+                    settings=effective_settings,
+                )
         except Exception as exc:  # noqa: BLE001
             _increment_job_failure(job_uuid, exc)
             continue
@@ -608,6 +651,69 @@ async def run_prepopulation_job(
                 )
         except Exception as exc:  # noqa: BLE001
             _increment_job_failure(job_uuid, exc)
+
+
+def _active_prepopulation_battle_id_for_job(job: BattlePrepopulationJob) -> uuid.UUID | None:
+    SessionLocal = get_sessionmaker()
+    db = SessionLocal()
+    try:
+        battles = (
+            db.execute(select(Battle).where(Battle.status.in_({"pending", "running"})))
+            .scalars()
+            .all()
+        )
+        for battle in battles:
+            metadata = getattr(battle, "metadata_json", None)
+            if not isinstance(metadata, dict):
+                continue
+            if metadata.get("prepopulation_job_id") != str(job.id):
+                continue
+            battle_id = getattr(battle, "id", None)
+            if isinstance(battle_id, uuid.UUID):
+                return battle_id
+        return None
+    finally:
+        db.close()
+
+
+def _reconcile_job_progress_from_battles(job: BattlePrepopulationJob) -> None:
+    SessionLocal = get_sessionmaker()
+    db = SessionLocal()
+    try:
+        battles = (
+            db.execute(select(Battle).where(Battle.status.in_({"completed", "failed"})))
+            .scalars()
+            .all()
+        )
+        completed = 0
+        failed = 0
+        for battle in battles:
+            metadata = getattr(battle, "metadata_json", None)
+            if not isinstance(metadata, dict):
+                continue
+            if metadata.get("prepopulation_job_id") != str(job.id):
+                continue
+            if battle.status == "completed":
+                completed += 1
+            elif battle.status == "failed":
+                failed += 1
+        if completed <= int(job.completed_count or 0) and failed <= int(job.failed_count or 0):
+            return
+        attached = db.get(BattlePrepopulationJob, job.id)
+        if attached is None:
+            return
+        attached.completed_count = max(int(attached.completed_count or 0), completed)
+        attached.failed_count = max(int(attached.failed_count or 0), failed)
+        if attached.completed_count + attached.failed_count >= attached.requested_count:
+            attached.status = "failed" if attached.failed_count and not attached.completed_count else "completed"
+            attached.finished_at = datetime.now(timezone.utc)
+        db.add(attached)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 def create_prepopulation_job(
@@ -635,6 +741,14 @@ def start_prepopulation_job(
     return get_battle_prepopulation_service().start_job(job_id, request_id=request_id)
 
 
+def resume_incomplete_prepopulation_jobs() -> list[asyncio.Task[None]]:
+    return get_battle_prepopulation_service().resume_incomplete_jobs()
+
+
+async def shutdown_battle_prepopulation_service() -> None:
+    await get_battle_prepopulation_service().shutdown()
+
+
 def _create_prepopulation_battle_for_job(
     job: BattlePrepopulationJob,
     *,
@@ -652,7 +766,8 @@ def _create_prepopulation_battle_for_job(
         metadata = {
             "pre_generated": True,
             "prepopulation_job_id": str(job.id),
-            "prepopulation_model_ids": list(job.model_ids or []),
+            "prepopulation_model_ids": [str(model_a_id), str(model_b_id)],
+            "prepopulation_requested_model_ids": list(job.model_ids or []),
             "task_snapshot": _task_snapshot(task),
             "sampling": {
                 "task": "weighted_v1",

@@ -475,6 +475,8 @@ def configured_backend_env(
     monkeypatch.setenv("OIDC_ISSUER", AUTHENTIK_ISSUER)
     monkeypatch.setenv("OIDC_CLIENT_ID", AUTHENTIK_CLIENT_ID)
     monkeypatch.setenv("OIDC_CLIENT_SECRET", AUTHENTIK_CLIENT_SECRET)
+    monkeypatch.setenv("OIDC_ADMIN_GROUP_CLAIM", "groups")
+    monkeypatch.setenv("OIDC_ADMIN_GROUP_NAME", "arena_admin")
     monkeypatch.setenv("OIDC_REDIRECT_PATH", "/api/v1/auth/callback")
     monkeypatch.setenv("PUBLIC_BASE_URL", PUBLIC_BASE_URL)
     monkeypatch.setenv("AUTH_SESSION_HASH_SECRET", AUTH_SESSION_HASH_SECRET)

@@ -311,7 +311,7 @@ class LLMClient:
         messages: list[dict[str, Any]],
         params: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
-        timeout_seconds: float = 120.0,
+        timeout_seconds: float | None = None,
         total_timeout_seconds: float | None = None,
     ) -> AsyncIterator[LLMStreamChunk]:
         async for chunk in self._stream_chat_completion_openai(
@@ -393,9 +393,17 @@ class LLMClient:
         messages: list[dict[str, Any]],
         params: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
-        timeout_seconds: float = 120.0,
+        timeout_seconds: float | None = None,
         total_timeout_seconds: float | None = None,
     ) -> AsyncIterator[LLMStreamChunk]:
+        resolved_timeout_seconds = (
+            float(get_settings().openai_model_timeout_seconds)
+            if timeout_seconds is None
+            else float(timeout_seconds)
+        )
+        request_timeout = _httpx_timeout(
+            model_timeout_seconds=resolved_timeout_seconds
+        )
         request: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -404,7 +412,7 @@ class LLMClient:
         extra_body = self._sanitize_params(params) or None
 
         if total_timeout_seconds is None:
-            total_timeout_seconds = timeout_seconds * 3
+            total_timeout_seconds = resolved_timeout_seconds * 3
         wall_clock_deadline = time.monotonic() + total_timeout_seconds
         yielded_to_caller = False
 
@@ -418,6 +426,7 @@ class LLMClient:
                     _headers_with_trace_context(dict(extra_headers or {})) or None
                 ),
                 extra_body=extra_body,
+                timeout=request_timeout,
             )
             async for sdk_chunk in stream:
                 chunk_payload = _sdk_object_to_dict(sdk_chunk)
@@ -515,7 +524,7 @@ class LLMClient:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
-                annotated_exc = _annotate_openai_timeout(exc)
+                annotated_exc = _annotate_openai_timeout(exc, timeout=request_timeout)
                 if getattr(annotated_exc, "timeout_layer", None):
                     span_attributes["timeout_layer"] = getattr(
                         annotated_exc,

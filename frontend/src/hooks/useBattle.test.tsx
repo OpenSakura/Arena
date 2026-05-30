@@ -53,7 +53,7 @@ const mockedStreamSSE = vi.mocked(streamSSE);
 type HookResult = ReturnType<typeof useBattle>;
 
 function createAuthState(overrides: Record<string, unknown> = {}) {
-  const authStatus = (overrides.authStatus as string | undefined) ?? "authenticated";
+  const authStatus = (overrides.authStatus as "loading" | "authenticated" | "unauthenticated" | undefined) ?? "authenticated";
 
   return {
     authStatus,
@@ -287,7 +287,7 @@ describe("useBattle", () => {
     it("streams completed pooled battle outputs from backend SSE after immediate source hydration", async () => {
       mockedUseArenaAuth.mockReturnValue(createAuthState());
       mockedLoadOrCreateBattle.mockResolvedValueOnce(createPooledBattle(12_000));
-      let releaseStream: (() => void) | null = null;
+      let releaseStream!: () => void;
       const streamRelease = new Promise<void>((resolve) => {
         releaseStream = resolve;
       });
@@ -334,7 +334,7 @@ describe("useBattle", () => {
         expect(resultRef.current?.state.outB).toBe("");
       });
 
-      releaseStream?.();
+      releaseStream();
 
       await waitFor(() => {
         expect(resultRef.current?.state.status).toBe("done");

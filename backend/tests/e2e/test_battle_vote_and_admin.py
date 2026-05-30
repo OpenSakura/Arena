@@ -19,6 +19,7 @@ from app.models.task import Task
 from app.models.vote import Vote
 from app.services.oidc_client import get_oidc_confidential_client
 from app.utils.redis import get_rate_limit_redis_client
+from conftest import _attach_session_to_client
 
 
 pytestmark = pytest.mark.e2e
@@ -443,7 +444,6 @@ def test_battle_stream_vote_and_leaderboard_reflect_rating_updates(
 
 def test_battle_create_requires_authentication_with_deprecated_turnstile_config(
     backend_client_with_deprecated_turnstile_config,
-    authenticated_backend_client,
     db_session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -509,9 +509,13 @@ def test_battle_create_requires_authentication_with_deprecated_turnstile_config(
 
     monkeypatch.setattr(battles_route, "_get_turnstile_http_client", fail_if_called)
 
-    authed_battle = authenticated_backend_client.client.post(
+    authenticated_client = _attach_session_to_client(
+        client=backend_client_with_deprecated_turnstile_config,
+        db_session=db_session,
+    )
+    authed_battle = authenticated_client.client.post(
         "/api/v1/battles",
-        headers=authenticated_backend_client.headers,
+        headers=authenticated_client.headers,
         json={},
     )
     assert authed_battle.status_code == 201

@@ -112,7 +112,8 @@ describe("router", () => {
 
   it("redirects /admin to /admin/models", () => {
     const adminRoute = router.routes[0].children?.find(r => r.path === "admin");
-    const indexRoute = adminRoute?.children?.find(r => r.index);
-    expect(indexRoute?.element?.props.to).toBe("/admin/models");
+    const indexRoute = adminRoute?.children?.find(r => r.index) as import("react-router-dom").RouteObject | undefined;
+    const el = indexRoute?.element as React.ReactElement | undefined;
+    expect(el?.props.to).toBe("/admin/models");
   });
 });

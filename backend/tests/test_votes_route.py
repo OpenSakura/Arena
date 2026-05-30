@@ -878,24 +878,66 @@ def test_submit_vote_allows_admin_non_creator(
     assert db.commit_calls == 1
 
 
-@pytest.mark.parametrize(
-    ("payload_winner", "existing_winner"),
-    [("A", "A"), ("B", "A")],
-)
-def test_submit_vote_rejects_same_voter_second_vote(
+def test_submit_vote_returns_existing_vote_for_same_human_same_winner_retry(
     monkeypatch: pytest.MonkeyPatch,
-    payload_winner: Literal["A", "B"],
-    existing_winner: Literal["A", "B"],
+) -> None:
+    battle, runs, model_a_id, model_b_id = _battle_and_runs()
+    principal = _authenticated_principal()
+    existing_vote_id = uuid.uuid4()
+    existing_vote = SimpleNamespace(
+        id=existing_vote_id,
+        battle_id=battle.id,
+        winner="A",
+        revealed=True,
+        rubric=None,
+        comment=None,
+        voter_user_id=uuid.UUID(principal.user_id),
+    )
+    db = _VoteDB(
+        battle=battle,
+        runs=runs,
+        existing_votes=[existing_vote],
+        model_lookup={
+            model_a_id: SimpleNamespace(id=model_a_id, display_name="Model A"),
+            model_b_id: SimpleNamespace(id=model_b_id, display_name="Model B"),
+        },
+    )
+    monkeypatch.setattr(
+        votes,
+        "_enforce_auth_vote_rate_limit",
+        lambda **_kw: pytest.fail("Rate-limit checks should not run"),
+    )
+
+    route_response = Response()
+    response = votes.submit_vote(
+        battle_id=str(battle.id),
+        payload=VoteCreate(winner="A"),
+        response=route_response,
+        db=db,  # type: ignore[arg-type]
+        principal=principal,
+        settings=_settings(),  # type: ignore[arg-type]
+    )
+
+    assert route_response.status_code == 200
+    assert response.vote_id == str(existing_vote_id)
+    assert response.winner == "A"
+    assert db.added == []
+    assert db.commit_calls == 0
+
+
+def test_submit_vote_rejects_same_human_different_winner_after_reveal(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     battle, runs, _, _ = _battle_and_runs()
     principal = _authenticated_principal()
     existing_vote = SimpleNamespace(
         id=uuid.uuid4(),
         battle_id=battle.id,
-        winner=existing_winner,
+        winner="A",
         revealed=True,
         rubric=None,
         comment=None,
+        voter_user_id=uuid.UUID(principal.user_id),
     )
     db = _VoteDB(battle=battle, runs=runs, existing_votes=[existing_vote])
     monkeypatch.setattr(
@@ -907,7 +949,7 @@ def test_submit_vote_rejects_same_voter_second_vote(
     with pytest.raises(HTTPException) as exc_info:
         votes.submit_vote(
             battle_id=str(battle.id),
-            payload=VoteCreate(winner=payload_winner),
+            payload=VoteCreate(winner="B"),
             response=Response(),
             db=db,  # type: ignore[arg-type]
             principal=principal,
@@ -915,7 +957,7 @@ def test_submit_vote_rejects_same_voter_second_vote(
         )
 
     assert exc_info.value.status_code == 409
-    assert exc_info.value.detail == "Battle already has a vote"
+    assert exc_info.value.detail == "Vote already revealed and cannot be changed"
     assert db.added == []
     assert db.commit_calls == 0
 

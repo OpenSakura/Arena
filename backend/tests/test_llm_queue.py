@@ -459,6 +459,8 @@ def test_fastapi_shutdown_invokes_llm_queue_cleanup(monkeypatch: pytest.MonkeyPa
         web_concurrency=1,
         llm_queue_shutdown_timeout_seconds=0.25,
         trust_x_forwarded_for=False,
+        auth_csrf_header_name="X-CSRF-Token",
+        battle_prepopulation_enabled=False,
     )
 
     async def fake_stop_llm_request_queue(*, timeout_seconds: float | None) -> None:

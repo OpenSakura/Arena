@@ -17,6 +17,7 @@ const BACKEND_SESSION_CONFIG: PublicConfig = {
     login_path: "/api/v1/auth/login",
     logout_path: "/api/v1/auth/logout",
     session_path: "/api/v1/auth/session",
+    csrf_header_name: "X-CSRF-Token",
   },
 };
 
@@ -54,6 +55,12 @@ describe("session auth helpers", () => {
         auth: { ...BACKEND_SESSION_CONFIG.auth, session_path: "" },
       }),
     ).toThrow("Backend session authentication paths are missing");
+    expect(() =>
+      assertBackendSessionConfig({
+        ...BACKEND_SESSION_CONFIG,
+        auth: { ...BACKEND_SESSION_CONFIG.auth, csrf_header_name: "   " },
+      }),
+    ).toThrow("Backend session CSRF header name is invalid");
   });
 
   it("maps backend session JSON to profile identity", () => {

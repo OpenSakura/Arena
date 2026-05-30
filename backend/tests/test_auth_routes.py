@@ -781,6 +781,27 @@ def test_logout_accepts_stable_csrf_after_session_read_and_clears_cookie(
         assert row.revoked_at is not None
 
 
+def test_logout_uses_configured_csrf_header_name(harness: _AuthHarness) -> None:
+    harness.settings.auth_csrf_header_name = "X-Arena-CSRF"
+    created = _create_user_session(harness)
+
+    with TestClient(harness.app) as client:
+        client.cookies.set(harness.settings.auth_session_cookie_name, created.session_token)
+        csrf_token = client.get("/api/v1/auth/session").json()["csrf_token"]
+        default_header = client.post(
+            "/api/v1/auth/logout",
+            headers={"X-CSRF-Token": csrf_token},
+        )
+        configured_header = client.post(
+            "/api/v1/auth/logout",
+            headers={"X-Arena-CSRF": csrf_token},
+        )
+
+    assert default_header.status_code == 403
+    assert default_header.json()["detail"] == "CSRF token required"
+    assert configured_header.status_code == 200
+
+
 def test_session_csrf_response_works_for_existing_random_csrf_hash(
     harness: _AuthHarness,
 ) -> None:

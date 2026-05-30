@@ -34,6 +34,7 @@ class PublicAuthConfig(BaseModel):
     login_path: str
     logout_path: str
     session_path: str
+    csrf_header_name: str
 
 
 class PublicConfigResponse(BaseModel):
@@ -121,5 +122,6 @@ def public_config(
             login_path="/api/v1/auth/login",
             logout_path="/api/v1/auth/logout",
             session_path="/api/v1/auth/session",
+            csrf_header_name=getattr(_settings, "auth_csrf_header_name", "X-CSRF-Token"),
         ),
     )

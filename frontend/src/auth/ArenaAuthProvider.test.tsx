@@ -20,6 +20,7 @@ const PUBLIC_CONFIG = {
     login_path: "/api/v1/auth/login",
     logout_path: "/api/v1/auth/logout",
     session_path: "/api/v1/auth/session",
+    csrf_header_name: "X-CSRF-Token",
   },
 } as const;
 
@@ -254,6 +255,34 @@ describe("ArenaAuthProvider component", () => {
     });
     expect(screen.getByTestId("csrf-token").textContent).toBe("none");
     expect(navigateSpy).toHaveBeenCalledWith("/");
+  });
+
+  it("posts logout with credentials and custom configured CSRF header name", async () => {
+    createNavigateSpy();
+    const customConfig = {
+      ...PUBLIC_CONFIG,
+      auth: { ...PUBLIC_CONFIG.auth, csrf_header_name: "X-Custom-Csrf" },
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(customConfig))
+      .mockResolvedValueOnce(jsonResponse(AUTHENTICATED_SESSION))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, authenticated: false, logout_url: null }));
+
+    await renderProviderWithFetch(fetchMock);
+
+    screen.getByRole("button", { name: "Logout" }).click();
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/v1/auth/logout", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          Accept: "application/json",
+          "X-Custom-Csrf": "csrf-token-1",
+        },
+      });
+    });
   });
 
   it("shows an error shell when public config bootstrap fails", async () => {

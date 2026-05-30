@@ -222,6 +222,12 @@ class _BattleDB:
     def refresh(self, item: object) -> None:
         self.refreshed.append(item)
 
+    def rollback(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
 
 class _VoteDB(_BattleDB):
     def __init__(self, *, battle: object, runs: list[object], existing_votes: list[object]) -> None:
@@ -868,6 +874,178 @@ def test_admin_job_endpoint_creates_db_job_and_schedules_background_runner(
     assert len(recording_service.started) == 1
     assert recording_service.started[0] == db.added[0].id
     assert db.commit_calls == 1
+
+
+def test_prepopulation_service_dedupes_started_jobs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _prepopulation_service().BattlePrepopulationService()
+    job_id = uuid.uuid4()
+    started: list[uuid.UUID] = []
+    release = asyncio.Event()
+
+    async def _run() -> None:
+        async def _fake_run_job(job_uuid: uuid.UUID, *, request_id: str | None = None) -> None:
+            started.append(job_uuid)
+            await release.wait()
+
+        monkeypatch.setattr(service, "run_job", _fake_run_job)
+        first = service.start_job(job_id)
+        second = service.start_job(str(job_id))
+        assert second is first
+        await asyncio.sleep(0)
+        assert started == [job_id]
+        release.set()
+        await first
+
+    asyncio.run(_run())
+
+
+def test_prepopulation_service_resumes_pending_and_running_jobs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service_module = _prepopulation_service()
+    service = service_module.BattlePrepopulationService()
+    pending_id = uuid.uuid4()
+    running_id = uuid.uuid4()
+    completed_id = uuid.uuid4()
+    jobs = [
+        SimpleNamespace(id=pending_id, status="pending"),
+        SimpleNamespace(id=running_id, status="running"),
+        SimpleNamespace(id=completed_id, status="completed"),
+    ]
+    started: list[uuid.UUID] = []
+
+    class _JobRows:
+        def scalars(self) -> "_JobRows":
+            return self
+
+        def all(self) -> list[uuid.UUID]:
+            return [job.id for job in jobs if job.status in {"pending", "running"}]
+
+    class _JobDB:
+        def execute(self, _stmt: object) -> _JobRows:
+            return _JobRows()
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(service_module, "get_sessionmaker", lambda: lambda: _JobDB())
+    monkeypatch.setattr(service, "start_job", lambda job_id: started.append(job_id))
+
+    service.resume_incomplete_jobs()
+
+    assert started == [pending_id, running_id]
+
+
+def test_prepopulation_service_shutdown_cancels_tracked_jobs() -> None:
+    service = _prepopulation_service().BattlePrepopulationService()
+    cancelled: list[bool] = []
+
+    async def _run() -> None:
+        async def _wait_forever() -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
+
+        task = asyncio.create_task(_wait_forever())
+        await asyncio.sleep(0)
+        service._tasks_by_job_id[uuid.uuid4()] = task
+        await service.shutdown()
+        assert task.cancelled()
+
+    asyncio.run(_run())
+    assert cancelled == [True]
+
+
+def test_prepopulation_job_resume_reuses_active_job_battle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service_module = _prepopulation_service()
+    job_id = uuid.uuid4()
+    active_battle_id = uuid.uuid4()
+    other_job_id = uuid.uuid4()
+    job = SimpleNamespace(id=job_id)
+    battles = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            status="pending",
+            metadata_json={"prepopulation_job_id": str(other_job_id)},
+        ),
+        SimpleNamespace(
+            id=active_battle_id,
+            status="running",
+            metadata_json={"prepopulation_job_id": str(job_id)},
+        ),
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            status="completed",
+            metadata_json={"prepopulation_job_id": str(job_id)},
+        ),
+    ]
+
+    class _BattleRows:
+        def scalars(self) -> "_BattleRows":
+            return self
+
+        def all(self) -> list[object]:
+            return [battle for battle in battles if battle.status in {"pending", "running"}]
+
+    class _BattleDB:
+        def execute(self, _stmt: object) -> _BattleRows:
+            return _BattleRows()
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(service_module, "get_sessionmaker", lambda: lambda: _BattleDB())
+
+    assert service_module._active_prepopulation_battle_id_for_job(job) == active_battle_id
+
+
+def test_prepopulation_battle_metadata_records_actual_model_pair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service_module = _prepopulation_service()
+    job_id = uuid.uuid4()
+    task_id = uuid.uuid4()
+    model_a_id = uuid.uuid4()
+    model_b_id = uuid.uuid4()
+    job = SimpleNamespace(
+        id=job_id,
+        model_ids=[str(model_a_id)],
+        requested_by_user_id=uuid.uuid4(),
+    )
+    task = _task()
+    task.id = task_id
+    db = _BattleDB(task=task)
+
+    monkeypatch.setattr(service_module, "get_sessionmaker", lambda: lambda: db)
+    monkeypatch.setattr(
+        service_module.battle_routes,
+        "_select_task",
+        lambda *, db, payload: db.task,
+    )
+    monkeypatch.setattr(
+        service_module,
+        "_select_prepopulation_model_pair",
+        lambda _db, *, model_ids, settings: (model_a_id, model_b_id),
+    )
+
+    battle_id = service_module._create_prepopulation_battle_for_job(
+        job,  # type: ignore[arg-type]
+        settings=_settings(),  # type: ignore[arg-type]
+    )
+
+    battle = next(row for row in db.added if isinstance(row, service_module.Battle))
+    assert battle.id == battle_id
+    assert battle.metadata_json["prepopulation_model_ids"] == [
+        str(model_a_id),
+        str(model_b_id),
+    ]
+    assert battle.metadata_json["prepopulation_requested_model_ids"] == [str(model_a_id)]
 
 
 def test_admin_job_endpoint_accepts_one_and_two_model_constraints(
