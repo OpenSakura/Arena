@@ -2,7 +2,8 @@ import { createContext, useCallback, useEffect, useMemo, useRef, useState, type 
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 
-import { setApiCsrfToken, setApiCsrfHeaderName } from "@/lib/api";
+import { setApiCsrfToken, setApiCsrfHeaderName, setApiUnauthorizedHandler } from "@/lib/api";
+import { setSseUnauthorizedHandler } from "@/lib/sse";
 
 import {
   assertBackendSessionConfig,
@@ -49,6 +50,8 @@ export type ArenaAuthContextValue = {
   signoutRedirect: () => Promise<void>;
 };
 
+const SESSION_KEEPALIVE_INTERVAL_MS = 60_000;
+
 export const ArenaAuthContext = createContext<ArenaAuthContextValue | null>(null);
 ArenaAuthContext.displayName = "ArenaAuthContext";
 
@@ -79,6 +82,7 @@ async function loadBackendSession(sessionPath: string, signal: AbortSignal): Pro
   const response = await fetch(sessionPath, {
     signal,
     credentials: "include",
+    cache: "no-store",
     headers: { Accept: "application/json" },
   });
 
@@ -145,6 +149,40 @@ export function ArenaAuthProvider({ children }: { children: ReactNode }) {
   const csrfTokenRef = useRef<string | null>(null);
   const csrfHeaderNameRef = useRef<string>("X-CSRF-Token");
 
+  const applySession = useCallback((config: PublicAuthConfig, session: BackendSessionResponse, sessionError: SessionErrorCode | null) => {
+    const csrfToken = session.csrf_token ?? null;
+    const csrfHeaderName = config.csrf_header_name?.trim() || "X-CSRF-Token";
+    configRef.current = config;
+    csrfTokenRef.current = csrfToken;
+    csrfHeaderNameRef.current = csrfHeaderName;
+    setApiCsrfHeaderName(csrfHeaderName);
+    setApiCsrfToken(csrfToken);
+    setState({ status: "ready", config, session, sessionError });
+  }, []);
+
+  const expireSession = useCallback(() => {
+    csrfTokenRef.current = null;
+    setApiCsrfToken(null);
+    setState((current) => {
+      if (current.status !== "ready") {
+        return current;
+      }
+
+      return {
+        status: "ready",
+        config: current.config,
+        session: {
+          authenticated: false,
+          is_admin: false,
+          user: null,
+          profile: null,
+          csrf_token: null,
+        },
+        sessionError: "SessionExpired",
+      };
+    });
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
     let active = true;
@@ -155,14 +193,7 @@ export function ArenaAuthProvider({ children }: { children: ReactNode }) {
         const authConfig = assertBackendSessionConfig(publicConfig);
         const session = await loadBackendSession(authConfig.session_path, controller.signal);
         if (active) {
-          const csrfToken = session.csrf_token ?? null;
-          const csrfHeaderName = authConfig.csrf_header_name?.trim() || "X-CSRF-Token";
-          configRef.current = authConfig;
-          csrfTokenRef.current = csrfToken;
-          csrfHeaderNameRef.current = csrfHeaderName;
-          setApiCsrfHeaderName(csrfHeaderName);
-          setApiCsrfToken(csrfToken);
-          setState({ status: "ready", config: authConfig, session, sessionError: null });
+          applySession(authConfig, session, null);
         }
       } catch (error) {
         if (!active || controller.signal.aborted) return;
@@ -180,7 +211,56 @@ export function ArenaAuthProvider({ children }: { children: ReactNode }) {
       controller.abort();
       setApiCsrfToken(null);
     };
-  }, []);
+  }, [applySession]);
+
+  useEffect(() => {
+    setApiUnauthorizedHandler(expireSession);
+    setSseUnauthorizedHandler(expireSession);
+    return () => {
+      setApiUnauthorizedHandler(null);
+      setSseUnauthorizedHandler(null);
+    };
+  }, [expireSession]);
+
+  useEffect(() => {
+    if (state.status !== "ready" || !state.session.authenticated) {
+      return;
+    }
+
+    let stopped = false;
+    const keepAlive = async () => {
+      const config = configRef.current;
+      if (!config) {
+        return;
+      }
+
+      const controller = new AbortController();
+      try {
+        const session = await loadBackendSession(config.session_path, controller.signal);
+        if (stopped) {
+          return;
+        }
+        if (session.authenticated) {
+          applySession(config, session, null);
+        } else {
+          expireSession();
+        }
+      } catch (error) {
+        if (!stopped && error instanceof AuthBootstrapRequestError && error.status === 401) {
+          expireSession();
+        }
+      }
+    };
+
+    const interval = window.setInterval(() => {
+      void keepAlive();
+    }, SESSION_KEEPALIVE_INTERVAL_MS);
+
+    return () => {
+      stopped = true;
+      window.clearInterval(interval);
+    };
+  }, [applySession, expireSession, state]);
 
   const signinRedirect = useCallback(async (args: RedirectCompatibilityArgs = {}) => {
     const config = configRef.current;

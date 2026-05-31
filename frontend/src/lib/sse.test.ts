@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { SSEHttpError, streamSSE, type SSEEvent, type StreamSSEInit } from "./sse";
+import { SSEHttpError, setSseUnauthorizedHandler, streamSSE, type SSEEvent, type StreamSSEInit } from "./sse";
 
 function buildSSEBody(chunks: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -26,6 +26,7 @@ async function collectFromStream(
 }
 
 afterEach(() => {
+  setSseUnauthorizedHandler(null);
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
@@ -155,6 +156,19 @@ describe("streamSSE", () => {
     );
 
     await expect(collectFromStream()).rejects.toThrow("SSE failed: 404");
+  });
+
+  it("notifies the unauthorized handler on 401 responses", async () => {
+    const unauthorizedHandler = vi.fn();
+    setSseUnauthorizedHandler(unauthorizedHandler);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(null, {
+        status: 401,
+      }),
+    );
+
+    await expect(collectFromStream()).rejects.toThrow("SSE failed: 401");
+    expect(unauthorizedHandler).toHaveBeenCalledTimes(1);
   });
 
   it("retries retryable connection failures and resumes event parsing", async () => {

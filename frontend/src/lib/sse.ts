@@ -19,6 +19,12 @@ export type SSEEvent = {
  */
 const NON_RETRYABLE_STATUS = new Set([400, 401, 403, 404, 405, 409, 410, 422]);
 
+let sseUnauthorizedHandler: (() => void) | null = null;
+
+export function setSseUnauthorizedHandler(handler: (() => void) | null | undefined): void {
+  sseUnauthorizedHandler = handler ?? null;
+}
+
 /**
  * Error thrown when the SSE connection fails with a non-retryable
  * HTTP status code.
@@ -113,6 +119,9 @@ async function* streamSSEOnce(url: string, init?: RequestInit): AsyncGenerator<S
   });
 
   if (!res.ok) {
+    if (res.status === 401) {
+      sseUnauthorizedHandler?.();
+    }
     throw new SSEHttpError(res.status);
   }
 

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuthHeaders } from "@/hooks/useAuthHeaders";
-import { apiGet, apiPost } from "@/lib/api";
+import { apiGet, apiPost, isApiUnauthorizedError } from "@/lib/api";
 
 type ModelOption = {
   id: string;
@@ -61,7 +61,7 @@ export default function AdminBattlePrepopulationRoute() {
       setModels((modelsRes as { models: ModelOption[] }).models);
       setJobs((jobsRes as { jobs: Job[] }).jobs);
     } catch (err: unknown) {
-      setApiError(err instanceof Error ? err.message : String(err));
+      setApiError(isApiUnauthorizedError(err) ? t("admin.layout.guards.sessionExpired") : err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -106,7 +106,7 @@ export default function AdminBattlePrepopulationRoute() {
       setModel1("");
       setModel2("");
     } catch (err: unknown) {
-      setApiError(err instanceof Error ? err.message : String(err));
+      setApiError(isApiUnauthorizedError(err) ? t("admin.layout.guards.sessionExpired") : err instanceof Error ? err.message : String(err));
     } finally {
       setSubmitting(false);
     }

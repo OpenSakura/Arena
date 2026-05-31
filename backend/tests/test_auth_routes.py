@@ -688,6 +688,12 @@ def test_auth_session_endpoint_returns_profile_and_stable_csrf(
         second = client.get("/api/v1/auth/session")
 
     assert first.status_code == 200
+    assert first.headers["Cache-Control"] == "no-store, private"
+    assert first.headers["Pragma"] == "no-cache"
+    assert "Max-Age=3600" in _single_set_cookie(
+        first,
+        harness.settings.auth_session_cookie_name,
+    )
     first_body = first.json()
     second_body = second.json()
     assert first_body["authenticated"] is True
@@ -735,6 +741,8 @@ def test_session_endpoint_rejects_missing_expired_and_revoked_sessions(
         "profile": None,
         "csrf_token": None,
     }
+    assert missing.headers["Cache-Control"] == "no-store, private"
+    assert missing.headers["Pragma"] == "no-cache"
     assert expired_response.json()["authenticated"] is False
     assert revoked_response.json()["authenticated"] is False
     assert "Max-Age=0" in _single_set_cookie(

@@ -14,7 +14,7 @@ import {
   loadOrCreateBattle,
   mergeBattleDelta,
 } from "@/components/battleViewUtils";
-import { getApiPrefix, apiPost } from "@/lib/api";
+import { getApiPrefix, apiPost, isApiUnauthorizedError } from "@/lib/api";
 import i18n from "i18next";
 import { streamSSE } from "@/lib/sse";
 import { useArenaAuth } from "@/hooks/useArenaAuth";
@@ -606,7 +606,7 @@ export function useBattle(battleId: string) {
         
         const message = err instanceof Error ? err.message : t("battle.errors.failedToLoad");
         let error = message;
-        if (message.includes("401")) {
+        if (isApiUnauthorizedError(err) || message.includes("401")) {
           error = isAuthed ? t("battle.sessionExpiredBody") : t("battle.errors.loginRequiredToView");
         } else if (message.includes("403")) {
           error = t("battle.errors.permissionDenied");
@@ -678,7 +678,7 @@ export function useBattle(battleId: string) {
       } catch (err) {
         if (cancelled) return;
         const message = err instanceof Error ? err.message : "";
-        if (message.includes("401")) {
+        if (isApiUnauthorizedError(err) || message.includes("401")) {
           dispatch({ type: "BOOTSTRAP_ERROR", error: isAuthed ? t("battle.sessionExpiredBody") : t("battle.errors.loginRequiredToView") });
         } else if (message.includes("403")) {
           dispatch({ type: "BOOTSTRAP_ERROR", error: t("battle.errors.permissionDenied") });
@@ -867,9 +867,12 @@ export function useBattle(battleId: string) {
       dispatch({ type: "VOTE_SUCCESS", voteId: result.vote_id });
       dispatch({ type: "REVEAL_SUCCESS", reveal: result.reveal });
     } catch (err) {
+      const error = isApiUnauthorizedError(err)
+        ? t("battle.sessionExpiredBody")
+        : err instanceof Error ? err.message : t("battle.errors.failedToSubmitVote");
       dispatch({
         type: "VOTE_ERROR",
-        error: err instanceof Error ? err.message : t("battle.errors.failedToSubmitVote"),
+        error,
       });
     } finally {
       voteSubmitLockRef.current = false;
@@ -902,10 +905,13 @@ export function useBattle(battleId: string) {
       voteSubmitLockRef.current = false;
       dispatch({ type: "RETRY_BATTLE" });
     } catch (err) {
+      const error = isApiUnauthorizedError(err)
+        ? t("battle.sessionExpiredBody")
+        : err instanceof Error ? err.message : t("battle.errors.failedToRetry");
       dispatch({
         type: "RETRY_ERROR",
         status: retryFallbackStatus,
-        error: err instanceof Error ? err.message : t("battle.errors.failedToRetry"),
+        error,
       });
     }
   }

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   apiDelete,
   apiGet,
+  ApiHttpError,
   apiPatch,
   apiPost,
   apiPut,
@@ -10,11 +11,13 @@ import {
   getApiCsrfToken,
   setApiCsrfHeaderName,
   setApiCsrfToken,
+  setApiUnauthorizedHandler,
 } from "./api";
 
 afterEach(() => {
   setApiCsrfToken(null);
   setApiCsrfHeaderName(null);
+  setApiUnauthorizedHandler(null);
   vi.restoreAllMocks();
 });
 
@@ -281,6 +284,25 @@ describe("api helpers", () => {
     await expect(apiGet("/battles")).rejects.toThrow(
       "GET /battles failed: 429 - too many requests",
     );
+  });
+
+  it("throws typed HTTP errors and notifies the unauthorized handler on 401", async () => {
+    const unauthorizedHandler = vi.fn();
+    setApiUnauthorizedHandler(unauthorizedHandler);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ detail: "Authentication required" }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await expect(apiPost("/battles/battle-1/vote", { winner: "A" })).rejects.toMatchObject({
+      status: 401,
+      method: "POST",
+      path: "/battles/battle-1/vote",
+      detail: "Authentication required",
+    } satisfies Partial<ApiHttpError>);
+    expect(unauthorizedHandler).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to stringified JSON when detail is missing", async () => {

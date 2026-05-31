@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useArenaAuth } from "@/hooks/useArenaAuth";
 import { createTestI18n, TestI18nProvider } from "@/i18n/test-utils";
+import { apiPost } from "@/lib/api";
 
 import {
   ArenaAuthProvider,
@@ -114,6 +115,7 @@ describe("ArenaAuthProvider helpers", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -174,6 +176,7 @@ describe("ArenaAuthProvider component", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/v1/auth/session", {
       signal: expect.any(AbortSignal),
       credentials: "include",
+      cache: "no-store",
       headers: { Accept: "application/json" },
     });
     expect(screen.getByTestId("auth-status").textContent).toBe("authenticated");
@@ -312,6 +315,7 @@ describe("ArenaAuthProvider component", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/v1/auth/session", {
       signal: expect.any(AbortSignal),
       credentials: "include",
+      cache: "no-store",
       headers: { Accept: "application/json" },
     });
   });
@@ -334,5 +338,56 @@ describe("ArenaAuthProvider component", () => {
     expect(setItemSpy.mock.calls.some(([key]) => String(key).startsWith("oidc.user:"))).toBe(false);
     expect(Object.keys(window.sessionStorage).some((key) => key.startsWith("oidc.user:"))).toBe(false);
     expect(JSON.stringify([...setItemSpy.mock.calls])).not.toMatch(/accessToken|refreshToken|idToken|clientSecret/);
+  });
+
+  it("keeps authenticated backend sessions alive and updates CSRF", async () => {
+    let keepAlive: (() => void) | null = null;
+    const originalSetInterval = globalThis.setInterval;
+    const originalClearInterval = globalThis.clearInterval;
+    const setIntervalSpy = vi
+      .spyOn(globalThis, "setInterval")
+      .mockImplementation((handler: TimerHandler) => {
+        keepAlive = typeof handler === "function" ? () => handler() : () => undefined;
+        const interval = originalSetInterval(() => undefined, 60_000);
+        originalClearInterval(interval);
+        return interval;
+      });
+    vi.spyOn(window, "clearInterval").mockImplementation(() => undefined);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(PUBLIC_CONFIG))
+      .mockResolvedValueOnce(jsonResponse(AUTHENTICATED_SESSION))
+      .mockResolvedValueOnce(jsonResponse({ ...AUTHENTICATED_SESSION, csrf_token: "csrf-token-2" }));
+
+    await renderProviderWithFetch(fetchMock);
+    expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 60_000);
+    await act(async () => {
+      keepAlive?.();
+    });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/v1/auth/session", {
+      signal: expect.any(AbortSignal),
+      credentials: "include",
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
+    await waitFor(() => expect(screen.getByTestId("csrf-token").textContent).toBe("csrf-token-2"));
+  });
+
+  it("marks the session expired when a shared API call returns 401", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(PUBLIC_CONFIG))
+      .mockResolvedValueOnce(jsonResponse(AUTHENTICATED_SESSION))
+      .mockResolvedValueOnce(jsonResponse({ detail: "Authentication required" }, { status: 401 }));
+
+    await renderProviderWithFetch(fetchMock);
+
+    await expect(apiPost("/battles/battle-1/vote", { winner: "A" })).rejects.toThrow("401");
+
+    await waitFor(() => expect(screen.getByTestId("auth-status").textContent).toBe("unauthenticated"));
+    expect(screen.getByTestId("session-error").textContent).toBe("SessionExpired");
+    expect(screen.getByTestId("csrf-token").textContent).toBe("none");
   });
 });

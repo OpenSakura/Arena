@@ -219,6 +219,7 @@ def test_fresh_last_seen_refresh_does_not_dirty_or_flush_caller_session(
     )
 
     assert loaded.last_seen_at == _without_tz(now)
+    assert loaded.expires_at == _without_tz(now + timedelta(seconds=3600))
     assert not db_session.is_modified(loaded)
     assert loaded not in db_session.dirty
     assert flush_calls == 0
@@ -254,6 +255,7 @@ def test_stale_last_seen_refresh_uses_separate_touch_transaction(
     assert not db_session.is_modified(loaded)
     db_session.expire(loaded)
     assert loaded.last_seen_at == _without_tz(touched_at)
+    assert loaded.expires_at == _without_tz(touched_at + timedelta(seconds=3600))
     with Session(db_session.get_bind()) as verify_db:
         assert (
             verify_db.execute(

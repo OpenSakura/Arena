@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
 
 from app.api.routes import health
@@ -58,7 +59,10 @@ def _settings(
         turnstile_secret_key=turnstile_secret_key,
         cors_allow_origins=["http://localhost:3000"],
         api_v1_prefix="/api/v1",
+        auth_cookie_secure=None,
         auth_csrf_header_name=auth_csrf_header_name,
+        auth_session_cookie_name="arena_session",
+        auth_session_max_age_seconds=3600,
         # Defaults for settings referenced by middleware/health checks.
         trust_x_forwarded_for=False,
         rate_limit_redis_url="",
@@ -182,6 +186,38 @@ def test_request_id_is_generated_when_header_is_missing(monkeypatch) -> None:
     int(request_id, 16)
 
 
+def test_authenticated_session_requests_refresh_session_cookie(monkeypatch) -> None:
+    app = _create_test_app(monkeypatch)
+
+    @app.get("/touch-session")
+    def touch_session(request: Request) -> dict[str, bool]:
+        request.state.auth_session = object()
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        client.cookies.set("arena_session", "raw-session-token")
+        response = client.get("/touch-session")
+
+    assert response.status_code == 200
+    cookie_header = _single_set_cookie(response, "arena_session")
+    assert "arena_session=raw-session-token" in cookie_header
+    assert "Max-Age=3600" in cookie_header
+    assert "Path=/" in cookie_header
+    assert "HttpOnly" in cookie_header
+    assert "SameSite=lax" in cookie_header
+    assert "Secure" not in cookie_header
+
+
+def _single_set_cookie(response: Any, cookie_name: str) -> str:
+    headers = [
+        header
+        for header in response.headers.get_list("set-cookie")
+        if header.startswith(f"{cookie_name}=")
+    ]
+    assert len(headers) == 1, response.headers.get_list("set-cookie")
+    return headers[0]
+
+
 FORBIDDEN_PUBLIC_CONFIG_KEYS = {
     "access_token",
     "client_id",
@@ -207,7 +243,6 @@ def _flatten_keys(value: object) -> set[str]:
             keys.update(_flatten_keys(item))
         return keys
     return set()
-
 
 def test_public_config_exposes_backend_session_auth_paths(monkeypatch) -> None:
     from app.core.config import get_settings as core_get_settings

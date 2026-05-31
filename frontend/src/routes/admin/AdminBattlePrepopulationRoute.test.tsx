@@ -18,6 +18,7 @@ vi.mock("@/hooks/useAuthHeaders", () => ({
 vi.mock("@/lib/api", () => ({
   apiGet: (...args: unknown[]) => apiGetMock(...args),
   apiPost: (...args: unknown[]) => apiPostMock(...args),
+  isApiUnauthorizedError: (error: unknown) => Boolean(error && typeof error === "object" && "status" in error && error.status === 401),
 }));
 
 afterEach(() => {

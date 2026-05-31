@@ -19,6 +19,24 @@ const UNSAFE_METHODS = new Set<ApiMethod>(["POST", "PUT", "PATCH", "DELETE"]);
 
 let apiCsrfToken: string | null = null;
 let apiCsrfHeaderName: string = "X-CSRF-Token";
+let apiUnauthorizedHandler: (() => void) | null = null;
+
+export class ApiHttpError extends Error {
+  readonly status: number;
+  readonly method: ApiMethod;
+  readonly path: string;
+  readonly detail: string | null;
+
+  constructor(method: ApiMethod, path: string, status: number, detail: string | null) {
+    const suffix = detail ? ` - ${detail}` : "";
+    super(`${method} ${path} failed: ${status}${suffix}`);
+    this.name = "ApiHttpError";
+    this.status = status;
+    this.method = method;
+    this.path = path;
+    this.detail = detail;
+  }
+}
 
 export function getApiPrefix(): string {
   return API_PREFIX;
@@ -39,6 +57,14 @@ export function setApiCsrfHeaderName(name: string | null | undefined): void {
 
 export function getApiCsrfHeaderName(): string {
   return apiCsrfHeaderName;
+}
+
+export function setApiUnauthorizedHandler(handler: (() => void) | null | undefined): void {
+  apiUnauthorizedHandler = handler ?? null;
+}
+
+export function isApiUnauthorizedError(error: unknown): boolean {
+  return error instanceof ApiHttpError && error.status === 401;
 }
 
 async function readErrorDetail(res: Response): Promise<string | null> {
@@ -163,8 +189,11 @@ async function apiRequest<T = unknown>(
 
   if (!res.ok) {
     const detail = await readErrorDetail(res);
-    const suffix = detail ? ` - ${detail}` : "";
-    throw new Error(`${method} ${normalizedPath} failed: ${res.status}${suffix}`);
+    const error = new ApiHttpError(method, normalizedPath, res.status, detail);
+    if (res.status === 401) {
+      apiUnauthorizedHandler?.();
+    }
+    throw error;
   }
 
   return readSuccessBody(res) as Promise<T>;

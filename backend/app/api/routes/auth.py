@@ -178,6 +178,7 @@ def get_session(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> AuthSessionResponse:
+    _set_no_store_headers(response)
     session_token = request.cookies.get(settings.auth_session_cookie_name)
     auth_session = load_auth_session(
         db,
@@ -197,7 +198,9 @@ def get_session(
             detail="Authenticated user record not found",
         )
 
+    assert session_token is not None
     refresh_auth_session_last_seen(db, auth_session=auth_session, settings=settings)
+    _set_session_cookie(response, session_token=session_token, settings=settings)
     csrf_token = stable_auth_session_csrf_token(
         session_token,
         settings=settings,
@@ -438,6 +441,11 @@ def _clear_session_cookie(response: Response, *, settings: Settings) -> None:
         httponly=True,
         samesite="lax",
     )
+
+
+def _set_no_store_headers(response: Response) -> None:
+    response.headers["Cache-Control"] = "no-store, private"
+    response.headers["Pragma"] = "no-cache"
 
 
 def _cookie_secure(settings: Settings) -> bool:

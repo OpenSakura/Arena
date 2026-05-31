@@ -18,7 +18,7 @@ import re
 import time
 import uuid
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
@@ -98,6 +98,59 @@ def _emit_startup_rollout_settings(settings: Settings, *, otlp_enabled: bool) ->
         otlp_enabled,
         _rollout_log_value(settings, "otel_service_name"),
     )
+
+
+def _refresh_auth_session_cookie(
+    response: Response,
+    request: Request,
+    settings: Settings,
+) -> None:
+    if response.status_code >= 400:
+        return
+    if getattr(request.state, "auth_session", None) is None:
+        return
+
+    cookie_name = getattr(settings, "auth_session_cookie_name", None)
+    max_age = getattr(settings, "auth_session_max_age_seconds", None)
+    if not isinstance(cookie_name, str) or not cookie_name:
+        return
+    if not isinstance(max_age, int):
+        return
+    if _response_sets_cookie(response, cookie_name):
+        return
+
+    session_token = request.cookies.get(cookie_name)
+    if not session_token:
+        return
+
+    response.set_cookie(
+        key=cookie_name,
+        value=session_token,
+        max_age=max_age,
+        path="/",
+        secure=_auth_cookie_secure(settings),
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def _response_sets_cookie(response: Response, cookie_name: str) -> bool:
+    cookie_prefix = f"{cookie_name}="
+    for raw_name, raw_value in response.raw_headers:
+        if raw_name.lower() != b"set-cookie":
+            continue
+        if raw_value.decode("latin-1").startswith(cookie_prefix):
+            return True
+    return False
+
+
+def _auth_cookie_secure(settings: Settings) -> bool:
+    if settings.app_env.lower() not in _NON_PRODUCTION_ENVS:
+        return True
+    configured = getattr(settings, "auth_cookie_secure", None)
+    if configured is not None:
+        return bool(configured)
+    return False
 
 
 def create_app() -> FastAPI:
@@ -248,6 +301,7 @@ def create_app() -> FastAPI:
         try:
             response = await call_next(request)
             status_code = response.status_code
+            _refresh_auth_session_cookie(response, request, settings)
             _apply_security_headers(response.headers, request_id=request_id)
             return response
         except Exception:

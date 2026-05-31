@@ -406,6 +406,9 @@ def _touch_auth_session_last_seen(
         transaction = connection.begin()
         try:
             _apply_auth_session_touch_timeouts(connection, settings=settings)
+            expires_at = touched_at + timedelta(
+                seconds=settings.auth_session_max_age_seconds
+            )
             connection.execute(
                 update(AuthSession)
                 .where(
@@ -414,7 +417,7 @@ def _touch_auth_session_last_seen(
                     AuthSession.expires_at > touched_at,
                     AuthSession.last_seen_at <= stale_cutoff,
                 )
-                .values(last_seen_at=touched_at)
+                .values(last_seen_at=touched_at, expires_at=expires_at)
                 .execution_options(synchronize_session=False)
             )
             transaction.commit()
