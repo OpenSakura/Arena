@@ -28,6 +28,7 @@ from app.services.leaderboard_refresh import (
     compute_elo_ratings,
     count_vote_sources,
     filter_outlier_judge_votes,
+    filter_refusal_votes,
     limit_votes_per_judge_per_day,
     load_vote_samples,
 )
@@ -54,6 +55,7 @@ def _vote(
     model_a_id: uuid.UUID,
     model_b_id: uuid.UUID,
     judge_key: str,
+    rubric_tags: tuple[str, ...] = (),
 ) -> VoteSample:
     return VoteSample(
         vote_id=uuid.uuid4(),
@@ -62,6 +64,7 @@ def _vote(
         model_a_id=model_a_id,
         model_b_id=model_b_id,
         judge_key=judge_key,
+        rubric_tags=rubric_tags,
     )
 
 
@@ -198,6 +201,57 @@ def test_limit_votes_per_judge_per_day_caps_votes() -> None:
 
     kept = limit_votes_per_judge_per_day(votes, daily_vote_cap=2)
     assert len(kept) == 2
+
+
+def test_filter_refusal_votes_drops_only_refusal_tagged() -> None:
+    model_a = uuid.uuid4()
+    model_b = uuid.uuid4()
+    start = datetime(2026, 2, 18, 9, 0, tzinfo=timezone.utc)
+
+    quality_vote = _vote(
+        at=start,
+        winner="A",
+        model_a_id=model_a,
+        model_b_id=model_b,
+        judge_key="user:judge-1",
+        rubric_tags=("accuracy", "fluency"),
+    )
+    untagged_vote = _vote(
+        at=start + timedelta(minutes=1),
+        winner="B",
+        model_a_id=model_a,
+        model_b_id=model_b,
+        judge_key="user:judge-1",
+    )
+    refusal_vote = _vote(
+        at=start + timedelta(minutes=2),
+        winner="B",
+        model_a_id=model_a,
+        model_b_id=model_b,
+        judge_key="user:judge-1",
+        rubric_tags=("refusal",),
+    )
+    mixed_refusal_vote = _vote(
+        at=start + timedelta(minutes=3),
+        winner="A",
+        model_a_id=model_a,
+        model_b_id=model_b,
+        judge_key="user:judge-2",
+        rubric_tags=("accuracy", "refusal"),
+    )
+
+    kept = filter_refusal_votes(
+        [quality_vote, untagged_vote, refusal_vote, mixed_refusal_vote]
+    )
+
+    # Only the quality-based and untagged votes survive; both refusal-tagged
+    # votes are dropped, even when refusal is mixed with other tags. The judge's
+    # non-refusal votes are preserved.
+    assert kept == [quality_vote, untagged_vote]
+
+
+def test_filter_refusal_votes_empty_returns_empty() -> None:
+    assert filter_refusal_votes([]) == []
 
 
 def test_outlier_filter_setting_defaults_disabled() -> None:
@@ -790,6 +844,7 @@ def test_load_vote_samples_day_cap_uses_db_side_utc_boundaries() -> None:
                             None,
                             model_a,
                             model_b,
+                            None,
                         ),
                         (
                             day1_vote_2,
@@ -800,6 +855,7 @@ def test_load_vote_samples_day_cap_uses_db_side_utc_boundaries() -> None:
                             None,
                             model_a,
                             model_b,
+                            None,
                         ),
                     ]
                 ),
@@ -814,6 +870,7 @@ def test_load_vote_samples_day_cap_uses_db_side_utc_boundaries() -> None:
                             None,
                             model_a,
                             model_b,
+                            None,
                         )
                     ]
                 ),
@@ -874,6 +931,73 @@ def test_load_vote_samples_filters_mixed_human_and_bot_sources(
         "bot": 1,
         "total": 1,
     }
+
+
+def test_extract_rubric_tags_handles_various_shapes() -> None:
+    from app.services.leaderboard_refresh import _extract_rubric_tags
+
+    assert _extract_rubric_tags({"tags": ["accuracy", "refusal"]}) == (
+        "accuracy",
+        "refusal",
+    )
+    assert _extract_rubric_tags({"tags": []}) == ()
+    assert _extract_rubric_tags({}) == ()
+    assert _extract_rubric_tags(None) == ()
+    # Non-string entries are ignored rather than raising.
+    assert _extract_rubric_tags({"tags": ["refusal", 7, None]}) == ("refusal",)
+    # Non-dict / malformed rubric payloads are treated as untagged.
+    assert _extract_rubric_tags("refusal") == ()
+    assert _extract_rubric_tags({"tags": "refusal"}) == ()
+
+
+def test_load_vote_samples_populates_rubric_tags(
+    leaderboard_db_session: Session,
+) -> None:
+    db = leaderboard_db_session
+    task = Task(source_text="原文")
+    model_a = Model(
+        display_name="Model A",
+        model_name=f"model-a-{uuid.uuid4()}",
+        base_url="http://example.invalid",
+    )
+    model_b = Model(
+        display_name="Model B",
+        model_name=f"model-b-{uuid.uuid4()}",
+        base_url="http://example.invalid",
+    )
+    db.add_all([task, model_a, model_b])
+    db.flush()
+
+    battle = Battle(task_id=task.id, status="completed")
+    db.add(battle)
+    db.flush()
+    db.add_all(
+        [
+            Run(battle_id=battle.id, side="A", model_id=model_a.id),
+            Run(battle_id=battle.id, side="B", model_id=model_b.id),
+        ]
+    )
+
+    user = User(oidc_issuer="https://issuer.example", oidc_sub="judge")
+    db.add(user)
+    db.flush()
+    db.add(
+        Vote(
+            battle_id=battle.id,
+            winner="A",
+            voter_user_id=user.id,
+            revealed=True,
+            rubric={"tags": ["accuracy", "refusal"]},
+            created_at=datetime(2026, 5, 23, 8, 0, tzinfo=timezone.utc),
+        )
+    )
+    db.commit()
+
+    samples = load_vote_samples(db)
+
+    assert len(samples) == 1
+    assert samples[0].rubric_tags == ("accuracy", "refusal")
+    assert filter_refusal_votes(samples) == []
 
 
 # --- Shuffle-and-average Elo ------------------------------------------------

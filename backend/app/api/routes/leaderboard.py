@@ -58,6 +58,7 @@ from app.services.leaderboard_refresh import (
     compute_elo_ratings,
     count_vote_sources,
     filter_outlier_judge_votes,
+    filter_refusal_votes,
     load_vote_samples,
     normalize_judge_type,
 )
@@ -96,6 +97,7 @@ def _confidence_cache_key(
     settings: Settings,
     judge_type: str = "all",
     service_account_id: uuid.UUID | None = None,
+    exclude_refusals: bool = False,
 ) -> str:
     """Build a cache key that incorporates all parameters affecting the result.
 
@@ -109,11 +111,13 @@ def _confidence_cache_key(
         judge_type=judge_type,
         service_account_id=service_account_id,
     )
+    refusal_fragment = f"refusal:{int(exclude_refusals)}"
 
     if method == "elo":
         return (
             "elo"
             f":{source_fragment}"
+            f":{refusal_fragment}"
             f":{settings.leaderboard_refresh_daily_vote_cap}"
             f":{settings.leaderboard_refresh_elo_k}"
             f":{settings.leaderboard_elo_shuffle_rounds}"
@@ -127,6 +131,7 @@ def _confidence_cache_key(
     return (
         "bt"
         f":{source_fragment}"
+        f":{refusal_fragment}"
         f":{settings.leaderboard_refresh_daily_vote_cap}"
         f":{settings.leaderboard_bt_max_iterations}"
         f":{settings.leaderboard_bt_tolerance}"
@@ -293,6 +298,7 @@ def _load_vote_samples_and_counts(
     settings: Settings,
     judge_type: str,
     service_account_id: uuid.UUID | None,
+    exclude_refusals: bool = False,
 ) -> tuple[list[VoteSample], VoteSourceCounts]:
     if judge_type != "all" or service_account_id is not None:
         vote_samples = load_vote_samples(
@@ -306,6 +312,8 @@ def _load_vote_samples_and_counts(
             db,
             daily_vote_cap=settings.leaderboard_refresh_daily_vote_cap,
         )
+    if exclude_refusals:
+        vote_samples = filter_refusal_votes(vote_samples)
     vote_samples = _filter_vote_samples_for_leaderboard(
         vote_samples,
         settings=settings,
@@ -348,6 +356,7 @@ def _enforce_confidence_request_rate_limit(
     settings: Settings,
     judge_type: str = "all",
     service_account_id: uuid.UUID | None = None,
+    exclude_refusals: bool = False,
 ) -> None:
     """Raise HTTP 429 if the global confidence recomputation rate is exceeded.
 
@@ -367,6 +376,7 @@ def _enforce_confidence_request_rate_limit(
     key = (
         f"leaderboard_confidence_global:{method}:"
         f"judge:{judge_type}:service_account:{service_account_id or 'all'}"
+        f":refusal:{int(exclude_refusals)}"
     )
     if limiter.is_limited(key):
         raise HTTPException(
@@ -390,6 +400,7 @@ def get_leaderboard(
     method: Annotated[str, Query(pattern="^(elo|bt)$")] = "elo",
     include_confidence: Annotated[bool, Query()] = False,
     judge_type: Annotated[str, Query(pattern="^(all|human|bot)$")] = "all",
+    exclude_refusals: Annotated[bool, Query()] = False,
     service_account_id: str | None = None,
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
@@ -403,6 +414,9 @@ def get_leaderboard(
     include_confidence:
         When ``True``, compute bootstrap confidence intervals.  This is
         CPU-expensive and is therefore cached and rate-limited.
+    exclude_refusals:
+        When ``True``, drop votes tagged with the ``"refusal"`` rubric so
+        ratings reflect actual output quality rather than refusals.
     """
 
     if service_account_id is not None:
@@ -417,6 +431,7 @@ def get_leaderboard(
         service_account_id=None,
         db=db,
         settings=settings,
+        exclude_refusals=exclude_refusals,
     )
 
 
@@ -428,6 +443,7 @@ def build_leaderboard_response(
     service_account_id: uuid.UUID | None,
     db: Session,
     settings: Settings,
+    exclude_refusals: bool = False,
 ) -> LeaderboardResponse:
     judge_type = _parse_judge_type_or_422(judge_type)
     if method not in {"elo", "bt"}:
@@ -440,6 +456,7 @@ def build_leaderboard_response(
             settings=settings,
             judge_type=judge_type,
             service_account_id=service_account_id,
+            exclude_refusals=exclude_refusals,
         )
         cached = _load_cached_confidence_leaderboard(
             cache_key=cache_key,
@@ -453,6 +470,7 @@ def build_leaderboard_response(
             settings=settings,
             judge_type=judge_type,
             service_account_id=service_account_id,
+            exclude_refusals=exclude_refusals,
         )
 
     if method == "bt":
@@ -462,6 +480,7 @@ def build_leaderboard_response(
             settings=settings,
             judge_type=judge_type,
             service_account_id=service_account_id,
+            exclude_refusals=exclude_refusals,
         )
     else:
         response = _get_leaderboard_elo(
@@ -470,6 +489,7 @@ def build_leaderboard_response(
             settings=settings,
             judge_type=judge_type,
             service_account_id=service_account_id,
+            exclude_refusals=exclude_refusals,
         )
 
     if include_confidence and cache_key is not None:
@@ -494,6 +514,7 @@ def _get_leaderboard_elo(
     settings: Settings,
     judge_type: str = "all",
     service_account_id: uuid.UUID | None = None,
+    exclude_refusals: bool = False,
 ) -> LeaderboardResponse:
     # Use an outer join so public models with no votes still appear.
     model_rows = db.execute(
@@ -512,9 +533,15 @@ def _get_leaderboard_elo(
         settings=settings,
         judge_type=judge_type,
         service_account_id=service_account_id,
+        exclude_refusals=exclude_refusals,
     )
 
-    if not include_confidence and judge_type == "all" and service_account_id is None:
+    if (
+        not include_confidence
+        and judge_type == "all"
+        and service_account_id is None
+        and not exclude_refusals
+    ):
         ratings = db.execute(
             select(
                 Model.id,
@@ -608,6 +635,7 @@ def _get_leaderboard_bt(
     settings: Settings,
     judge_type: str = "all",
     service_account_id: uuid.UUID | None = None,
+    exclude_refusals: bool = False,
 ) -> LeaderboardResponse:
     model_rows = db.execute(
         select(Model.id, Model.display_name)
@@ -626,6 +654,7 @@ def _get_leaderboard_bt(
         settings=settings,
         judge_type=judge_type,
         service_account_id=service_account_id,
+        exclude_refusals=exclude_refusals,
     )
 
     votes = [

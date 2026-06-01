@@ -162,6 +162,11 @@ export const zhResource = {
         label: "95% CI",
         show: "显示 95% CI",
         hide: "隐藏 95% CI"
+      },
+      refusals: {
+        label: "排除拒答",
+        show: "显示拒答投票",
+        hide: "排除拒答投票"
       }
     },
     meta: {

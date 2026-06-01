@@ -147,6 +147,7 @@ export default function LeaderboardRoute() {
     selectedMethod: "elo" | "bt";
     includeConfidence: boolean;
     judgeType: "all" | "human" | "bot";
+    excludeRefusals: boolean;
     bootstrapRounds: number | null;
     voteSourceCounts?: { human: number; bot: number; total: number };
     isLoading: boolean;
@@ -155,6 +156,7 @@ export default function LeaderboardRoute() {
     selectedMethod: request.selectedMethod,
     includeConfidence: request.includeConfidence,
     judgeType: request.judgeType,
+    excludeRefusals: request.excludeRefusals,
     bootstrapRounds: null,
     isLoading: true,
   });
@@ -171,6 +173,7 @@ export default function LeaderboardRoute() {
       selectedMethod: request.selectedMethod,
       includeConfidence: request.includeConfidence,
       judgeType: request.judgeType,
+      excludeRefusals: request.excludeRefusals,
       bootstrapRounds: null,
       voteSourceCounts: undefined,
       isLoading: true,
@@ -186,6 +189,7 @@ export default function LeaderboardRoute() {
             selectedMethod: parsed.method,
             includeConfidence: parsed.ci,
             judgeType: request.judgeType,
+            excludeRefusals: request.excludeRefusals,
             bootstrapRounds: parsed.bootstrap_rounds,
             voteSourceCounts: parsed.vote_source_counts,
             isLoading: false,
@@ -208,25 +212,41 @@ export default function LeaderboardRoute() {
     return () => {
       ignore = true;
     };
-  }, [request.query, request.selectedMethod, request.includeConfidence, request.judgeType]);
+  }, [request.query, request.selectedMethod, request.includeConfidence, request.judgeType, request.excludeRefusals]);
 
-  const { models, selectedMethod, includeConfidence, judgeType, bootstrapRounds, voteSourceCounts, isLoading } = data;
+  const { models, selectedMethod, includeConfidence, judgeType, excludeRefusals, bootstrapRounds, voteSourceCounts, isLoading } = data;
 
   const hasConfidence = hasConfidenceIntervals(models);
-  const confidenceToggleHref = includeConfidence
-    ? `/leaderboard?method=${selectedMethod}${judgeType !== "all" ? `&judge_type=${judgeType}` : ""}`
-    : `/leaderboard?method=${selectedMethod}&include_confidence=true${judgeType !== "all" ? `&judge_type=${judgeType}` : ""}`;
+
+  // Single source of truth for leaderboard URLs: build from the current
+  // filter state, overriding only the dimension being toggled so the other
+  // active filters always persist across navigation.
+  const buildHref = (overrides: {
+    method?: "elo" | "bt";
+    confidence?: boolean;
+    judge?: "all" | "human" | "bot";
+    refusals?: boolean;
+  } = {}) => {
+    const method = overrides.method ?? selectedMethod;
+    const confidence = overrides.confidence ?? includeConfidence;
+    const judge = overrides.judge ?? judgeType;
+    const refusals = overrides.refusals ?? excludeRefusals;
+    const params = new URLSearchParams();
+    params.set("method", method);
+    if (confidence) params.set("include_confidence", "true");
+    if (judge !== "all") params.set("judge_type", judge);
+    if (refusals) params.set("exclude_refusals", "true");
+    return `/leaderboard?${params.toString()}`;
+  };
+
+  const confidenceToggleHref = buildHref({ confidence: !includeConfidence });
   const confidenceToggleLabel = includeConfidence ? t("leaderboard.filters.confidence.hide") : t("leaderboard.filters.confidence.show");
+  const refusalToggleHref = buildHref({ refusals: !excludeRefusals });
+  const refusalToggleLabel = excludeRefusals ? t("leaderboard.filters.refusals.show") : t("leaderboard.filters.refusals.hide");
 
   const maxRating = models.length > 0 ? Math.max(...models.map((m) => m.rating ?? 0)) : 0;
 
-  const buildFilterLink = (type: "all" | "human" | "bot") => {
-    const params = new URLSearchParams();
-    params.set("method", selectedMethod);
-    if (includeConfidence) params.set("include_confidence", "true");
-    if (type !== "all") params.set("judge_type", type);
-    return `/leaderboard?${params.toString()}`;
-  };
+  const buildFilterLink = (type: "all" | "human" | "bot") => buildHref({ judge: type });
 
   return (
     <div className="grid gap-6">
@@ -317,7 +337,7 @@ export default function LeaderboardRoute() {
           {/* Method toggles */}
           <div className="flex items-center gap-1.5 rounded-xl border border-border/50 bg-background/30 p-1 backdrop-blur">
             <Link
-              to={`/leaderboard?method=elo${includeConfidence ? "&include_confidence=true" : ""}${judgeType !== "all" ? `&judge_type=${judgeType}` : ""}`}
+              to={buildHref({ method: "elo" })}
               aria-label={t("leaderboard.filters.method.elo")}
               className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition-all ${
                 selectedMethod === "elo"
@@ -328,7 +348,7 @@ export default function LeaderboardRoute() {
               {t("leaderboard.filters.method.elo")}
             </Link>
             <Link
-              to={`/leaderboard?method=bt${includeConfidence ? "&include_confidence=true" : ""}${judgeType !== "all" ? `&judge_type=${judgeType}` : ""}`}
+              to={buildHref({ method: "bt" })}
               className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition-all ${
                 selectedMethod === "bt"
                   ? "bg-primary/10 text-primary shadow-sm"
@@ -348,6 +368,18 @@ export default function LeaderboardRoute() {
               }`}
             >
               {t("leaderboard.filters.confidence.label")}
+            </Link>
+            <Link
+              to={refusalToggleHref}
+              aria-label={refusalToggleLabel}
+              title={refusalToggleLabel}
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                excludeRefusals
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+              }`}
+            >
+              {t("leaderboard.filters.refusals.label")}
             </Link>
           </div>
         </div>

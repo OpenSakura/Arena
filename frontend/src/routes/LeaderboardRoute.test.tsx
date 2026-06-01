@@ -280,6 +280,55 @@ describe("LeaderboardRoute", () => {
     expect(screen.getByText("BT")).toBeDefined();
     expect(screen.queryByRole("columnheader", { name: "95% CI" })).toBeNull();
   });
+
+  it("offers an exclude-refusals toggle that enables the filter", async () => {
+    let resolveApi: (value: unknown) => void;
+    apiGetMock.mockReturnValue(new Promise((resolve) => { resolveApi = resolve; }));
+
+    render(
+      <MemoryRouter initialEntries={["/leaderboard"]}>
+        <TestI18nProvider i18n={i18nInstance}>
+          <LeaderboardRoute />
+        </TestI18nProvider>
+      </MemoryRouter>
+    );
+
+    expect(apiGetMock).toHaveBeenCalledWith("/leaderboard?method=elo&judge_type=all");
+
+    resolveApi!({ method: "elo", ci: false, bootstrap_rounds: null, models: [] });
+    await screen.findByText("No ratings yet");
+
+    expect(screen.getByText("No refusals")).toBeDefined();
+    // Off by default → the toggle link turns the filter on.
+    expect(
+      screen.getByRole("link", { name: "Exclude refusal votes" }).getAttribute("href")
+    ).toBe("/leaderboard?method=elo&exclude_refusals=true");
+  });
+
+  it("requests the leaderboard with refusals excluded and preserves other filters", async () => {
+    let resolveApi: (value: unknown) => void;
+    apiGetMock.mockReturnValue(new Promise((resolve) => { resolveApi = resolve; }));
+
+    render(
+      <MemoryRouter initialEntries={["/leaderboard?method=bt&judge_type=human&exclude_refusals=true"]}>
+        <TestI18nProvider i18n={i18nInstance}>
+          <LeaderboardRoute />
+        </TestI18nProvider>
+      </MemoryRouter>
+    );
+
+    expect(apiGetMock).toHaveBeenCalledWith(
+      "/leaderboard?method=bt&judge_type=human&exclude_refusals=true"
+    );
+
+    resolveApi!({ method: "bt", ci: false, bootstrap_rounds: null, models: [] });
+    await screen.findByText("No ratings yet");
+
+    // On → the toggle link turns the filter off while keeping method + judge_type.
+    expect(
+      screen.getByRole("link", { name: "Show refusal votes" }).getAttribute("href")
+    ).toBe("/leaderboard?method=bt&judge_type=human");
+  });
 });
 
   it("query: changing filters updates query params correctly in Chinese locale too", async () => {

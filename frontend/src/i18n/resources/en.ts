@@ -162,6 +162,11 @@ export const enResource = {
         label: "95% CI",
         show: "Show 95% CI",
         hide: "Hide 95% CI"
+      },
+      refusals: {
+        label: "No refusals",
+        show: "Show refusal votes",
+        hide: "Exclude refusal votes"
       }
     },
     meta: {

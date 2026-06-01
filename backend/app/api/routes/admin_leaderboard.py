@@ -31,6 +31,7 @@ def get_admin_leaderboard(
     method: Annotated[str, Query(pattern="^(elo|bt)$")] = "elo",
     include_confidence: Annotated[bool, Query()] = False,
     judge_type: Annotated[str, Query(pattern="^(all|human|bot)$")] = "all",
+    exclude_refusals: Annotated[bool, Query()] = False,
     service_account_id: str | None = None,
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
@@ -44,6 +45,7 @@ def get_admin_leaderboard(
         ),
         db=db,
         settings=settings,
+        exclude_refusals=exclude_refusals,
     )
 
 

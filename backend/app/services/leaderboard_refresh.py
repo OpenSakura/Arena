@@ -46,6 +46,11 @@ _EloEvent = tuple[uuid.UUID, uuid.UUID, str]
 _ModelPair: TypeAlias = tuple[uuid.UUID, uuid.UUID]
 VALID_JUDGE_TYPES = frozenset({"all", "human", "bot"})
 
+# Rubric tag marking a vote that was decided on a model's refusal to translate
+# rather than on translation quality. Kept in sync with ALLOWED_RUBRIC_TAGS in
+# app.schemas.votes.
+REFUSAL_RUBRIC_TAG = "refusal"
+
 
 @dataclass(slots=True)
 class VoteSample:
@@ -57,6 +62,7 @@ class VoteSample:
     judge_key: str
     voter_actor_type: str = "human"
     service_account_id: uuid.UUID | None = None
+    rubric_tags: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -333,6 +339,22 @@ def count_vote_sources(vote_samples: list[object]) -> dict[str, int]:
     return counts
 
 
+def filter_refusal_votes(vote_samples: list[VoteSample]) -> list[VoteSample]:
+    """Drop votes tagged with the refusal rubric.
+
+    A vote carrying the ``"refusal"`` rubric tag was decided on the basis of
+    one model declining to translate, not on the quality of the actual output.
+    Removing these votes keeps ratings focused on output quality. Each judge's
+    remaining (quality-based) votes are preserved.
+    """
+
+    return [
+        vote_sample
+        for vote_sample in vote_samples
+        if REFUSAL_RUBRIC_TAG not in vote_sample.rubric_tags
+    ]
+
+
 def filter_outlier_judge_votes(
     vote_samples: list[VoteSample],
     *,
@@ -587,6 +609,7 @@ def _vote_sample_stmt(
             Vote.service_account_id,
             run_a.model_id,
             run_b.model_id,
+            Vote.rubric,
         )
         .join(User, User.id == Vote.voter_user_id)
         .join(Battle, Battle.id == Vote.battle_id)
@@ -673,6 +696,7 @@ _VoteSampleRow: TypeAlias = tuple[
     uuid.UUID | None,
     uuid.UUID,
     uuid.UUID,
+    dict[str, Any] | None,
 ]
 
 
@@ -698,10 +722,26 @@ def _rows_to_vote_samples(rows: list[tuple[Any, ...]]) -> list[VoteSample]:
                 model_b_id=row[7],
                 voter_actor_type=voter_actor_type,
                 service_account_id=row[5],
+                rubric_tags=_extract_rubric_tags(row[8]),
             )
         )
 
     return samples
+
+
+def _extract_rubric_tags(rubric: object) -> tuple[str, ...]:
+    """Pull the string tags out of a vote's rubric JSON payload.
+
+    The rubric is stored as ``{"tags": [...]}`` (see app.schemas.votes); any
+    other shape is treated as having no tags.
+    """
+
+    if not isinstance(rubric, dict):
+        return ()
+    tags = rubric.get("tags")
+    if not isinstance(tags, list):
+        return ()
+    return tuple(tag for tag in tags if isinstance(tag, str))
 
 
 def _limit_vote_samples_for_single_day(

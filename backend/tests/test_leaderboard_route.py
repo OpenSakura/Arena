@@ -696,6 +696,129 @@ def test_get_leaderboard_elo_filtered_request_recomputes_from_samples(
     assert len(db.statements) == 1
 
 
+def test_get_leaderboard_elo_exclude_refusals_drops_refusal_votes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import datetime, timezone
+
+    from app.services.leaderboard_refresh import VoteSample
+
+    model_a = uuid.uuid4()
+    model_b = uuid.uuid4()
+    db = _QueueDB(rows_by_call=[[(model_a, "Model A"), (model_b, "Model B")]])
+
+    now = datetime.now(tz=timezone.utc)
+    quality_vote = VoteSample(
+        vote_id=uuid.uuid4(),
+        created_at=now,
+        winner="A",
+        judge_key="user:1",
+        model_a_id=model_a,
+        model_b_id=model_b,
+        rubric_tags=("accuracy",),
+    )
+    refusal_vote = VoteSample(
+        vote_id=uuid.uuid4(),
+        created_at=now,
+        winner="B",
+        judge_key="user:2",
+        model_a_id=model_a,
+        model_b_id=model_b,
+        rubric_tags=("refusal",),
+    )
+    captured: dict[str, object] = {}
+
+    def fake_load_vote_samples(_db: object, *, daily_vote_cap: int) -> list[VoteSample]:
+        return [quality_vote, refusal_vote]
+
+    def fake_compute_elo_ratings(
+        votes: list[VoteSample], *, k: float, **_kwargs: object
+    ) -> dict[uuid.UUID, tuple[float, int]]:
+        captured["rating_votes"] = list(votes)
+        return {model_a: (1010.0, 1), model_b: (990.0, 1)}
+
+    monkeypatch.setattr(leaderboard, "load_vote_samples", fake_load_vote_samples)
+    monkeypatch.setattr(leaderboard, "compute_elo_ratings", fake_compute_elo_ratings)
+
+    response = leaderboard._get_leaderboard_elo(
+        db=db,  # type: ignore[arg-type]
+        include_confidence=False,
+        settings=_settings(),  # type: ignore[arg-type]
+        exclude_refusals=True,
+    )
+
+    # The refusal-tagged vote is dropped before rating computation and counts.
+    assert captured["rating_votes"] == [quality_vote]
+    assert response.vote_source_counts.total == 1
+    # Fast path (persisted ratings query) is bypassed: only the model list query runs.
+    assert len(db.statements) == 1
+
+
+def test_get_leaderboard_elo_keeps_refusal_votes_when_toggle_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import datetime, timezone
+
+    from app.services.leaderboard_refresh import VoteSample
+
+    model_a = uuid.uuid4()
+    model_b = uuid.uuid4()
+    db = _QueueDB(rows_by_call=[[(model_a, "Model A"), (model_b, "Model B")]])
+
+    now = datetime.now(tz=timezone.utc)
+    samples = [
+        VoteSample(
+            vote_id=uuid.uuid4(),
+            created_at=now,
+            winner="A",
+            judge_key="user:1",
+            model_a_id=model_a,
+            model_b_id=model_b,
+            rubric_tags=("accuracy",),
+        ),
+        VoteSample(
+            vote_id=uuid.uuid4(),
+            created_at=now,
+            winner="B",
+            judge_key="user:2",
+            model_a_id=model_a,
+            model_b_id=model_b,
+            rubric_tags=("refusal",),
+        ),
+    ]
+    captured: dict[str, object] = {}
+
+    def fake_load_vote_samples(
+        _db: object,
+        *,
+        daily_vote_cap: int,
+        judge_type: str,
+        service_account_id: uuid.UUID | None,
+    ) -> list[VoteSample]:
+        return samples
+
+    def fake_compute_elo_ratings(
+        votes: list[VoteSample], *, k: float, **_kwargs: object
+    ) -> dict[uuid.UUID, tuple[float, int]]:
+        captured["rating_votes"] = list(votes)
+        return {model_a: (1010.0, 1), model_b: (990.0, 1)}
+
+    monkeypatch.setattr(leaderboard, "load_vote_samples", fake_load_vote_samples)
+    monkeypatch.setattr(leaderboard, "compute_elo_ratings", fake_compute_elo_ratings)
+
+    # judge_type != "all" forces the recompute path so we can inspect the votes;
+    # with the toggle off, the refusal-tagged vote is retained.
+    leaderboard._get_leaderboard_elo(
+        db=db,  # type: ignore[arg-type]
+        include_confidence=False,
+        settings=_settings(),  # type: ignore[arg-type]
+        judge_type="human",
+        exclude_refusals=False,
+    )
+
+    assert captured["rating_votes"] == samples
+
+
 def test_get_leaderboard_bt_returns_empty_response_without_models() -> None:
     db = _QueueDB(rows_by_call=[[]])
 
@@ -1233,6 +1356,23 @@ def test_confidence_cache_key_includes_judge_type_and_service_account_id() -> No
     assert f"service_account:{service_account_id}" in bot_service_key
 
 
+def test_confidence_cache_key_includes_exclude_refusals() -> None:
+    for method in ("elo", "bt"):
+        without_refusals = leaderboard._confidence_cache_key(
+            method=method,
+            settings=_settings(),  # type: ignore[arg-type]
+            exclude_refusals=False,
+        )
+        with_refusals = leaderboard._confidence_cache_key(
+            method=method,
+            settings=_settings(),  # type: ignore[arg-type]
+            exclude_refusals=True,
+        )
+        assert without_refusals != with_refusals
+        assert "refusal:0" in without_refusals
+        assert "refusal:1" in with_refusals
+
+
 def test_confidence_rate_limit_key_includes_judge_type_and_service_account_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1255,6 +1395,30 @@ def test_confidence_rate_limit_key_includes_judge_type_and_service_account_id(
 
     assert captured == [
         f"leaderboard_confidence_global:bt:judge:bot:service_account:{service_account_id}"
+        ":refusal:0"
+    ]
+
+
+def test_confidence_rate_limit_key_includes_exclude_refusals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[str] = []
+
+    class _Limiter:
+        def is_limited(self, key: str) -> bool:
+            captured.append(key)
+            return False
+
+    monkeypatch.setattr(leaderboard, "_get_confidence_rate_limiter", lambda: _Limiter())
+
+    leaderboard._enforce_confidence_request_rate_limit(
+        method="elo",
+        settings=_settings(leaderboard_confidence_rate_limit=1),  # type: ignore[arg-type]
+        exclude_refusals=True,
+    )
+
+    assert captured == [
+        "leaderboard_confidence_global:elo:judge:all:service_account:all:refusal:1"
     ]
 
 

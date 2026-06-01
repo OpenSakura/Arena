@@ -24,6 +24,7 @@ describe("buildLeaderboardQuery", () => {
       selectedMethod: "elo",
       includeConfidence: false,
       judgeType: "all",
+      excludeRefusals: false,
       query: "/leaderboard?method=elo&judge_type=all",
     });
   });
@@ -33,6 +34,7 @@ describe("buildLeaderboardQuery", () => {
       selectedMethod: "bt",
       includeConfidence: false,
       judgeType: "all",
+      excludeRefusals: false,
       query: "/leaderboard?method=bt&judge_type=all",
     });
   });
@@ -42,6 +44,7 @@ describe("buildLeaderboardQuery", () => {
       selectedMethod: "bt",
       includeConfidence: true,
       judgeType: "all",
+      excludeRefusals: false,
       query: "/leaderboard?method=bt&include_confidence=true&judge_type=all",
     });
   });
@@ -51,6 +54,7 @@ describe("buildLeaderboardQuery", () => {
       selectedMethod: "bt",
       includeConfidence: true,
       judgeType: "all",
+      excludeRefusals: false,
       query: "/leaderboard?method=bt&include_confidence=true&judge_type=all",
     });
   });
@@ -60,6 +64,7 @@ describe("buildLeaderboardQuery", () => {
       selectedMethod: "elo",
       includeConfidence: true,
       judgeType: "all",
+      excludeRefusals: false,
       query: "/leaderboard?method=elo&include_confidence=true&judge_type=all",
     });
   });
@@ -69,6 +74,7 @@ describe("buildLeaderboardQuery", () => {
       selectedMethod: "elo",
       includeConfidence: true,
       judgeType: "all",
+      excludeRefusals: false,
       query: "/leaderboard?method=elo&include_confidence=true&judge_type=all",
     });
   });
@@ -78,6 +84,7 @@ describe("buildLeaderboardQuery", () => {
       selectedMethod: "elo",
       includeConfidence: false,
       judgeType: "human",
+      excludeRefusals: false,
       query: "/leaderboard?method=elo&judge_type=human",
     });
   });
@@ -87,6 +94,7 @@ describe("buildLeaderboardQuery", () => {
       selectedMethod: "elo",
       includeConfidence: false,
       judgeType: "bot",
+      excludeRefusals: false,
       query: "/leaderboard?method=elo&judge_type=bot",
     });
   });
@@ -96,8 +104,43 @@ describe("buildLeaderboardQuery", () => {
       selectedMethod: "elo",
       includeConfidence: false,
       judgeType: "all",
+      excludeRefusals: false,
       query: "/leaderboard?method=elo&judge_type=all",
     });
+  });
+
+  it("appends exclude_refusals when the flag is truthy", () => {
+    expect(buildLeaderboardQuery({ exclude_refusals: "true" })).toEqual({
+      selectedMethod: "elo",
+      includeConfidence: false,
+      judgeType: "all",
+      excludeRefusals: true,
+      query: "/leaderboard?method=elo&judge_type=all&exclude_refusals=true",
+    });
+  });
+
+  it("combines exclude_refusals with other filters", () => {
+    expect(
+      buildLeaderboardQuery({
+        method: "bt",
+        include_confidence: "1",
+        judge_type: "human",
+        exclude_refusals: "1",
+      }),
+    ).toEqual({
+      selectedMethod: "bt",
+      includeConfidence: true,
+      judgeType: "human",
+      excludeRefusals: true,
+      query:
+        "/leaderboard?method=bt&include_confidence=true&judge_type=human&exclude_refusals=true",
+    });
+  });
+
+  it("omits exclude_refusals when the flag is falsy", () => {
+    expect(buildLeaderboardQuery({ exclude_refusals: "0" }).query).toBe(
+      "/leaderboard?method=elo&judge_type=all",
+    );
   });
 });
 
