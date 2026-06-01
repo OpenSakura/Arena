@@ -455,6 +455,57 @@ def test_submit_vote_rejects_battle_not_ready_for_voting() -> None:
     assert exc_info.value.detail == "Battle is not ready for voting"
 
 
+def test_submit_vote_rejects_failed_battle() -> None:
+    battle, runs, _, _ = _battle_and_runs(status="failed")
+
+    with pytest.raises(HTTPException) as exc_info:
+        votes.submit_vote(
+            battle_id=str(battle.id),
+            payload=VoteCreate(winner="A"),
+            response=Response(),
+            db=_VoteDB(battle=battle, runs=runs),  # type: ignore[arg-type]
+            principal=_authenticated_principal(),
+            settings=_settings(),  # type: ignore[arg-type]
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "Battle is not ready for voting"
+
+
+def test_submit_vote_rejects_too_new_running_battle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    battle, runs, _, _ = _battle_and_runs(status="running")
+    battle.created_at = datetime.now(timezone.utc) - timedelta(seconds=9)
+    db = _VoteDB(battle=battle, runs=runs)
+
+    monkeypatch.setattr(
+        votes,
+        "find_consumer_battle_vote",
+        lambda *_a, **_kw: pytest.fail("vote lookup must not run during cooldown"),
+    )
+    monkeypatch.setattr(
+        votes,
+        "_enforce_auth_vote_rate_limit",
+        lambda **_kw: pytest.fail("rate limit must not run during cooldown"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        votes.submit_vote(
+            battle_id=str(battle.id),
+            payload=VoteCreate(winner="A"),
+            response=Response(),
+            db=db,  # type: ignore[arg-type]
+            principal=_authenticated_principal(),
+            settings=_settings(),  # type: ignore[arg-type]
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "Battle is not ready for voting"
+    assert db.added == []
+    assert db.commit_calls == 0
+
+
 def test_submit_vote_rejects_battle_without_both_runs() -> None:
     battle, runs, _, _ = _battle_and_runs()
 
@@ -487,6 +538,42 @@ def test_submit_vote_rejects_vote_when_any_run_failed() -> None:
 
     assert exc_info.value.status_code == 409
     assert "failed" in exc_info.value.detail
+
+
+def test_submit_vote_allows_running_battle_after_delay_without_persisted_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    battle, runs, model_a_id, model_b_id = _battle_and_runs(status="running")
+    battle.created_at = datetime.now(timezone.utc) - timedelta(seconds=11)
+    for run in runs:
+        run.output_text = None
+    db = _VoteDB(
+        battle=battle,
+        runs=runs,
+        model_lookup={
+            model_a_id: SimpleNamespace(id=model_a_id, display_name="Model A"),
+            model_b_id: SimpleNamespace(id=model_b_id, display_name="Model B"),
+        },
+    )
+    monkeypatch.setattr(votes, "find_consumer_battle_vote", lambda *_a, **_kw: None)
+    monkeypatch.setattr(votes, "_enforce_auth_vote_rate_limit", lambda **_kw: None)
+
+    response = votes.submit_vote(
+        battle_id=str(battle.id),
+        payload=VoteCreate(winner="A"),
+        response=Response(),
+        db=db,  # type: ignore[arg-type]
+        principal=_authenticated_principal(),
+        settings=_settings(),  # type: ignore[arg-type]
+    )
+
+    assert response.winner == "A"
+    assert response.reveal == {
+        "A": {"model_id": str(model_a_id), "display_name": "Model A"},
+        "B": {"model_id": str(model_b_id), "display_name": "Model B"},
+    }
+    assert db.flush_calls == 1
+    assert db.commit_calls == 1
 
 
 def test_submit_vote_rejects_vote_when_selected_side_has_no_output(
@@ -672,15 +759,18 @@ def test_submit_vote_rejects_expired_locked_pool_replay_before_reveal(
     assert db.commit_calls == 0
 
 
-def test_submit_vote_rejects_locked_backend_gated_pooled_replay(
+def test_submit_vote_rejects_locked_backend_gated_pooled_replay_before_grace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     voter_id = str(uuid.uuid4())
     battle, runs, _, _ = _pool_battle_and_runs()
+    now = datetime.now(timezone.utc)
+    battle.created_at = now - timedelta(days=1)
     battle.metadata_json["pooled_replay"] = {
         "backend_gated": True,
-        "display_delay_ms": 12_345,
+        "display_delay_ms": 0,
         "assigned_user_id": voter_id,
+        "assigned_at": (now - timedelta(seconds=9)).isoformat(),
     }
     db = _VoteDB(battle=battle, runs=runs)
 
@@ -756,6 +846,53 @@ def test_submit_vote_allows_unlocked_backend_gated_pooled_replay(
     assert db.commit_calls == 1
 
 
+def test_submit_vote_allows_assigned_locked_backend_gated_pooled_replay_after_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    voter_id = str(uuid.uuid4())
+    battle, runs, model_a_id, model_b_id = _pool_battle_and_runs()
+    now = datetime.now(timezone.utc)
+    battle.created_at = now - timedelta(days=1)
+    battle.metadata_json["pooled_replay"] = {
+        "backend_gated": True,
+        "display_delay_ms": 0,
+        "assigned_user_id": voter_id,
+        "assigned_at": (
+            now - timedelta(seconds=votes.RUNNING_BATTLE_VOTE_DELAY_SECONDS + 1)
+        ).isoformat(),
+        "unlocked": False,
+    }
+    db = _VoteDB(
+        battle=battle,
+        runs=runs,
+        model_lookup={
+            model_a_id: SimpleNamespace(id=model_a_id, display_name="Model A"),
+            model_b_id: SimpleNamespace(id=model_b_id, display_name="Model B"),
+        },
+    )
+
+    monkeypatch.setattr(votes, "find_consumer_battle_vote", lambda *_a, **_kw: None)
+    monkeypatch.setattr(votes, "_enforce_auth_vote_rate_limit", lambda **_kw: None)
+
+    response = votes.submit_vote(
+        battle_id=str(battle.id),
+        payload=VoteCreate(winner="B"),
+        response=Response(),
+        db=db,  # type: ignore[arg-type]
+        principal=_authenticated_principal(user_id=voter_id),
+        settings=_settings(battle_pool_user_recycle_after_hours=24),  # type: ignore[arg-type]
+    )
+
+    assert response.winner == "B"
+    assert response.reveal == {
+        "A": {"model_id": str(model_a_id), "display_name": "Model A"},
+        "B": {"model_id": str(model_b_id), "display_name": "Model B"},
+    }
+    assert db.vote_row is not None
+    assert db.vote_row.battle_id == battle.id
+    assert db.commit_calls == 1
+
+
 def test_submit_vote_rejects_unlocked_pool_replay_assigned_to_other_user(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -766,6 +903,50 @@ def test_submit_vote_rejects_unlocked_pool_replay_assigned_to_other_user(
         "assigned_user_id": str(uuid.uuid4()),
         "source": "admin_pre_generated",
         "unlocked": True,
+    }
+    db = _VoteDB(battle=battle, runs=runs)
+
+    monkeypatch.setattr(
+        votes,
+        "find_consumer_battle_vote",
+        lambda *_a, **_kw: pytest.fail("other user's replay must fail before vote lookup"),
+    )
+    monkeypatch.setattr(
+        votes,
+        "_enforce_auth_vote_rate_limit",
+        lambda **_kw: pytest.fail("other user's replay must fail before rate limit"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        votes.submit_vote(
+            battle_id=str(battle.id),
+            payload=VoteCreate(winner="A"),
+            response=Response(),
+            db=db,  # type: ignore[arg-type]
+            principal=_authenticated_principal(user_id=str(uuid.uuid4())),
+            settings=_settings(battle_pool_user_recycle_after_hours=24),  # type: ignore[arg-type]
+        )
+
+    assert exc_info.value.status_code == 403
+    assert db.added == []
+    assert db.commit_calls == 0
+
+
+def test_submit_vote_rejects_locked_pool_replay_assigned_to_other_user_after_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    battle, runs, _, _ = _pool_battle_and_runs()
+    now = datetime.now(timezone.utc)
+    battle.created_at = now - timedelta(days=1)
+    battle.metadata_json["pooled_replay"] = {
+        "backend_gated": True,
+        "display_delay_ms": 0,
+        "assigned_user_id": str(uuid.uuid4()),
+        "assigned_at": (
+            now - timedelta(seconds=votes.RUNNING_BATTLE_VOTE_DELAY_SECONDS + 1)
+        ).isoformat(),
+        "source": "admin_pre_generated",
+        "unlocked": False,
     }
     db = _VoteDB(battle=battle, runs=runs)
 
@@ -1150,6 +1331,61 @@ def test_submit_vote_allows_assigned_unlocked_bot_pool_battle(
             "assigned_service_account_id": str(service_account_id),
             "source": "admin_pre_generated",
             "unlocked": True,
+        },
+    }
+    db = _VoteDB(
+        battle=battle,
+        runs=runs,
+        model_lookup={
+            model_a_id: SimpleNamespace(id=model_a_id, display_name="Model A"),
+            model_b_id: SimpleNamespace(id=model_b_id, display_name="Model B"),
+        },
+    )
+    monkeypatch.setattr(votes, "find_consumer_battle_vote", lambda *_a, **_kw: None)
+    monkeypatch.setattr(votes, "_enforce_auth_vote_rate_limit", lambda **_kw: None)
+
+    response = votes.submit_vote(
+        battle_id=str(battle.id),
+        payload=VoteCreate(winner="A", bot_metadata={"run": "pooled"}),
+        response=Response(),
+        db=db,  # type: ignore[arg-type]
+        principal=principal,
+        settings=_settings(),  # type: ignore[arg-type]
+    )
+
+    assert response.winner == "A"
+    assert response.voter_actor_type == "bot"
+    assert db.vote_row is not None
+    assert db.vote_row.service_account_id == service_account_id
+    assert db.commit_calls == 1
+
+
+def test_submit_vote_allows_assigned_locked_bot_pool_battle_after_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot_user_id = str(uuid.uuid4())
+    service_account_id = uuid.uuid4()
+    service_account_token_id = uuid.uuid4()
+    principal = _bot_principal(
+        user_id=bot_user_id,
+        service_account_id=service_account_id,
+        service_account_token_id=service_account_token_id,
+    )
+    battle, runs, model_a_id, model_b_id = _pool_battle_and_runs()
+    now = datetime.now(timezone.utc)
+    battle.created_at = now - timedelta(days=1)
+    battle.metadata_json["pooled_replays"] = {
+        "human": None,
+        "bot": {
+            "backend_gated": True,
+            "display_delay_ms": 0,
+            "assigned_user_id": bot_user_id,
+            "assigned_service_account_id": str(service_account_id),
+            "assigned_at": (
+                now - timedelta(seconds=votes.RUNNING_BATTLE_VOTE_DELAY_SECONDS + 1)
+            ).isoformat(),
+            "source": "admin_pre_generated",
+            "unlocked": False,
         },
     }
     db = _VoteDB(

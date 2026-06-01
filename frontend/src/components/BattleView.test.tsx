@@ -59,6 +59,9 @@ function createUseBattleState(overrides: Record<string, unknown> = {}) {
     authStatus: "authenticated",
     hasSessionError: false,
     canVote: true,
+    canShowVoteControls: true,
+    isValidVoteStatus: true,
+    isVoteCooldownActive: false,
     canRetry: false,
     voteSubmitted: false,
     statusLabel: "Loading...",
@@ -96,7 +99,7 @@ describe("BattleView", () => {
 
     renderBattleView("new", testZh);
 
-    expect(screen.getByText(/哪个翻译更好/i)).toBeDefined();
+    expect(screen.getAllByText(/哪个翻译更好/i).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: /模型 A 更好/i })).toBeDefined();
     expect(screen.getByRole("button", { name: /不分胜负/i })).toBeDefined();
     expect(screen.getByRole("button", { name: /模型 B 更好/i })).toBeDefined();
@@ -154,16 +157,18 @@ describe("BattleView", () => {
 
     const culturalButton = screen.getByRole("button", { name: "Cultural" });
     expect(culturalButton.getAttribute("aria-describedby")).toBe("tooltip-cultural");
-
     const culturalTooltip = document.getElementById("tooltip-cultural");
     expect(culturalTooltip).toBeDefined();
+    expect(culturalTooltip?.className).toContain("group-hover/rubric:opacity-100");
+    expect(culturalTooltip?.className).not.toContain("group-hover:opacity-100");
     expect(culturalTooltip?.textContent).toContain("Proper handling");
 
     const refusalButton = screen.getByRole("button", { name: "Refusal" });
     expect(refusalButton.getAttribute("aria-describedby")).toBe("tooltip-refusal");
-
     const refusalTooltip = document.getElementById("tooltip-refusal");
     expect(refusalTooltip).toBeDefined();
+    expect(refusalTooltip?.className).toContain("group-hover/rubric:opacity-100");
+    expect(refusalTooltip?.className).not.toContain("group-hover:opacity-100");
     expect(refusalTooltip?.textContent).toContain("Refused to translate or provide a response.");
 
     const user = userEvent.setup();
@@ -255,6 +260,54 @@ describe("BattleView", () => {
 
     await screen.findByText("Unable to load battle");
     expect(screen.getByText("Login required to view battles.")).toBeDefined();
+  });
+
+  it("renders voting controls during streaming", async () => {
+    useBattleMock.mockReturnValue(createUseBattleState({
+      state: {
+        resolvedBattleId: "battle-1",
+        jpSource: "JP source",
+        jpSourceLang: "JA",
+        targetLang: "ZH",
+        outA: "Alpha",
+        outB: "Beta",
+        status: "streaming",
+        errorText: null,
+        winner: null,
+        rubricTags: [],
+        comment: "",
+        submittingVote: false,
+        voteId: null,
+        reveal: null,
+        adminRevealData: null,
+        adminRevealed: { A: false, B: false },
+        retryCount: 0,
+        retryAllowed: false,
+        streamStartTime: Date.now() - 15000,
+      },
+    }));
+
+    renderBattleView("battle-1");
+
+    expect(screen.getByRole("region", { name: "Battle comparison" }).parentElement?.className).toContain("pb-36");
+
+    const voteRegion = screen.getByRole("region", { name: "Voting area" });
+    expect(voteRegion).toBeDefined();
+
+    expect(voteRegion.className).toContain("fixed");
+    expect(voteRegion.className).toContain("bottom-0");
+    expect(voteRegion.className).toContain("group");
+    expect(voteRegion.textContent).toContain("Cast Your Vote");
+
+    const expandingContent = voteRegion.querySelector(".max-h-28");
+    expect(expandingContent).toBeDefined();
+    expect(expandingContent?.className).toContain("group-hover:max-h-[85vh]");
+
+    expect(screen.getByRole("button", { name: "Submit Vote" })).toBeDefined();
+    const tooltips = screen.getAllByRole("tooltip");
+    expect(tooltips).toHaveLength(10);
+    expect(tooltips.every((tooltip) => tooltip.className.includes("group-hover/rubric:opacity-100"))).toBe(true);
+    expect(tooltips.every((tooltip) => !tooltip.className.includes("group-hover:opacity-100"))).toBe(true);
   });
 
   it("shows expired-session messaging when the backend session failed", async () => {

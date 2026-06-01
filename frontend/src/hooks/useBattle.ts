@@ -5,7 +5,7 @@
  * Replaces 15+ useState hooks in BattleView with a single useReducer.
  */
 
-import { useEffect, useMemo, useReducer, useRef } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 
@@ -125,6 +125,7 @@ export type BattleState = {
   adminRevealed: { A: boolean; B: boolean };
   retryCount: number;
   retryAllowed: boolean;
+  streamStartTime: number | null;
 };
 
 type Action =
@@ -173,6 +174,7 @@ const INITIAL_STATE: BattleState = {
   adminRevealed: { A: false, B: false },
   retryCount: 0,
   retryAllowed: false,
+  streamStartTime: null,
 };
 
 const BATTLE_PUBLIC_STATUSES: readonly BattlePublicStatus[] = [
@@ -183,6 +185,15 @@ const BATTLE_PUBLIC_STATUSES: readonly BattlePublicStatus[] = [
 ];
 
 const VOTE_WINNERS: readonly Winner[] = ["A", "B", "tie"];
+const VOTE_COOLDOWN_MS = 10_000;
+
+function isActiveVoteStatus(status: BattleStatus): boolean {
+  return status === "streaming" || status === "reconnecting" || status === "running";
+}
+
+function isValidVoteStatus(status: BattleStatus): boolean {
+  return status === "done" || isActiveVoteStatus(status);
+}
 
 function battleReducer(state: BattleState, action: Action): BattleState {
   switch (action.type) {
@@ -211,6 +222,10 @@ function battleReducer(state: BattleState, action: Action): BattleState {
         retryAllowed: action.battle.retry_allowed,
         adminRevealData: action.battle.admin_reveal ?? null,
         adminRevealed: { A: false, B: false },
+        streamStartTime:
+          isActiveVoteStatus(battleStatus) || battleStatus === "pending"
+            ? Date.now()
+            : null,
       };
     }
 
@@ -260,6 +275,7 @@ function battleReducer(state: BattleState, action: Action): BattleState {
         reveal: null,
         adminRevealed: { A: false, B: false },
         retryAllowed: false,
+        streamStartTime: Date.now(),
       };
 
     case "STREAM_DELTA": {
@@ -383,6 +399,7 @@ function battleReducer(state: BattleState, action: Action): BattleState {
         adminRevealed: { A: false, B: false },
         retryCount: state.retryCount + 1,
         retryAllowed: false,
+        streamStartTime: null,
       };
 
     default:
@@ -503,6 +520,26 @@ export function useBattle(battleId: string) {
   const hasSessionError = hasBattleSessionError(sessionError);
 
   const [state, dispatch] = useReducer(battleReducer, INITIAL_STATE);
+
+  const [isVoteCooldownActive, setIsVoteCooldownActive] = useState(false);
+
+  useEffect(() => {
+    if (state.streamStartTime === null) {
+      setIsVoteCooldownActive(false);
+      return;
+    }
+    const elapsed = Date.now() - state.streamStartTime;
+    const remaining = VOTE_COOLDOWN_MS - elapsed;
+    if (remaining <= 0) {
+      setIsVoteCooldownActive(false);
+      return;
+    }
+    setIsVoteCooldownActive(true);
+    const timer = setTimeout(() => {
+      setIsVoteCooldownActive(false);
+    }, remaining);
+    return () => clearTimeout(timer);
+  }, [state.streamStartTime]);
 
   const statusRef = useRef<BattleStatus>(state.status);
   const bootstrapKeyRef = useRef<string | null>(null);
@@ -843,12 +880,26 @@ export function useBattle(battleId: string) {
       dispatch({ type: "VOTE_ERROR", error: t("battle.errors.loginRequiredToSubmit") });
       return;
     }
+
+    const outputsReady = state.outA.trim().length > 0 && state.outB.trim().length > 0;
+
+    const isEligible =
+      state.resolvedBattleId !== null &&
+      state.winner !== null &&
+      state.reveal === null &&
+      !state.submittingVote &&
+      isValidVoteStatus(state.status) &&
+      outputsReady &&
+      !isVoteCooldownActive;
+
     if (
       voteSubmitLockRef.current ||
-      !state.resolvedBattleId ||
-      !state.winner ||
-      state.reveal
+      !isEligible
     ) {
+      return;
+    }
+    const resolvedBattleId = state.resolvedBattleId;
+    if (resolvedBattleId === null) {
       return;
     }
 
@@ -862,7 +913,7 @@ export function useBattle(battleId: string) {
         comment: state.comment || null,
       };
       const result = parseVoteSubmitResponse(
-        await apiPost(`/battles/${encodeURIComponent(state.resolvedBattleId)}/vote`, payload),
+        await apiPost(`/battles/${encodeURIComponent(resolvedBattleId)}/vote`, payload),
       );
       dispatch({ type: "VOTE_SUCCESS", voteId: result.vote_id });
       dispatch({ type: "REVEAL_SUCCESS", reveal: result.reveal });
@@ -918,6 +969,10 @@ export function useBattle(battleId: string) {
 
   const voteSubmitted = state.voteId !== null;
 
+  const outputsReady = state.outA.trim().length > 0 && state.outB.trim().length > 0;
+  const isActivelyGenerating = isActiveVoteStatus(state.status);
+  const hasValidVoteStatus = isValidVoteStatus(state.status);
+
   const canVote =
     isAuthed &&
     !hasSessionError &&
@@ -925,7 +980,11 @@ export function useBattle(battleId: string) {
     state.winner !== null &&
     state.reveal === null &&
     !state.submittingVote &&
-    state.status === "done";
+    outputsReady &&
+    hasValidVoteStatus &&
+    !isVoteCooldownActive;
+
+  const canShowVoteControls = state.status === "done" || state.status === "failed" || state.status === "error" || isActivelyGenerating;
 
   const canRetry =
     isAuthed &&
@@ -957,6 +1016,9 @@ export function useBattle(battleId: string) {
     authStatus,
     hasSessionError,
     canVote,
+    canShowVoteControls,
+    isValidVoteStatus: hasValidVoteStatus,
+    isVoteCooldownActive,
     canRetry,
     voteSubmitted,
     statusLabel,

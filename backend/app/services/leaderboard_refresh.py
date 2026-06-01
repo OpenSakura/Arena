@@ -32,7 +32,7 @@ from sqlalchemy.orm import Session, aliased  # pyright: ignore[reportMissingImpo
 
 from app.core.config import get_settings
 from app.db.session import get_sessionmaker
-from app.models.battle import Run
+from app.models.battle import Battle, Run
 from app.models.model_registry import Model
 from app.models.rating import ModelRating
 from app.models.user import User
@@ -589,6 +589,7 @@ def _vote_sample_stmt(
             run_b.model_id,
         )
         .join(User, User.id == Vote.voter_user_id)
+        .join(Battle, Battle.id == Vote.battle_id)
         .join(
             run_a,
             and_(run_a.battle_id == Vote.battle_id, run_a.side == "A"),
@@ -626,6 +627,7 @@ def _vote_sample_bounds_stmt(
     return (
         select(func.min(Vote.created_at), func.max(Vote.created_at))
         .join(User, User.id == Vote.voter_user_id)
+        .join(Battle, Battle.id == Vote.battle_id)
         .join(
             run_a,
             and_(run_a.battle_id == Vote.battle_id, run_a.side == "A"),
@@ -648,7 +650,7 @@ def _vote_sample_filter_conditions(
     judge_type: str,
     service_account_id: uuid.UUID | None,
 ) -> list[Any]:
-    conditions: list[Any] = [Vote.revealed.is_(True)]
+    conditions: list[Any] = [Vote.revealed.is_(True), Battle.status == "completed"]
     if judge_type == "human":
         conditions.append(
             and_(Vote.service_account_id.is_(None), User.actor_type == "human")

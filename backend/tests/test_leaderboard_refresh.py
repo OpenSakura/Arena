@@ -83,7 +83,8 @@ def _seed_mixed_vote_source_samples(db: Session) -> dict[str, object]:
 
     battle_one = Battle(task_id=task.id, status="completed")
     battle_two = Battle(task_id=task.id, status="completed")
-    db.add_all([battle_one, battle_two])
+    battle_three = Battle(task_id=task.id, status="running")
+    db.add_all([battle_one, battle_two, battle_three])
     db.flush()
     db.add_all(
         [
@@ -91,6 +92,8 @@ def _seed_mixed_vote_source_samples(db: Session) -> dict[str, object]:
             Run(battle_id=battle_one.id, side="B", model_id=model_b.id),
             Run(battle_id=battle_two.id, side="A", model_id=model_a.id),
             Run(battle_id=battle_two.id, side="B", model_id=model_b.id),
+            Run(battle_id=battle_three.id, side="A", model_id=model_a.id),
+            Run(battle_id=battle_three.id, side="B", model_id=model_b.id),
         ]
     )
 
@@ -158,12 +161,20 @@ def _seed_mixed_vote_source_samples(db: Session) -> dict[str, object]:
         revealed=True,
         created_at=created_at + timedelta(minutes=2),
     )
-    db.add_all([human_vote, bot_vote_one, bot_vote_two])
+    early_vote = Vote(
+        battle_id=battle_three.id,
+        winner="A",
+        voter_user_id=human_user.id,
+        revealed=True,
+        created_at=created_at + timedelta(minutes=3),
+    )
+    db.add_all([human_vote, bot_vote_one, bot_vote_two, early_vote])
     db.commit()
     return {
         "human_vote_id": human_vote.id,
         "bot_vote_one_id": bot_vote_one.id,
         "bot_vote_two_id": bot_vote_two.id,
+        "early_vote_id": early_vote.id,
         "service_account_one_id": service_account_one.id,
         "service_account_two_id": service_account_two.id,
     }
@@ -672,6 +683,7 @@ def test_load_vote_samples_excludes_unrevealed_votes() -> None:
     class _FakeSession:
         def execute(self, stmt: object) -> _FakeResult:
             captured["stmt"] = str(stmt).lower()
+            captured["params"] = getattr(stmt.compile(), "params", {})
             return _FakeResult()
 
     load_vote_samples(_FakeSession())  # type: ignore[arg-type]
@@ -682,6 +694,30 @@ def test_load_vote_samples_excludes_unrevealed_votes() -> None:
     assert "revealed" in stmt_text, (
         f"Expected 'revealed' in SQL predicate but got:\n{stmt_text}"
     )
+
+
+def test_load_vote_samples_excludes_non_completed_battles() -> None:
+    from app.services.leaderboard_refresh import load_vote_samples
+
+    captured: dict[str, object] = {}
+
+    class _FakeResult:
+        def all(self) -> list[object]:
+            return []
+
+    class _FakeSession:
+        def execute(self, stmt: object) -> _FakeResult:
+            captured["stmt"] = str(stmt).lower()
+            captured["params"] = getattr(stmt.compile(), "params", {})
+            return _FakeResult()
+
+    load_vote_samples(_FakeSession())  # type: ignore[arg-type]
+
+    stmt_text = captured.get("stmt", "")
+    assert isinstance(stmt_text, str) and stmt_text, "execute() was not called"
+    assert "battles" in stmt_text
+    assert "battles.status" in stmt_text
+    assert "completed" in captured.get("params", {}).values()
 
 
 def test_load_vote_samples_revealed_filter_excludes_rows_at_db_boundary() -> None:
@@ -821,6 +857,7 @@ def test_load_vote_samples_filters_mixed_human_and_bot_sources(
         seeded["bot_vote_one_id"],
         seeded["bot_vote_two_id"],
     ]
+    assert seeded["early_vote_id"] not in {sample.vote_id for sample in all_samples}
     assert [sample.vote_id for sample in human_samples] == [seeded["human_vote_id"]]
     assert [sample.vote_id for sample in bot_samples] == [
         seeded["bot_vote_one_id"],

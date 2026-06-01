@@ -426,6 +426,7 @@ def backend_gated_pooled_replay_blocks_vote(
     has_vote: bool | None,
     settings: Settings | Any | None = None,
     now: datetime | None = None,
+    locked_replay_vote_delay_seconds: int = 0,
 ) -> bool:
     current_time = _normalize_datetime(now or datetime.now(timezone.utc))
     metadata = getattr(battle, "metadata_json", None)
@@ -434,7 +435,15 @@ def backend_gated_pooled_replay_blocks_vote(
     replay = _pool_replay_for_consumer(metadata, consumer_type)
     if isinstance(replay, dict) and replay.get("backend_gated") is True:
         if replay.get("unlocked") is not True:
-            return True
+            return not (
+                _locked_replay_vote_delay_elapsed(
+                    replay,
+                    current_time,
+                    delay_seconds=locked_replay_vote_delay_seconds,
+                )
+                and _is_active_locked_pool_replay(replay, current_time)
+                and _pool_replay_assigned_to_principal(replay, principal)
+            )
         if consumer_type == "bot":
             assigned_service_account_id = replay.get("assigned_service_account_id")
             return assigned_service_account_id is not None and assigned_service_account_id != getattr(
@@ -458,6 +467,23 @@ def backend_gated_pooled_replay_blocks_vote(
         )
         is not None
     )
+
+
+def _locked_replay_vote_delay_elapsed(
+    replay: dict[str, Any],
+    now: datetime,
+    *,
+    delay_seconds: int,
+) -> bool:
+    assigned_at = _parse_metadata_datetime(replay.get("assigned_at"))
+    display_delay_ms = replay.get("display_delay_ms")
+    if assigned_at is None or not isinstance(display_delay_ms, int) or display_delay_ms < 0:
+        return False
+    available_at = assigned_at + timedelta(
+        milliseconds=display_delay_ms,
+        seconds=max(int(delay_seconds), 0),
+    )
+    return now >= available_at
 
 
 def validate_prepopulation_job_request(

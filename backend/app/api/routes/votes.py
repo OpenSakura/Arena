@@ -10,6 +10,7 @@ Notes:
 
 from __future__ import annotations
 
+import datetime
 from functools import lru_cache
 from typing import Literal, NoReturn, cast
 import uuid
@@ -48,6 +49,7 @@ from app.utils.redis import get_rate_limit_redis_client
 
 router = APIRouter(prefix="/battles", tags=["votes"])
 require_bot_vote_create_scope = require_scopes(["vote:create"])
+RUNNING_BATTLE_VOTE_DELAY_SECONDS = 10
 
 
 def _validated_bot_vote_identity(principal: Principal) -> tuple[uuid.UUID, uuid.UUID]:
@@ -117,21 +119,26 @@ def submit_vote(
             forbidden_detail="Only the battle creator or an admin may vote on this battle",
         )
 
-    if battle.status != "completed":
+    battle_status = getattr(battle, "status", None)
+    if battle_status not in {"running", "completed"}:
+        raise HTTPException(status_code=409, detail="Battle is not ready for voting")
+    if battle_status == "running" and not _running_battle_vote_delay_elapsed(battle):
         raise HTTPException(status_code=409, detail="Battle is not ready for voting")
 
-    from app.services.battle_prepopulation import backend_gated_pooled_replay_blocks_vote
+    if battle_status == "completed":
+        from app.services.battle_prepopulation import backend_gated_pooled_replay_blocks_vote
 
-    if backend_gated_pooled_replay_blocks_vote(
-        battle,
-        principal=principal,
-        has_vote=access_has_vote,
-        settings=settings,
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="Battle replay is still streaming; wait for replay to complete before voting",
-        )
+        if backend_gated_pooled_replay_blocks_vote(
+            battle,
+            principal=principal,
+            has_vote=access_has_vote,
+            settings=settings,
+            locked_replay_vote_delay_seconds=RUNNING_BATTLE_VOTE_DELAY_SECONDS,
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Battle replay is still streaming; wait for replay to complete before voting",
+            )
 
     runs = (
         db.execute(
@@ -146,8 +153,7 @@ def submit_vote(
     if run_a is None or run_b is None:
         raise HTTPException(status_code=400, detail="Battle runs not ready")
 
-    # Ensure both runs have actual output (not just error text).
-    if not run_a.output_text or not run_b.output_text:
+    if battle_status == "completed" and (not run_a.output_text or not run_b.output_text):
         raise HTTPException(
             status_code=409,
             detail="One or both translation runs failed; voting is not allowed",
@@ -158,7 +164,9 @@ def submit_vote(
 
     if winner in ("A", "B"):
         chosen_run = run_map.get(winner)
-        if chosen_run is None or not chosen_run.output_text:
+        if chosen_run is None or (
+            battle_status == "completed" and not chosen_run.output_text
+        ):
             raise HTTPException(
                 status_code=422,
                 detail=f"Side {winner} has no rendered output",
@@ -249,6 +257,19 @@ def submit_vote(
         vote=vote,
         principal=principal,
     )
+
+
+def _running_battle_vote_delay_elapsed(battle: object) -> bool:
+    created_at = getattr(battle, "created_at", None)
+    if not isinstance(created_at, datetime.datetime):
+        return False
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=datetime.timezone.utc)
+    created_at_utc = created_at.astimezone(datetime.timezone.utc)
+    age_seconds = (
+        datetime.datetime.now(datetime.timezone.utc) - created_at_utc
+    ).total_seconds()
+    return age_seconds >= RUNNING_BATTLE_VOTE_DELAY_SECONDS
 
 
 def _resolve_duplicate_vote_conflict(

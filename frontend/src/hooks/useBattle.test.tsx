@@ -172,6 +172,7 @@ describe("useBattle", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
   });
 
@@ -633,6 +634,53 @@ describe("useBattle", () => {
     expect(mockedApiPost.mock.calls[0]).toHaveLength(2);
     expect(mockedApiPost).toHaveBeenCalledTimes(1);
     expect(resultRef.current?.canVote).toBe(false);
+  });
+
+  it("disables voting during the first 10 seconds of a new active battle, but enables it after cooldown when outputs are present", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+
+    mockedUseArenaAuth.mockReturnValue(createAuthState());
+    mockedLoadOrCreateBattle.mockResolvedValueOnce(
+      createBattle({ id: "battle-stream", status: "pending", run_a: null, run_b: null }),
+    );
+
+    let releaseStream!: () => void;
+    const streamRelease = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+
+    mockedStreamSSE.mockImplementationOnce(async function* () {
+      yield { event: "battle.started", data: { battle_id: "battle-stream" } };
+      yield { event: "run.delta", data: { side: "A", text_delta: "Alpha out" } };
+      yield { event: "run.delta", data: { side: "B", text_delta: "Beta out" } };
+      await streamRelease;
+    });
+
+    const { resultRef } = renderUseBattle({ battleId: "battle-stream" });
+
+    await waitFor(() => {
+      expect(resultRef.current?.state.outA).toBe("Alpha out");
+      expect(resultRef.current?.state.outB).toBe("Beta out");
+      expect(resultRef.current?.state.status).toBe("streaming");
+    });
+
+    act(() => {
+      resultRef.current?.dispatch({ type: "SET_WINNER", winner: "A" });
+    });
+
+    await waitFor(() => {
+      expect(resultRef.current?.isVoteCooldownActive).toBe(true);
+      expect(resultRef.current?.canVote).toBe(false);
+    });
+
+    await vi.advanceTimersByTimeAsync(10001);
+
+    await waitFor(() => {
+      expect(resultRef.current?.isVoteCooldownActive).toBe(false);
+      expect(resultRef.current?.canVote).toBe(true);
+    });
+
+    releaseStream();
   });
 
   it("navigates start-another-battle actions to /battle/new with a restart nonce", async () => {

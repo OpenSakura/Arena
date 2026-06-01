@@ -33,6 +33,9 @@ export function BattleView({ battleId }: { battleId: string }) {
     isAuthed,
     hasSessionError,
     canVote,
+    canShowVoteControls,
+    isValidVoteStatus,
+    isVoteCooldownActive,
     canRetry,
     voteSubmitted,
     handleVoteSubmit,
@@ -87,7 +90,7 @@ export function BattleView({ battleId }: { battleId: string }) {
 
   return (
     <div
-        className="grid gap-6"
+        className={`grid gap-6 ${canShowVoteControls ? "pb-36 sm:pb-40" : ""}`}
       >
       <section aria-label={t("battle.comparisonAriaLabel")} className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         {/* Source text panel */}
@@ -141,11 +144,32 @@ export function BattleView({ battleId }: { battleId: string }) {
       </section>
 
       {/* Voting section */}
-      {(status === "done" || status === "failed" || status === "error") && (
+      {canShowVoteControls && (
         <div
-          className="glass-panel-accent p-8 flex flex-col items-center gap-6"
+          className="group fixed bottom-0 left-0 right-0 z-50 w-full border-t border-primary/20 bg-background/85 backdrop-blur-xl shadow-[0_-10px_40px_-15px_rgba(0,0,0,0.3)] transition-all duration-300 ease-out hover:bg-background/95 focus-within:bg-background/95"
+          role="region"
+          aria-label={t("battle.voteRegionAria")}
         >
-          {status === "done" && (
+          <div className="pointer-events-none absolute inset-x-0 top-0 mx-auto flex h-28 max-w-5xl items-center justify-between gap-4 px-4 opacity-100 transition-all duration-300 ease-out group-hover:-translate-y-2 group-hover:opacity-0 group-focus-within:-translate-y-2 group-focus-within:opacity-0 sm:px-8">
+            <div className="min-w-0 text-left">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/70">
+                {t("battle.voteHeader")}
+              </div>
+              <div className="mt-1 truncate text-lg font-bold heading-gradient">
+                {t("battle.votePrompt")}
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                {t("battle.voteCooldownWait")}
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2 rounded-full border border-primary/15 bg-primary/[0.08] px-4 py-2 text-sm font-medium text-primary/80 shadow-sm shadow-primary/10">
+              <span>{t("battle.chooseWinner")}</span>
+              <span aria-hidden className="animate-bounce">↑</span>
+            </div>
+          </div>
+
+          <div className="mx-auto flex w-full max-w-5xl flex-col items-center gap-6 overflow-y-auto overflow-x-hidden px-4 sm:px-8 transition-all duration-300 ease-out max-h-28 opacity-0 group-hover:max-h-[85vh] group-hover:opacity-100 group-hover:py-8 group-focus-within:max-h-[85vh] group-focus-within:opacity-100 group-focus-within:py-8 scrollbar-thin">
+          {isValidVoteStatus && (
             hasSessionError ? (
               <div className="w-full max-w-2xl text-center glass-panel-accent p-6 border-red-500/20 bg-red-500/5">
                 <div className="flex flex-col items-center gap-3">
@@ -182,7 +206,7 @@ export function BattleView({ battleId }: { battleId: string }) {
                 <div className="mb-3 text-sm font-medium text-muted-foreground">{t("battle.rubricPrompt")}</div>
                 <div className="flex flex-wrap gap-2">
                   {RUBRIC_TAGS.map((tag) => (
-                    <div key={tag} className="group relative flex">
+                    <div key={tag} className="group/rubric relative flex">
                       <button
                         type="button"
                         onClick={() => toggleRubricTag(tag)}
@@ -204,7 +228,7 @@ export function BattleView({ battleId }: { battleId: string }) {
                       <div
                         id={`tooltip-${tag}`}
                         role="tooltip"
-                        className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-max max-w-xs rounded bg-popover px-2 py-1 text-xs text-popover-foreground opacity-0 shadow-md transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 z-10"
+                        className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 w-64 -translate-x-1/2 rounded-xl border border-border/60 bg-popover px-3 py-2 text-xs leading-relaxed text-popover-foreground opacity-0 shadow-lg shadow-background/20 transition-opacity duration-150 group-hover/rubric:opacity-100 group-focus-within/rubric:opacity-100"
                       >
                         {t(`battle.rubricDescriptions.${tag}`)}
                       </div>
@@ -234,7 +258,7 @@ export function BattleView({ battleId }: { battleId: string }) {
           <div className="w-full max-w-2xl">
             <div className="flex flex-col items-center justify-center gap-4">
               {/* Submit / Update Vote button */}
-              {!reveal && status === "done" && (
+              {!reveal && isValidVoteStatus && (
                 <>
                   <Button
                     type="button"
@@ -249,6 +273,11 @@ export function BattleView({ battleId }: { battleId: string }) {
                         ? t("battle.updateVoteButton")
                         : t("battle.submitVoteButton")}
                   </Button>
+                  {isVoteCooldownActive && (
+                    <p className="mt-2 text-xs text-muted-foreground animate-pulse">
+                      {t("battle.voteCooldownWait")}
+                    </p>
+                  )}
                 </>
               )}
 
@@ -277,6 +306,7 @@ export function BattleView({ battleId }: { battleId: string }) {
             </div>
 
             {errorText ? <p className="mt-4 text-center text-sm text-destructive">{errorText}</p> : null}
+          </div>
           </div>
         </div>
       )}
