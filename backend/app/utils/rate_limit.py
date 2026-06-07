@@ -45,6 +45,13 @@ from typing import Callable
 
 logger = logging.getLogger(__name__)
 
+try:
+    from redis.exceptions import NoScriptError
+except ImportError:
+
+    class NoScriptError(Exception):
+        pass
+
 # ---------------------------------------------------------------------------
 # Lua script for atomic check-and-increment (prevents TOCTOU races)
 # ---------------------------------------------------------------------------
@@ -226,7 +233,7 @@ class RollingWindowRateLimiter:
             except Exception as exc:
                 # NOSCRIPT — script was evicted from the server-side cache.
                 # Fall through to full EVAL below to re-cache it.
-                if "NOSCRIPT" not in str(exc):
+                if not _is_lua_script_cache_miss(exc):
                     raise
 
         # Full EVAL — the server caches the script automatically.
@@ -325,3 +332,10 @@ def _redis_int(value: object) -> int:
         return int(str(value))  # type: ignore[call-overload]
     except (TypeError, ValueError):
         return 0
+
+
+def _is_lua_script_cache_miss(exc: Exception) -> bool:
+    if isinstance(exc, NoScriptError):
+        return True
+    message = str(exc)
+    return "NOSCRIPT" in message or "No matching script" in message

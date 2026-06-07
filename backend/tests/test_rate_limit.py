@@ -226,3 +226,44 @@ def test_rolling_window_rate_limiter_evalsha_noscript_fallback() -> None:
     limiter.is_limited(key)  # EVALSHA fails → EVAL
 
     assert eval_calls == ["eval", "evalsha", "eval"]
+
+
+def test_rolling_window_rate_limiter_evalsha_redis_noscript_error_fallback() -> None:
+    from redis.exceptions import NoScriptError
+
+    from app.utils.rate_limit import RollingWindowRateLimiter
+
+    eval_calls: list[str] = []
+
+    class NoscriptRedis(_FakeRedis):
+        def __init__(self) -> None:
+            super().__init__()
+            self._evalsha_fail_next = False
+
+        def eval(self, script: str, num_keys: int, *args: object) -> int:
+            eval_calls.append("eval")
+            return 0
+
+        def evalsha(self, sha: str, num_keys: int, *args: object) -> int:
+            if self._evalsha_fail_next:
+                self._evalsha_fail_next = False
+                raise NoScriptError("No matching script. Please use EVAL.")
+            eval_calls.append("evalsha")
+            return 0
+
+    redis = NoscriptRedis()
+    limiter = RollingWindowRateLimiter(
+        limit=10,
+        window_seconds=60,
+        bucket_seconds=10,
+        redis_client=redis,
+    )
+
+    key = "k"
+    assert limiter.is_limited(key) is False
+    assert limiter.is_limited(key) is False
+
+    redis._evalsha_fail_next = True
+    assert limiter.is_limited(key) is False
+
+    assert eval_calls == ["eval", "evalsha", "eval"]
